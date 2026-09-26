@@ -18,6 +18,8 @@ overwrite_checks = [
   {Credo.Check.Refactor.CondInsteadOfIfElse, false},
   {Credo.Check.Refactor.ModuleDependencies, false},
   {Credo.Check.Refactor.PipeChainStart, false},
+  # TODOs stay in the report, but don't fail the build: they mark planned work (see the roadmap).
+  {Credo.Check.Design.TagTODO, exit_status: 0},
   {Credo.Check.Consistency.UnusedVariableNames, false},
   {Credo.Check.Warning.LazyLogging, false}
 ]
