@@ -78,15 +78,37 @@ mix credo                   # strict, every check enabled (see .credo.exs)
 `.github/workflows/ci.yml` checks formatting, `mix credo` and `mix docs --warnings-as-errors` on the latest Elixir, and
 runs `mix test` on every supported Elixir minor version, each with the newest OTP it supports (plus OTP 26 on Elixir
 1.16). The integration suite runs once, on the latest Elixir, against SeaweedFS started from `compose.yml`. When
-`elixir:` in `mix.exs` changes, update the matrix.
+`elixir:` in `mix.exs` changes, update the matrix. The `release` job (below) runs after them on `main` and on
+maintenance branches.
+
+## Releasing
+
+Nobody publishes by hand. CI's `release` job publishes whenever `main` (or a `v0.N` maintenance branch) carries a
+version that isn't on Hex yet: it checks the changelog, runs `mix hex.publish` (package and docs), pushes the `vX.Y.Z`
+tag and creates the GitHub release from the changelog section. Pushes whose version is already on Hex do nothing, and a
+rerun after a partial failure picks up where it stopped. It needs the `HEX_API_KEY` repository secret, created once
+with `mix hex.user key generate --key-name github-actions --permission api:write`.
+
+- **Changelog:** `CHANGELOG.md`, newest first, one line per user-visible change, added in the same commit as the change
+  under `## Unreleased`. Released sections are headed `## v0.2.0 (2026-10-01)`. The file is in the Hex package and a
+  Guides tab on HexDocs, so each published version carries its changelog.
+- **Release:** branch `release/0.2.0` from `develop`. Bump `@version` in `mix.exs` and rename `## Unreleased` to
+  `## v0.2.0 (date)`; the next change on `develop` adds a fresh `## Unreleased`. Merge into `main`, then `main` back
+  into `develop`. The release job refuses a version without a changelog section or with entries left under Unreleased.
+- **Hotfix:** branch `hotfix/0.2.1` from `main`, fix, add a `## v0.2.1 (date)` section, bump the version, merge into
+  `main` and back into `develop`.
+- **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix, bump to `0.1.1`, add the changelog
+  section, push. The branch is never merged anywhere; `main` may note the backport in the current section.
+- **Bad release:** `mix hex.retire fil 0.2.0 security --message "..."` warns users on `mix deps.get`. A version can't be
+  replaced, so the fix is the next patch version.
 
 ## Testing conventions
 
 - `Fil.AdapterCase` (test/support) is the shared conformance suite, and every adapter runs it. New behaviour gets a
   test there, not a copy per adapter.
-- Cloud unit tests stub the storage with a Req adapter function (`req_options: [adapter: &adapter/1]`), so `mix test`
-  makes no network requests and needs no Plug. Req calls the adapter in the test process after its own request steps,
-  so a test can record the request or message itself from it.
+- Cloud unit tests stub the storage with `Fil.ReqStub` (`Fil.ReqStub.stub(&adapter/1)` and
+  `req_options: [adapter: Fil.ReqStub]`), so `mix test` makes no network requests and needs no Plug. Req calls the
+  adapter in the test process after its own request steps, so a test can record the request or message itself from it.
 - Integration tests create their own buckets and use a unique prefix per test.
 - One-line input/output checks are doctests on the function they test, not separate tests. `Fil.DoctestTest` runs
   the doctests of every module in the app, so don't add `doctest` lines to other test files.

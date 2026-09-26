@@ -3,6 +3,10 @@ defmodule Fil.Adapter.S3Test do
 
   use ExUnit.Case, async: true
 
+  setup do
+    Fil.ReqStub.stub(&adapter/1)
+  end
+
   @access_key_id "AKIDEXAMPLE"
   @secret_access_key "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
 
@@ -818,12 +822,12 @@ defmodule Fil.Adapter.S3Test do
   ## ------------------------------------------------------------------
   ## Stubbed requests
   ##
-  ## Every disk in this module uses `adapter/1` as its Req adapter, so no request reaches the network. Req runs the
-  ## adapter in the test process, after all its own request steps. `stub/1` queues one response per request, and each
-  ## request is recorded, so the tests can check what the adapter sent.
+  ## Every disk in this module uses `Fil.ReqStub`, which calls `adapter/1`, so no request reaches the network. Req runs
+  ## the adapter in the test process, after all its own request steps. `stub/1` queues one response per request, and
+  ## each request is recorded, so the tests can check what the adapter sent.
   ## ------------------------------------------------------------------
 
-  defp req_options, do: [adapter: &adapter/1]
+  defp req_options, do: [adapter: Fil.ReqStub]
 
   defp stub(responses) do
     Process.put(:responses, responses)

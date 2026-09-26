@@ -4,8 +4,12 @@ defmodule Fil.Plugin.ContentTypeTest do
 
   use ExUnit.Case, async: true
 
+  setup do
+    Fil.ReqStub.stub(&adapter/1)
+  end
+
   defp disk(opts \\ []) do
-    [adapter: S3, bucket: "bucket", req_options: [adapter: &adapter/1]]
+    [adapter: S3, bucket: "bucket", req_options: [adapter: Fil.ReqStub]]
     |> Fil.disk()
     |> ContentType.attach(opts)
   end
