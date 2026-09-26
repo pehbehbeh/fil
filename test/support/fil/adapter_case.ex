@@ -380,8 +380,16 @@ defmodule Fil.AdapterCase do
       unquote(checksum)
 
       ## ----------------------------------------------------------------
-      ## Signed URLs
+      ## URLs
       ## ----------------------------------------------------------------
+
+      test "builds public URLs", %{disk: disk} do
+        assert {:ok, url} = Fil.url(disk, "public/a file.txt")
+
+        assert %URI{scheme: scheme, path: path, query: nil} = URI.parse(url)
+        assert scheme in ["http", "https"]
+        assert String.ends_with?(path, "/public/a%20file.txt")
+      end
 
       test "signs download and upload URLs", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "signed/file.txt", "content")

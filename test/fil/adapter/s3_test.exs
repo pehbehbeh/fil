@@ -463,6 +463,30 @@ defmodule Fil.Adapter.S3Test do
     end
   end
 
+  describe "url/2" do
+    test "builds the object URL without a signature" do
+      assert Fil.url(disk(), "reports/q3 final.pdf") ==
+               {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/reports/q3%20final.pdf"}
+
+      assert Fil.url(disk(root: "uploads"), "cv.pdf") ==
+               {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/uploads/cv.pdf"}
+
+      assert requests() == []
+    end
+
+    test "puts the bucket in the path of a custom endpoint" do
+      disk = disk(endpoint: "http://localhost:8333")
+
+      assert Fil.url(disk, "cv.pdf") == {:ok, "http://localhost:8333/bucket/cv.pdf"}
+    end
+
+    test "needs no credentials" do
+      disk = Fil.disk(adapter: S3, bucket: "public", region: "eu-central-1", req_options: req_options())
+
+      assert Fil.url(disk, "cv.pdf") == {:ok, "https://public.s3.eu-central-1.amazonaws.com/cv.pdf"}
+    end
+  end
+
   describe "signed_url/2" do
     test "presigns a GET" do
       assert {:ok, url} = Fil.signed_url(disk(), "cv.pdf", expires_in: 300)

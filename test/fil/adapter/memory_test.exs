@@ -10,7 +10,7 @@ defmodule Fil.Adapter.MemoryTest do
   def fil_disk(_context) do
     [adapter: Memory, root: "primary"]
     |> Fil.disk()
-    |> Fil.Plugin.SignedURL.attach(base_url: "http://localhost/storage", secret: "secret")
+    |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
   end
 
   describe "init/1" do
@@ -156,10 +156,11 @@ defmodule Fil.Adapter.MemoryTest do
     end
   end
 
-  describe "signed_url/2" do
-    test "needs Fil.Plugin.SignedURL" do
+  describe "url/2 and signed_url/2" do
+    test "needs Fil.Plugin.URL" do
       disk = Fil.disk(adapter: Memory)
 
+      assert Fil.url(disk, "a.txt") == {:error, {:unsupported, :url}}
       assert Fil.signed_url(disk, "a.txt") == {:error, {:unsupported, :signed_url}}
     end
   end

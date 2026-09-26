@@ -83,12 +83,13 @@ defmodule Fil.Error do
   defp verb(:ls), do: "list"
   defp verb(:stat), do: "stat"
   defp verb(:rm_rf), do: "delete everything under"
+  defp verb(:url), do: "build a URL"
   defp verb(:signed_url), do: "sign a URL"
   defp verb(nil), do: "complete the operation"
   defp verb(other), do: "#{other}"
 
   # Only needed before a path, so a message without one doesn't end in "for:".
-  defp preposition(:signed_url), do: " for "
+  defp preposition(op) when op in [:url, :signed_url], do: " for "
   defp preposition(nil), do: " on "
   defp preposition(_op), do: " "
 

@@ -1,5 +1,5 @@
 defmodule Fil.PlugTest do
-  alias Fil.Plugin.SignedURL
+  alias Fil.Plugin.URL
 
   use ExUnit.Case, async: true
 
@@ -16,12 +16,12 @@ defmodule Fil.PlugTest do
     local =
       [adapter: Fil.Adapter.Local, root: tmp_dir]
       |> Fil.disk()
-      |> SignedURL.attach(base_url: @base_url, secret: "local-secret")
+      |> URL.attach(base_url: @base_url, secret: "local-secret")
 
     memory =
       [adapter: Fil.Adapter.Memory, root: "uploads"]
       |> Fil.disk()
-      |> SignedURL.attach(base_url: @base_url, secret: "memory-secret")
+      |> URL.attach(base_url: @base_url, secret: "memory-secret")
 
     {:ok, local: local, memory: memory}
   end
@@ -82,7 +82,7 @@ defmodule Fil.PlugTest do
         {:ok, url} = Fil.signed_url(disk, "a.txt", expires_in: 1)
 
         # Signed with an expiry in the past: the same signature a URL gets once its time is up.
-        expired = Fil.Support.SignedURL.sign(@base_url, SignedURL.secret(disk), "a.txt", expires_in: -1)
+        expired = URL.sign(@base_url, URL.secret(disk), "a.txt", expires_in: -1)
 
         assert request(:get, url, disk).status == 200
 
@@ -148,7 +148,7 @@ defmodule Fil.PlugTest do
     disk =
       [adapter: Fil.Adapter.S3, bucket: "bucket", req_options: [adapter: adapter]]
       |> Fil.disk()
-      |> SignedURL.attach(base_url: @base_url, secret: "s3-secret")
+      |> URL.attach(base_url: @base_url, secret: "s3-secret")
 
     {:ok, url} = Fil.signed_url(disk, "q3.pdf")
     assert String.starts_with?(url, @base_url)
@@ -178,7 +178,7 @@ defmodule Fil.PlugTest do
   describe "public: true" do
     test "serves downloads without a signature, on a disk with or without the plugin", %{tmp_dir: tmp_dir} do
       plain = Fil.disk(adapter: Fil.Adapter.Local, root: tmp_dir)
-      signing = SignedURL.attach(plain, base_url: @base_url, secret: "secret")
+      signing = URL.attach(plain, base_url: @base_url, secret: "secret")
       {:ok, _} = Fil.write(plain, "avatars/1.png", "png")
 
       for disk <- [plain, signing] do
@@ -189,6 +189,13 @@ defmodule Fil.PlugTest do
         assert get_resp_header(conn, "content-type") == ["image/png"]
         assert public_request(:head, "/storage/avatars/1.png", disk).resp_body == ""
       end
+    end
+
+    test "serves the URLs Fil.url/2 builds", %{memory: disk} do
+      {:ok, _} = Fil.write(disk, "avatars/a 1.png", "png")
+      {:ok, url} = Fil.url(disk, "avatars/a 1.png")
+
+      assert public_request(:get, URI.parse(url).path, disk).resp_body == "png"
     end
 
     test "answers 404 for missing files and directories", %{memory: disk} do

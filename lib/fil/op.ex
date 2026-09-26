@@ -6,7 +6,7 @@ defmodule Fil.Op do
   to write a plugin.
 
     * `:disk`: the `Fil.Disk` the operation runs on
-    * `:name`: the operation, `:read`, `:write`, `:stat`, `:ls`, `:rm`, `:rm_rf`, `:cp`, `:rename` or
+    * `:name`: the operation, `:read`, `:write`, `:stat`, `:ls`, `:rm`, `:rm_rf`, `:cp`, `:rename`, `:url` or
       `:signed_url`
     * `:path`: the normalized path, relative to the disk root
     * `:dest`: the destination path of a `:cp` or `:rename` on the same disk, `nil` otherwise
@@ -23,7 +23,7 @@ defmodule Fil.Op do
   @enforce_keys [:disk, :name, :path]
   defstruct [:disk, :name, :path, :dest, :content, :result, options: [], private: %{}]
 
-  @type name :: :read | :write | :stat | :ls | :rm | :rm_rf | :cp | :rename | :signed_url
+  @type name :: :read | :write | :stat | :ls | :rm | :rm_rf | :cp | :rename | :url | :signed_url
 
   @type t :: %__MODULE__{
           disk: Disk.t(),
@@ -262,18 +262,17 @@ defmodule Fil.Op do
     apply(module, name, [state, op.path, op.dest, op.options])
   end
 
-  defp call_adapter(%__MODULE__{name: :signed_url} = op, module, state), do: signed_url(module, state, op)
+  # URLs are optional callbacks. An adapter without one leaves it to a plugin.
+  defp call_adapter(%__MODULE__{name: name} = op, module, state) when name in [:url, :signed_url] do
+    if Code.ensure_loaded?(module) and function_exported?(module, name, 3) do
+      apply(module, name, [state, op.path, op.options])
+    else
+      {:error, {:unsupported, name}}
+    end
+  end
 
   # read, stat, ls, rm and rm_rf all take (state, path, opts).
   defp call_adapter(%__MODULE__{name: name} = op, module, state), do: apply(module, name, [state, op.path, op.options])
-
-  defp signed_url(module, state, op) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :signed_url, 3) do
-      module.signed_url(state, op.path, op.options)
-    else
-      {:error, {:unsupported, :signed_url}}
-    end
-  end
 
   # Adapters return a bare `:ok` for mutations. The result is the ref the operation acted on.
   defp to_result(:ok, %__MODULE__{name: name, dest: dest} = op) when name in [:cp, :rename] do

@@ -95,6 +95,7 @@ defmodule Fil.Adapter.S3 do
   | `cp/4` | CopyObject |
   | `rename/4` | CopyObject, then DeleteObject |
   | `rm_rf/3` | ListObjectsV2, then one DeleteObject per key |
+  | `url/2` | the object URL, without a signature (works for public objects only) |
   | `signed_url/3` | a presigned GET or PUT URL |
 
   ## Errors
@@ -261,6 +262,9 @@ defmodule Fil.Adapter.S3 do
   end
 
   @impl Fil.Adapter
+  def url(state, path, _opts), do: {:ok, object_url(state, key(state, path), [])}
+
+  @impl Fil.Adapter
   def signed_url(state, path, opts) do
     method = Keyword.get(opts, :method, :get)
     expires_in = Keyword.get(opts, :expires_in, 900)
@@ -361,7 +365,7 @@ defmodule Fil.Adapter.S3 do
     options =
       Keyword.merge(state.req_options,
         method: method,
-        url: url(state, key, params),
+        url: object_url(state, key, params),
         headers: Keyword.get(opts, :headers, []),
         body: Keyword.get(opts, :body) || "",
         aws_sigv4: aws_sigv4(state),
@@ -405,7 +409,7 @@ defmodule Fil.Adapter.S3 do
       service: :s3,
       datetime: DateTime.utc_now(),
       method: method,
-      url: url(state, key, []),
+      url: object_url(state, key, []),
       expires: expires_in,
       query: query
     ]
@@ -413,7 +417,7 @@ defmodule Fil.Adapter.S3 do
     |> URI.to_string()
   end
 
-  defp url(state, key, params) do
+  defp object_url(state, key, params) do
     base_url(state) <> encode_key(key) <> encode_query(params)
   end
 

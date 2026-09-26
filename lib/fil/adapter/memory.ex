@@ -51,8 +51,8 @@ defmodule Fil.Adapter.Memory do
     * checksums work as on S3: a write with `checksum:` stores the checksum of the content, `stat/3` with the same
       algorithm returns it (and `nil` for another algorithm or a file written without one), and `verify_checksum: true`
       on a read compares it with the content. A copy keeps the checksum.
-    * a memory store can't sign URLs. Attach `Fil.Plugin.SignedURL`, and `Fil.Plug` serves them, in a test through
-      `Phoenix.ConnTest` too.
+    * a memory store has no URLs. Attach `Fil.Plugin.URL` for public and signed URLs, and `Fil.Plug` serves them, in
+      a test through `Phoenix.ConnTest` too.
 
   ## Options
 
@@ -64,7 +64,8 @@ defmodule Fil.Adapter.Memory do
   | --- | --- |
   | a missing file | `:enoent` |
   | an exclusive create finding the file already there | `:precondition_failed` |
-  | a signed URL without `Fil.Plugin.SignedURL` | `{:unsupported, :signed_url}` |
+  | a URL without `Fil.Plugin.URL` | `{:unsupported, :url}` |
+  | a signed URL without a `:secret` for `Fil.Plugin.URL` | `{:unsupported, :signed_url}` |
   """
 
   @behaviour Fil.Adapter

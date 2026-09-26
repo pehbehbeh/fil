@@ -27,7 +27,7 @@ defmodule Fil.Adapter.Local do
       on an object store.
     * `stat/3` sets `:etag` to a weak `"size-mtime"` tag. It's good enough to notice a change, but it can't prove there
       was none. `:content_type` is always `nil`, because the filesystem doesn't store one.
-    * the filesystem can't sign URLs. Attach `Fil.Plugin.SignedURL`, and `Fil.Plug` serves them.
+    * the filesystem has no URLs. Attach `Fil.Plugin.URL` for public and signed URLs, and `Fil.Plug` serves them.
     * the filesystem stores no checksums. `checksum:` on a write is accepted and ignored, and so is
       `verify_checksum: true` on a read. `checksum:` on a stat reads the whole file to compute it.
 
@@ -59,7 +59,8 @@ defmodule Fil.Adapter.Local do
   | reading a directory | `:eisdir` |
   | an exclusive create finding the file already there | `:precondition_failed` |
   | a path that resolves outside the root | `:ebadpath` |
-  | a signed URL without `Fil.Plugin.SignedURL` | `{:unsupported, :signed_url}` |
+  | a URL without `Fil.Plugin.URL` | `{:unsupported, :url}` |
+  | a signed URL without a `:secret` for `Fil.Plugin.URL` | `{:unsupported, :signed_url}` |
   """
 
   @behaviour Fil.Adapter

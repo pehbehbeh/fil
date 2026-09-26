@@ -92,6 +92,8 @@ defmodule Fil do
   @rm_schema NimbleOptions.new!([])
   @rm_rf_schema NimbleOptions.new!([])
 
+  @url_schema NimbleOptions.new!([])
+
   @signed_url_schema NimbleOptions.new!(
                        method: [
                          type: {:in, [:get, :put]},
@@ -558,6 +560,54 @@ defmodule Fil do
   ## ------------------------------------------------------------------
 
   @doc """
+  Builds the public URL of a file.
+
+  The URL has no signature and doesn't expire, so it only works where the file can be downloaded by anyone: a public
+  bucket, a CDN, or `Fil.Plug` with `public: true`.
+
+  ## Examples
+
+      Fil.url(s3, "logo.png")
+      #=> {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/logo.png"}
+
+  S3 builds the URL from the bucket. Local and memory disks have no URL of their own, so they get one from
+  `Fil.Plugin.URL`, and `Fil.Plug` serves it from your application:
+
+      iex> disk =
+      ...>   Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
+      ...>   |> Fil.Plugin.URL.attach(base_url: "http://localhost:4000/avatars")
+      iex> Fil.url(disk, "1.png")
+      {:ok, "http://localhost:4000/avatars/1.png"}
+
+  Without the plugin, a local or memory disk returns an error:
+
+      iex> disk = Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
+      iex> Fil.url(disk, "1.png")
+      {:error, {:unsupported, :url}}
+
+  """
+  @doc section: :operations
+  @spec url(Ref.t()) :: result(String.t())
+  def url(ref), do: url(ref, [])
+
+  @doc "Builds a public URL. See `url/1`."
+  @doc section: :operations
+  @spec url(Disk.t(), Path.t()) :: result(String.t())
+  @spec url(Ref.t(), keyword()) :: result(String.t())
+  def url(%Disk{} = disk, path) when is_binary(path), do: url(Ref.new(disk, path), [])
+
+  def url(ref, opts) when is_list(opts) do
+    run(ref, :url, validate!(opts, @url_schema))
+  end
+
+  @doc "Builds a public URL. See `url/1`."
+  @doc section: :operations
+  @spec url(Disk.t(), Path.t(), keyword()) :: result(String.t())
+  def url(%Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
+    url(Ref.new(disk, path), opts)
+  end
+
+  @doc """
   Builds a URL that grants temporary access to a file.
 
   ## Options
@@ -569,12 +619,12 @@ defmodule Fil do
       Fil.signed_url(s3, "cv.pdf", expires_in: 300)
       #=> {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/cv.pdf?X-Amz-Algorithm=..."}
 
-  S3 signs its own URLs. Local and memory disks can't, so they sign with `Fil.Plugin.SignedURL`, and `Fil.Plug` serves
-  the URLs from your application:
+  S3 signs its own URLs. Local and memory disks can't, so they need `Fil.Plugin.URL` with a `:secret`, and `Fil.Plug`
+  serves the URLs from your application:
 
       iex> disk =
       ...>   Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
-      ...>   |> Fil.Plugin.SignedURL.attach(base_url: "http://localhost:4000/storage", secret: "secret")
+      ...>   |> Fil.Plugin.URL.attach(base_url: "http://localhost:4000/storage", secret: "secret")
       iex> {:ok, url} = Fil.signed_url(disk, "cv.pdf")
       iex> url =~ ~r"^http://localhost:4000/storage/cv.pdf[?]expires=[0-9]+&signature="
       true
@@ -745,6 +795,22 @@ defmodule Fil do
   @doc section: :bang
   @spec rename!(Disk.t(), Path.t(), Ref.t() | Path.t(), keyword()) :: Ref.t()
   def rename!(a, b, c, d), do: unwrap!(rename(a, b, c, d), :rename, target(a, b))
+
+  @doc "Same as `url/1`, raising `Fil.Error` on failure."
+  @doc section: :bang
+  @spec url!(Ref.t()) :: String.t()
+  def url!(ref), do: unwrap!(url(ref), :url, ref)
+
+  @doc "Same as `url/2`, raising `Fil.Error` on failure."
+  @doc section: :bang
+  @spec url!(Disk.t(), Path.t()) :: String.t()
+  @spec url!(Ref.t(), keyword()) :: String.t()
+  def url!(a, b), do: unwrap!(url(a, b), :url, target(a, b))
+
+  @doc "Same as `url/3`, raising `Fil.Error` on failure."
+  @doc section: :bang
+  @spec url!(Disk.t(), Path.t(), keyword()) :: String.t()
+  def url!(a, b, c), do: unwrap!(url(a, b, c), :url, target(a, b))
 
   @doc "Same as `signed_url/1`, raising `Fil.Error` on failure."
   @doc section: :bang

@@ -49,9 +49,9 @@ defmodule Fil.Adapter do
 
   ## Where the adapters differ
 
-  Every adapter `Fil` ships reads, writes, lists, copies and checks checksums, and every disk signs URLs (S3 itself, the
-  others with `Fil.Plugin.SignedURL`), so code written against one disk runs on the others. What's left are edge
-  cases:
+  Every adapter `Fil` ships reads, writes, lists, copies and checks checksums, and every disk builds public and signed
+  URLs (S3 itself, the others with `Fil.Plugin.URL`), so code written against one disk runs on the others. What's left
+  are edge cases:
 
   | Situation | `Fil.Adapter.Local` | `Fil.Adapter.S3` | `Fil.Adapter.Memory` |
   | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ defmodule Fil.Adapter do
   | `verify_checksum: true` | ignored | compared with the stored checksum | compared with the stored checksum |
   | `:content_type` in a stat | `nil` (`Fil.Plug` guesses from the extension) | from the write | from the write |
   | `:etag` in a stat | weak, `"size-mtime"` | from S3 | MD5 of the content |
-  | signed URLs | with `Fil.Plugin.SignedURL`, served by `Fil.Plug` | by S3 | with the plugin, served by `Fil.Plug` |
+  | URLs | with `Fil.Plugin.URL`, served by `Fil.Plug` | by S3 | with the plugin, served by `Fil.Plug` |
 
   ## Errors
 
@@ -119,13 +119,20 @@ defmodule Fil.Adapter do
   @callback rm_rf(state(), path(), opts()) :: {:ok, non_neg_integer()} | error()
 
   @doc """
+  Builds the public URL of a file, without a signature.
+
+  Optional. Adapters whose backend has no URLs leave it out, and `Fil.url/2` then returns
+  `{:error, {:unsupported, :url}}`. `Fil.Plugin.URL` builds URLs for those disks, and `Fil.Plug` serves them.
+  """
+  @callback url(state(), path(), opts()) :: {:ok, String.t()} | error()
+
+  @doc """
   Builds a URL that grants temporary access to a file.
 
   Optional. Adapters whose backend can't sign URLs leave it out, and `Fil.signed_url/2` then returns
-  `{:error, {:unsupported, :signed_url}}`. `Fil.Plugin.SignedURL` signs URLs for those disks, and `Fil.Plug` serves
-  them.
+  `{:error, {:unsupported, :signed_url}}`. `Fil.Plugin.URL` signs URLs for those disks, and `Fil.Plug` serves them.
   """
   @callback signed_url(state(), path(), opts()) :: {:ok, String.t()} | error()
 
-  @optional_callbacks signed_url: 3
+  @optional_callbacks url: 3, signed_url: 3
 end

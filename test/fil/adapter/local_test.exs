@@ -6,7 +6,7 @@ defmodule Fil.Adapter.LocalTest do
   def fil_disk(%{tmp_dir: tmp_dir}) do
     [adapter: Local, root: Path.join(tmp_dir, "primary")]
     |> Fil.disk()
-    |> Fil.Plugin.SignedURL.attach(base_url: "http://localhost/storage", secret: "secret")
+    |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
   end
 
   describe "init/1" do
@@ -126,10 +126,11 @@ defmodule Fil.Adapter.LocalTest do
     end
   end
 
-  describe "signed_url/2" do
-    test "needs Fil.Plugin.SignedURL", %{tmp_dir: tmp_dir} do
+  describe "url/2 and signed_url/2" do
+    test "needs Fil.Plugin.URL", %{tmp_dir: tmp_dir} do
       disk = Fil.disk(adapter: Local, root: tmp_dir)
 
+      assert Fil.url(disk, "a.txt") == {:error, {:unsupported, :url}}
       assert Fil.signed_url(disk, "a.txt") == {:error, {:unsupported, :signed_url}}
     end
   end

@@ -77,19 +77,19 @@ defmodule MyApp.Storage do
     |> Keyword.fetch!(name)
   end
 
-  # Builds the disk, and signs its URLs in the application where the config has `signed_urls:`.
+  # Builds the disk, and serves its URLs from the application where the config has `urls:`.
   defp disk(opts) do
-    {signed_urls, opts} = Keyword.pop(opts, :signed_urls)
+    {urls, opts} = Keyword.pop(opts, :urls)
     disk = Fil.disk(opts)
 
-    if signed_urls, do: Fil.Plugin.SignedURL.attach(disk, signed_urls), else: disk
+    if urls, do: Fil.Plugin.URL.attach(disk, urls), else: disk
   end
 
-  # Moves the root one directory down, and the base URL of signed URLs along with it.
+  # Moves the root one directory down, and the base URL along with it.
   defp under(opts, dir) do
     opts
     |> Keyword.update(:root, dir, &Path.join(&1, dir))
-    |> Keyword.replace_lazy(:signed_urls, &Keyword.update!(&1, :base_url, fn url -> url <> "/" <> dir end))
+    |> Keyword.replace_lazy(:urls, &Keyword.update!(&1, :base_url, fn url -> url <> "/" <> dir end))
   end
 
   defp log(op, next, _opts) do
@@ -102,8 +102,8 @@ end
 
 Each disk gets its own plugins. `avatars` reuses the options of `uploads` and only moves the root, so an avatar
 written as `1.png` is `avatars/1.png` on the uploads disk. That works the same whether `uploads` is a local directory,
-a key prefix in an S3 bucket or a memory store, because every adapter takes a `root:`. Where the disk signs URLs in
-the application (see [Signed URLs](#signed-urls)), their base URL moves along, so avatar URLs stay inside the uploads
+a key prefix in an S3 bucket or a memory store, because every adapter takes a `root:`. Where the application serves
+the disk's URLs (see [Signed URLs](#signed-urls)), their base URL moves along, so avatar URLs stay inside the uploads
 URLs.
 
 `Fil.disk/1` only validates the options and builds a struct (no network, no process), so building the disk on every
@@ -129,7 +129,7 @@ config :my_app, MyApp.Storage,
   uploads: [
     adapter: Fil.Adapter.Local,
     root: "priv/storage/uploads",
-    signed_urls: [base_url: "http://localhost:4000/storage/uploads", secret: "a development secret of 32 bytes"]
+    urls: [base_url: "http://localhost:4000/storage/uploads", secret: "a development secret of 32 bytes"]
   ],
   backups: [
     adapter: Fil.Adapter.S3,
@@ -140,8 +140,8 @@ config :my_app, MyApp.Storage,
   ]
 ```
 
-`signed_urls:` isn't an adapter option. `MyApp.Storage` takes it out and attaches `Fil.Plugin.SignedURL` with it,
-see [Signed URLs](#signed-urls). Add the local directory to `.gitignore`:
+`urls:` isn't an adapter option. `MyApp.Storage` takes it out and attaches `Fil.Plugin.URL` with it, see
+[Signed URLs](#signed-urls). Add the local directory to `.gitignore`:
 
 ```text
 /priv/storage/
@@ -155,7 +155,7 @@ config :my_app, MyApp.Storage,
   uploads: [
     adapter: Fil.Adapter.Memory,
     root: "uploads",
-    signed_urls: [base_url: "http://localhost:4002/storage/uploads", secret: "a test secret"]
+    urls: [base_url: "http://localhost:4002/storage/uploads", secret: "a test secret"]
   ],
   backups: [adapter: Fil.Adapter.Memory, root: "backups"]
 ```
@@ -195,9 +195,9 @@ def avatar_upload_url(user) do
 end
 ```
 
-On S3, the URL goes to S3. Local and memory disks can't sign URLs, so `Fil.Plugin.SignedURL` signs them (that's the
-`signed_urls:` in the development and test config), and `Fil.Plug` serves them from your application. Add it to your
-endpoint, above `Plug.Parsers`, at the path of the `base_url:`:
+On S3, the URL goes to S3. Local and memory disks can't sign URLs, so `Fil.Plugin.URL` signs them with its `secret:`
+(that's the `urls:` in the development and test config), and `Fil.Plug` serves them from your application. Add it to
+your endpoint, above `Plug.Parsers`, at the path of the `base_url:`:
 
 ```elixir
 # lib/my_app_web/endpoint.ex
@@ -209,29 +209,39 @@ plug Plug.Parsers,
 
 It answers `GET` and `HEAD` with the file and writes the body of a `PUT`, with a `403` for a URL that expired or was
 changed. One plug serves `avatars` too, because its URLs are inside the uploads URLs. In production, `uploads` has no
-`signed_urls:`, so its URLs go to S3 and the plug lets every request pass. The line can stay.
+`urls:`, so its URLs go to S3 and the plug lets every request pass. The line can stay.
 
-Give every disk whose URLs your code signs a `signed_urls:` in development and test, or `Fil.signed_url/3` returns
+Give every disk whose URLs your code builds a `urls:` in development and test, or `Fil.signed_url/3` returns
 `{:error, {:unsupported, :signed_url}}` there. `backups` doesn't need one here, because it's on S3 in development too.
 
-To keep a bucket private and serve its files through your application instead, add `signed_urls:` to the production
-config as well. Every download and upload then runs through your application, and files are read into memory whole,
+To keep a bucket private and serve its files through your application instead, add `urls:` to the production config
+as well. Every download and upload then runs through your application, and files are read into memory whole,
 so it's only a good fit for small files.
 
 `Fil.Plug` needs [Plug](https://plug.hexdocs.pm), which every Phoenix app already has.
 
 ## Public files
 
-`Fil.Plug` can also serve a disk without signed URLs, for files anyone may download, such as avatars:
+`Fil.Plug` can also serve a disk without signed URLs, for files anyone may download, such as avatars. Put it above the
+plug for `uploads`, at the path of the avatars' base URL:
 
 ```elixir
 # lib/my_app_web/endpoint.ex
-plug Fil.Plug, at: "/avatars", disk: &MyApp.Storage.avatars/0, public: true
+plug Fil.Plug, at: "/storage/uploads/avatars", disk: &MyApp.Storage.avatars/0, public: true
+plug Fil.Plug, at: "/storage/uploads", disk: &MyApp.Storage.uploads/0
 ```
 
-`GET /avatars/1.png` then returns the avatar from whatever disk `avatars` is in the current environment. Uploads still
-need a signed URL. On S3, every download runs through your application and is read into memory whole, so for large or
-busy files, a public bucket or a CDN in front of S3 is the better choice in production.
+`Fil.url/2` builds the URL, which doesn't expire:
+
+```elixir
+{:ok, url} = Fil.url(MyApp.Storage.avatars(), "1.png")
+#=> {:ok, "http://localhost:4000/storage/uploads/avatars/1.png"}
+```
+
+`GET /storage/uploads/avatars/1.png` then returns the avatar, and uploads to `avatars` still need a signed URL. In
+production, `avatars` has no `urls:`, so `Fil.url/2` returns the S3 URL of the object, and the bucket has to allow
+public reads of `avatars/`. For a CDN in front of the bucket, attach `Fil.Plugin.URL` with only a `base_url:`, the
+CDN's address. Signed URLs then still go to S3.
 
 ## Testing
 

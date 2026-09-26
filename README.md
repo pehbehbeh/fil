@@ -37,8 +37,8 @@
   Plug for `Fil.Plug`, as an optional dependency). Cloud adapters use Req for HTTP and request signing, and upcoming
   ones (Google Cloud Storage, Azure) should too, instead of each bringing its own client or SDK. Timeouts, proxies and
   connection pools for S3 are set per disk, as Req options.
-- **Signed and public URLs.** Every disk returns signed GET and PUT URLs. S3 serves its own, and for any other disk,
-  [`Fil.Plugin.SignedURL`](https://fil.hexdocs.pm/Fil.Plugin.SignedURL.html) signs them and
+- **Public and signed URLs.** Every disk returns public URLs and signed GET and PUT URLs. S3 serves its own, and for
+  any other disk, [`Fil.Plugin.URL`](https://fil.hexdocs.pm/Fil.Plugin.URL.html) builds them and
   [`Fil.Plug`](https://fil.hexdocs.pm/Fil.Plug.html) serves them from your application. With `public: true`,
   `Fil.Plug` serves any disk over HTTP, like `Plug.Static`.
 - **Safe writes and paths.** Create-if-absent writes with `if_none_match: :any` are atomic on local disk and on AWS
@@ -192,11 +192,12 @@ Every operation works the same on every disk:
 {:ok, _} = Fil.rm(report)
 ```
 
-`signed_url` returns an expiring URL, so clients can download or upload a file directly instead of going through
-your application code. S3 serves its URLs itself. For local and in-memory disks, `Fil.Plugin.SignedURL` signs them and
-`Fil.Plug` serves them from your application:
+`url` returns the public URL of a file, and `signed_url` an expiring one, so clients can download or upload a file
+directly instead of going through your application code. S3 serves its URLs itself. For local and in-memory disks,
+`Fil.Plugin.URL` builds them and `Fil.Plug` serves them from your application:
 
 ```elixir
+{:ok, logo_url} = Fil.url(s3, "logo.png")
 {:ok, url} = Fil.signed_url(report, expires_in: 900)
 {:ok, upload_url} = Fil.signed_url(s3, "inbox/new.bin", method: :put)
 ```

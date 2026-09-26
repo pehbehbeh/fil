@@ -19,16 +19,16 @@ The Hex package is `fil`.
   match on `op.name` and change content only through the `Fil.Op` helpers (`update_content/2`, `update_result/2`),
   so they keep working once streaming lands. Every operation goes through `Fil.Op.run/1`. Plugin docs live in the
   `Fil.Plugin` moduledoc only, not in the README.
-- **Same behaviour on every adapter:** critical behaviour (read, write, list, copy, checksums, signed URLs) works on
-  every disk. When a backend lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.SignedURL` signs URLs for
-  Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with `{:unsupported, _}`. Differences that
-  remain are edge cases, documented in the "Where the adapters differ" table in `Fil.Adapter` and nowhere else. New
-  behaviour gets a conformance test in `Fil.AdapterCase`.
+- **Same behaviour on every adapter:** critical behaviour (read, write, list, copy, checksums, public and signed URLs)
+  works on every disk. When a backend lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.URL` builds and
+  signs URLs for Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with `{:unsupported, _}`.
+  Differences that remain are edge cases, documented in the "Where the adapters differ" table in `Fil.Adapter` and
+  nowhere else. New behaviour gets a conformance test in `Fil.AdapterCase`.
 - **Backend features stay in adapters:** anything the backend has to do itself (checksums, conditional writes,
-  signed URLs) is an adapter option, not a plugin. So is addressing (root, bucket, prefix).
+  URLs) is an adapter option, not a plugin. So is addressing (root, bucket, prefix).
 - **Namespaces:** `Fil.Adapter.*` is only for adapters, `Fil.Plugin.*` only for plugins. `Fil.Plug` is the Plug
-  that serves signed URLs (compiled only when the optional Plug dependency is there, listed under Integrations in the
-  docs). Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
+  that serves public and signed URLs (compiled only when the optional Plug dependency is there, listed under
+  Integrations in the docs). Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
 - **Errors:** POSIX atoms where they fit, plus `{:unsupported, op}`, `:precondition_failed`, `:checksum_mismatch`,
   `:ebadpath` and `%Fil.TransportError{}` for network failures. Bad options raise, because they're programming errors.
   `{:error, _}` is only for storage conditions.

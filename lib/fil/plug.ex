@@ -21,13 +21,14 @@ if Code.ensure_loaded?(Plug) do
                 default: false,
                 doc: """
                 Serves `GET` and `HEAD` without a signature, so every file on the disk can be downloaded by anyone who
-                knows its path. Uploads still need a URL signed by `Fil.Plugin.SignedURL`.
+                knows its path. That's where the URLs of `Fil.url/2` point. Uploads still need a URL signed by
+                `Fil.Plugin.URL`.
                 """
               ]
             )
 
     @moduledoc """
-    Serves the files of a disk over HTTP: the URLs `Fil.Plugin.SignedURL` signs, or with `public: true`, every file.
+    Serves the files of a disk over HTTP: the URLs `Fil.Plugin.URL` signs, or with `public: true`, every file.
 
     Signed URLs make direct downloads and uploads work on every disk: local and memory disks, which can't sign URLs
     themselves, and S3 disks whose files should go through your application.
@@ -36,7 +37,7 @@ if Code.ensure_loaded?(Plug) do
 
         plug Fil.Plug, at: "/storage/uploads", disk: &MyApp.Storage.uploads/0
 
-    The `:base_url` of the disk's `Fil.Plugin.SignedURL` is then `"http://localhost:4000/storage/uploads"`, and every
+    The `:base_url` of the disk's `Fil.Plugin.URL` is then `"http://localhost:4000/storage/uploads"`, and every
     URL `Fil.signed_url/3` builds for it is served here. `Plug.Parsers` would read the body of a JSON or form upload
     before a router sees it, so a `forward` in the router only works for uploads with other content types.
 
@@ -49,8 +50,9 @@ if Code.ensure_loaded?(Plug) do
       * a request that doesn't match its signature, or comes after the URL expired, gets a `403`, and a missing file a
         `404`
 
-    Requests pass through untouched when the disk has no `Fil.Plugin.SignedURL` (and the plug isn't public). An S3 disk
-    without it signs URLs that go to S3 directly, so the plug can stay in the endpoint when production uses S3.
+    Requests pass through untouched when the disk doesn't sign URLs with `Fil.Plugin.URL` (and the plug isn't public).
+    An S3 disk without it signs URLs that go to S3 directly, so the plug can stay in the endpoint when production uses
+    S3.
 
     ## Public disks
 
@@ -59,8 +61,9 @@ if Code.ensure_loaded?(Plug) do
         plug Fil.Plug, at: "/avatars", disk: &MyApp.Storage.avatars/0, public: true
 
     `GET /avatars/1.png` then returns `1.png` from the disk, on every adapter. There are no directory listings, and a
-    path can't leave the disk root. Uploads still need a signed URL, and without `Fil.Plugin.SignedURL` on the disk, a
-    `PUT` gets a `403`.
+    path can't leave the disk root. With `Fil.Plugin.URL` and `base_url: "http://localhost:4000/avatars"` on the disk,
+    `Fil.url/2` builds these URLs. Uploads still need a signed URL, and without a `:secret` for `Fil.Plugin.URL` on the
+    disk, a `PUT` gets a `403`.
 
     Needs [Plug](https://plug.hexdocs.pm), an optional dependency of `Fil`.
 
@@ -70,8 +73,6 @@ if Code.ensure_loaded?(Plug) do
     """
 
     @behaviour Plug
-
-    alias Fil.Support.SignedURL
 
     import Plug.Conn
 
@@ -86,11 +87,11 @@ if Code.ensure_loaded?(Plug) do
     def call(conn, opts) do
       at = opts[:at]
 
-      # Only disks with `Fil.Plugin.SignedURL` have a secret. Requests for any other disk (an S3 disk in production, for
-      # example) pass through unless the plug is public, so the plug can stay in the endpoint in every environment.
+      # Only disks that sign with `Fil.Plugin.URL` have a secret. Requests for any other disk (an S3 disk in production,
+      # for example) pass through unless the plug is public, so the plug can stay in the endpoint in every environment.
       with true <- Enum.take(conn.path_info, length(at)) == at,
            disk = disk(opts[:disk]),
-           secret = Fil.Plugin.SignedURL.secret(disk),
+           secret = Fil.Plugin.URL.secret(disk),
            true <- opts[:public] or secret != nil do
         conn
         |> Map.update!(:path_info, &Enum.drop(&1, length(at)))
@@ -121,7 +122,7 @@ if Code.ensure_loaded?(Plug) do
     defp authorize(_conn, _method, nil, _public?), do: {:error, :signature_required}
 
     defp authorize(conn, method, secret, _public?),
-      do: SignedURL.verify(secret, method, conn.request_path, conn.query_params)
+      do: Fil.Plugin.URL.verify(secret, method, conn.request_path, conn.query_params)
 
     defp disk(%Fil.Disk{} = disk), do: disk
     defp disk(fun) when is_function(fun, 0), do: fun.()
