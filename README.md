@@ -8,10 +8,9 @@
 
 ## Table of Contents
 
-- [Features](#features)
+- [Features and goals](#features-and-goals)
 - [Concepts](#concepts)
 - [Usage](#usage)
-- [Goals](#goals)
 - [Development](#development)
 - [Acknowledgments](#acknowledgments)
 
@@ -21,21 +20,30 @@
 
 <!-- MDOC -->
 
-## Features
+## Features and goals
 
-- One API for local disk and S3, including S3-compatible stores
-- An in-memory disk for tests, with a store per test process, so tests can run with `async: true`
-- Copy and move files between disks with the same `cp` and `rename` calls
-- Signed GET and PUT URLs on every disk: S3 serves its own, and for any other disk,
+- **Many storage backends behind one API.** `Fil` aims to be a solid file abstraction that behaves the same on every
+  backend. Local disk, S3 (including S3-compatible stores) and an in-memory disk for tests are there today. The
+  in-memory disk keeps a store per test process, so tests can run with `async: true`. Azure Blob Storage, Google Cloud
+  Storage, SFTP and many more are possible. `cp` and `rename` copy and move files between disks with the same calls.
+- **Lightweight, [Req](https://github.com/wojtekmach/req)-like API.** A disk is a plain value: no application config,
+  no registry, nothing to add to your supervision tree. That keeps `Fil` usable in a script or a Livebook with a single
+  `Mix.install/1`, and the code stays functional: build a disk, pass it around, attach things to it.
+- **Pluggable.** Anything that isn't about where files are stored belongs in a
+  [plugin](https://fil.hexdocs.pm/Fil.Plugin.html) attached to a disk. Plugins see every operation on it, for example
+  to set content types or to log. A trash can, encryption, compression or caching could follow.
+- **Few dependencies.** At runtime, `Fil` needs only [Req](https://github.com/wojtekmach/req),
+  [NimbleOptions](https://github.com/dashbitco/nimble_options) and [MIME](https://github.com/elixir-plug/mime) (and
+  Plug for `Fil.Plug`, as an optional dependency). Cloud adapters use Req for HTTP and request signing, and upcoming
+  ones (Google Cloud Storage, Azure) should too, instead of each bringing its own client or SDK. Timeouts, proxies and
+  connection pools for S3 are set per disk, as Req options.
+- **Signed and public URLs.** Every disk returns signed GET and PUT URLs. S3 serves its own, and for any other disk,
   [`Fil.Plugin.SignedURL`](https://fil.hexdocs.pm/Fil.Plugin.SignedURL.html) signs them and
-  [`Fil.Plug`](https://fil.hexdocs.pm/Fil.Plug.html) serves them from your application
-- Public files: `Fil.Plug` with `public: true` serves any disk over HTTP, like `Plug.Static`
-- Create-if-absent writes with `if_none_match: :any`, atomic on local disk and on AWS S3
-- Checksums on S3: S3 rejects an upload that doesn't match its checksum, and reads can verify it
-- [Plugins](https://fil.hexdocs.pm/Fil.Plugin.html) that see every operation on a disk, for example to set content
-  types or to log
-- Paths are checked against the disk root, so a `../` in user input can't climb out of it
-- Timeouts, proxies and connection pools for S3 are set per disk, as [Req](https://github.com/wojtekmach/req) options
+  [`Fil.Plug`](https://fil.hexdocs.pm/Fil.Plug.html) serves them from your application. With `public: true`,
+  `Fil.Plug` serves any disk over HTTP, like `Plug.Static`.
+- **Safe writes and paths.** Create-if-absent writes with `if_none_match: :any` are atomic on local disk and on AWS
+  S3. With checksums, S3 rejects an upload that doesn't match, and reads can verify it. Paths are checked against the
+  disk root, so a `../` in user input can't climb out of it.
 
 ## Concepts
 
@@ -45,7 +53,8 @@ function that can fail returns `{:ok, result}` or `{:error, reason}`.
 ### Disks
 
 A disk says where files are stored: an adapter and its options. It's a plain value, so there's no application config
-and nothing to supervise. Every function takes a disk as its first argument and a path relative to the disk's root:
+and nothing to add to your supervision tree (`Fil` starts one process of its own, for the Memory adapter). Every
+function takes a disk as its first argument and a path relative to the disk's root:
 
 ```elixir
 disk = Fil.disk(adapter: Fil.Adapter.Local, root: "priv/storage")
@@ -209,21 +218,6 @@ case Fil.write(s3, "jobs/today.lock", "started", if_none_match: :any) do
   {:error, :precondition_failed} -> :someone_else_won
 end
 ```
-
-## Goals
-
-- **Many storage backends behind one API.** `Fil` should be a solid file abstraction that behaves the same on every
-  backend. Local disk, S3 and an in-memory disk for tests are there today. Azure Blob Storage, Google Cloud Storage,
-  SFTP and many more are possible.
-- **Lightweight, like Req.** A disk is a plain value: no application config, no registry, nothing to start or
-  supervise. That keeps `Fil` usable in a script or a Livebook with a single `Mix.install/1`, and the code stays
-  functional: build a disk, pass it around, attach things to it.
-- **Pluggable.** Anything that isn't about where files are stored belongs in a plugin attached to a disk. Content
-  types work that way today, and encryption, compression, caching or a trash can follow.
-- **Few dependencies.** At runtime, `Fil` needs only Req, NimbleOptions and MIME (and Plug for `Fil.Plug`, as an
-  optional dependency). Cloud adapters use Req for HTTP and
-  request signing, and upcoming ones (Google Cloud Storage, Azure) should too, instead of each bringing its own
-  client or SDK.
 
 ## Development
 
