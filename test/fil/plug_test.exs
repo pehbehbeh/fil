@@ -170,6 +170,56 @@ defmodule Fil.PlugTest do
     end
   end
 
+  describe "upload size" do
+    test "a declared size over :max_body_size is a 413 before anything is read", %{memory: disk} do
+      {:ok, url} = Fil.signed_url(disk, "big.bin", method: :put)
+
+      conn =
+        url
+        |> put("0123456789", [{"content-length", "10"}])
+        |> call(disk, max_body_size: 5)
+
+      assert conn.status == 413
+      assert conn.resp_body == "the request body is larger than 5 bytes"
+      refute Fil.exists?(disk, "big.bin")
+    end
+
+    test "a body over :max_body_size without a declared size is a 413 too", %{memory: disk} do
+      {:ok, url} = Fil.signed_url(disk, "big.bin", method: :put)
+
+      assert (url
+              |> put("0123456789")
+              |> call(disk, max_body_size: 5)).status == 413
+
+      refute Fil.exists?(disk, "big.bin")
+    end
+
+    test "a body up to :max_body_size is written", %{memory: disk} do
+      {:ok, url} = Fil.signed_url(disk, "small.bin", method: :put)
+
+      assert (url
+              |> put("01234", [{"content-length", "5"}])
+              |> call(disk, max_body_size: 5)).status == 200
+
+      assert Fil.read(disk, "small.bin") == {:ok, "01234"}
+    end
+
+    test "a body Plug.Parsers already read is a 400, not an empty file", %{memory: disk} do
+      {:ok, url} = Fil.signed_url(disk, "data.json", method: :put)
+      parsers = Plug.Parsers.init(parsers: [:json], json_decoder: Jason, pass: ["*/*"])
+
+      conn =
+        url
+        |> put(~s({"a":1}), [{"content-type", "application/json"}, {"content-length", "7"}])
+        |> Plug.Parsers.call(parsers)
+        |> call(disk)
+
+      assert conn.status == 400
+      assert conn.resp_body =~ "already read"
+      refute Fil.exists?(disk, "data.json")
+    end
+  end
+
   test "resolves the disk from a function or an MFA", %{memory: disk} do
     {:ok, _} = Fil.write(disk, "a.txt", "a")
     {:ok, url} = Fil.signed_url(disk, "a.txt")
@@ -323,9 +373,17 @@ defmodule Fil.PlugTest do
     |> Fil.Plug.call(Fil.Plug.init(at: "/storage", disk: disk, public: true))
   end
 
-  defp call(conn, disk) do
+  defp call(conn, disk, opts \\ []) do
     conn = %{conn | path_info: Enum.drop(conn.path_info, 1), script_name: ["storage"]}
 
-    Fil.Plug.call(conn, Fil.Plug.init(disk: disk))
+    Fil.Plug.call(conn, Fil.Plug.init([disk: disk] ++ opts))
+  end
+
+  defp put(url, body, headers \\ []) do
+    uri = URI.parse(url)
+
+    Enum.reduce(headers, conn(:put, uri.path <> "?" <> uri.query, body), fn {name, value}, conn ->
+      put_req_header(conn, name, value)
+    end)
   end
 end
