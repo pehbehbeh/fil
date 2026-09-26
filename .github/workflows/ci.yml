@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: format-elixir-1.20-otp-29-${{ hashFiles('mix.lock') }}
+
+      # Quokka is a formatter plugin and reads the Credo config, so the dependencies have to be compiled first.
+      - run: mix deps.get
+      - run: mix deps.compile
+      - run: mix format --check-formatted
+
+  test:
+    name: Test (Elixir ${{ matrix.elixir }}, OTP ${{ matrix.otp }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      # Every supported Elixir minor version (`elixir:` in mix.exs), each with the newest OTP it supports, plus the
+      # oldest supported OTP on the oldest Elixir.
+      matrix:
+        include:
+          - elixir: "1.16"
+            otp: "26"
+          - elixir: "1.17"
+            otp: "27"
+          - elixir: "1.18"
+            otp: "27"
+          - elixir: "1.19"
+            otp: "28"
+          - elixir: "1.20"
+            otp: "29"
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: test-elixir-${{ matrix.elixir }}-otp-${{ matrix.otp }}-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get
+      - run: mix test
+
+  integration:
+    name: Integration (SeaweedFS)
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: integration-elixir-1.20-otp-29-${{ hashFiles('mix.lock') }}
+
+      # compose.yml instead of a service container: services can't set SeaweedFS's command or mount its S3 config.
+      - run: docker compose up -d
+
+      # SeaweedFS accepts connections before it answers S3 requests, so wait for an HTTP response.
+      - name: Wait for SeaweedFS
+        run: |
+          for _ in $(seq 1 60); do
+            curl -s -o /dev/null http://127.0.0.1:8333 && exit 0
+            sleep 1
+          done
+          echo "SeaweedFS didn't answer within 60 seconds"
+          exit 1
+
+      - run: mix deps.get
+      - run: mix test.integration
+
+      - name: SeaweedFS logs
+        if: failure()
+        run: docker compose logs seaweedfs
