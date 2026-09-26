@@ -26,9 +26,16 @@ defmodule Fil.PlugTest do
     {:ok, local: local, memory: memory}
   end
 
+  # The disk comes from a describe tag, because Elixir 1.16 doesn't allow `unquote` in a test's context pattern.
   for adapter <- [:local, :memory] do
     describe "#{adapter} disk" do
-      test "GET downloads the file", %{unquote(adapter) => disk} do
+      @describetag adapter: adapter
+
+      setup context do
+        {:ok, disk: Map.fetch!(context, context.adapter)}
+      end
+
+      test "GET downloads the file", %{disk: disk} do
         {:ok, _} = Fil.write(disk, "docs/a file.txt", "content")
         {:ok, url} = Fil.signed_url(disk, "docs/a file.txt")
 
@@ -39,7 +46,7 @@ defmodule Fil.PlugTest do
         assert get_resp_header(conn, "content-type") == ["text/plain"]
       end
 
-      test "HEAD answers without a body", %{unquote(adapter) => disk} do
+      test "HEAD answers without a body", %{disk: disk} do
         {:ok, _} = Fil.write(disk, "a.txt", "content")
         {:ok, url} = Fil.signed_url(disk, "a.txt")
 
@@ -49,7 +56,7 @@ defmodule Fil.PlugTest do
         assert conn.resp_body == ""
       end
 
-      test "PUT uploads the body", %{unquote(adapter) => disk} do
+      test "PUT uploads the body", %{disk: disk} do
         {:ok, url} = Fil.signed_url(disk, "inbox/new.bin", method: :put)
 
         conn = request(:put, url, disk, "uploaded")
@@ -58,7 +65,7 @@ defmodule Fil.PlugTest do
         assert Fil.read(disk, "inbox/new.bin") == {:ok, "uploaded"}
       end
 
-      test "a URL signed for GET can't upload", %{unquote(adapter) => disk} do
+      test "a URL signed for GET can't upload", %{disk: disk} do
         {:ok, url} = Fil.signed_url(disk, "a.txt")
 
         conn = request(:put, url, disk, "nope")
@@ -67,7 +74,7 @@ defmodule Fil.PlugTest do
         refute Fil.exists?(disk, "a.txt")
       end
 
-      test "a changed path or expiry is rejected", %{unquote(adapter) => disk} do
+      test "a changed path or expiry is rejected", %{disk: disk} do
         {:ok, _} = Fil.write(disk, "a.txt", "a")
         {:ok, _} = Fil.write(disk, "b.txt", "b")
         {:ok, url} = Fil.signed_url(disk, "a.txt")
@@ -77,7 +84,7 @@ defmodule Fil.PlugTest do
         assert request(:get, String.replace(url, ~r/&signature=.*/, ""), disk).status == 403
       end
 
-      test "an expired URL is rejected", %{unquote(adapter) => disk} do
+      test "an expired URL is rejected", %{disk: disk} do
         {:ok, _} = Fil.write(disk, "a.txt", "a")
         {:ok, url} = Fil.signed_url(disk, "a.txt", expires_in: 1)
 
@@ -91,13 +98,13 @@ defmodule Fil.PlugTest do
         assert conn.resp_body == "the URL has expired"
       end
 
-      test "a missing file is a 404", %{unquote(adapter) => disk} do
+      test "a missing file is a 404", %{disk: disk} do
         {:ok, url} = Fil.signed_url(disk, "nope.txt")
 
         assert request(:get, url, disk).status == 404
       end
 
-      test "other methods are not allowed", %{unquote(adapter) => disk} do
+      test "other methods are not allowed", %{disk: disk} do
         {:ok, url} = Fil.signed_url(disk, "a.txt")
 
         assert request(:delete, url, disk).status == 405
