@@ -2,8 +2,6 @@ defmodule Fil.MixProject do
   alias Fil.Adapter.Local
   alias Fil.Adapter.Memory
   alias Fil.Adapter.S3
-  alias Fil.Plugin.ContentType
-  alias Fil.Plugin.URL
 
   use Mix.Project
 
@@ -81,7 +79,7 @@ defmodule Fil.MixProject do
       ],
       groups_for_modules: [
         Adapters: [Fil.Adapter, Local, S3, Memory],
-        Plugins: [Fil.Op, ContentType, URL],
+        Plugins: ~r/^Fil\.Plugin\./,
         Integrations: [Fil.Plug],
         Errors: [Fil.Error, Fil.TransportError]
       ]
