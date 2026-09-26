@@ -20,6 +20,9 @@ defmodule Fil do
 
   @type result(value) :: {:ok, value} | {:error, term()}
 
+  @typedoc "A plugin callback: a function or a `{module, function}` pair. See the [Plugins guide](plugins.md)."
+  @type plugin_callback :: (Op.t(), (Op.t() -> Op.t()), keyword() -> Op.t()) | {module(), atom()}
+
   @root "."
 
   @checksums Checksum.algorithms()
@@ -60,8 +63,18 @@ defmodule Fil do
                    type: :atom,
                    required: true,
                    doc: """
-                   The adapter module. Every other option given to `disk/1` is passed to the adapter, which validates it
-                   against its own schema.
+                   The adapter module. Every option given to `disk/1` other than `:adapter` and `:plugins` is passed to
+                   the adapter, which validates it against its own schema.
+                   """
+                 ],
+                 plugins: [
+                   type: {:list, {:tuple, [:atom, :atom, :keyword_list]}},
+                   default: [],
+                   doc: """
+                   Plugins to attach, in order, so the first one is the outermost. Each is a plugin callback as
+                   `{module, function, opts}`, attached under the name `module` (see `attach/4`). They're plain data,
+                   so the plugins can come from config along with the adapter options:
+                   `plugins: [{Fil.Plugin.ContentType, :call, default: "text/plain"}]`.
                    """
                  ]
                )
@@ -127,27 +140,21 @@ defmodule Fil do
   @doc section: :building
   @spec disk(keyword()) :: Disk.t()
   def disk(opts) when is_list(opts) do
-    module =
-      opts
-      |> validated_adapter()
-      |> adapter_module!()
+    # `Fil` only validates its own options here. The adapter validates the rest in its init/1.
+    {own_opts, adapter_opts} = Keyword.split(opts, [:adapter, :plugins])
+    disk_opts = validate!(own_opts, @disk_schema)
+    module = adapter_module!(disk_opts[:adapter])
 
-    case module.init(Keyword.delete(opts, :adapter)) do
+    case module.init(adapter_opts) do
       {:ok, state} ->
-        %Disk{adapter: {module, state}}
+        Enum.reduce(disk_opts[:plugins], %Disk{adapter: {module, state}}, fn {plugin, function, plugin_opts}, disk ->
+          attach(disk, plugin, {plugin, function}, plugin_opts)
+        end)
 
       {:error, reason} ->
         raise ArgumentError,
               "invalid options for #{inspect(module)}: " <> Fil.Error.format_reason(reason)
     end
-  end
-
-  # `Fil` only validates :adapter here. The adapter validates the rest in its init/1.
-  defp validated_adapter(opts) do
-    opts
-    |> Keyword.take([:adapter])
-    |> validate!(@disk_schema)
-    |> Keyword.fetch!(:adapter)
   end
 
   defp adapter_module!(module) do
@@ -169,6 +176,52 @@ defmodule Fil do
   @doc section: :building
   @spec ref(Disk.t(), Path.t()) :: Ref.t()
   defdelegate ref(disk, path), to: Ref, as: :new
+
+  @doc """
+  Attaches a plugin callback to a disk under a name.
+
+      iex> disk =
+      ...>   Fil.disk(adapter: Fil.Adapter.Memory)
+      ...>   |> Fil.attach(:shout, fn op, next, _opts ->
+      ...>     op |> Fil.Op.update_content(binary: &String.upcase/1) |> next.()
+      ...>   end)
+      iex> Fil.write!(disk, "hello.txt", "world")
+      iex> Fil.read(disk, "hello.txt")
+      {:ok, "WORLD"}
+
+  The callback is a function of arity 3 or a `{module, function}` pair naming a public function of arity 3. `opts` are
+  passed to it on every call. Attaching a name that's already attached replaces the callback and its options in the
+  same position. The [Plugins guide](plugins.md) explains how to write one.
+  """
+  @doc section: :building
+  @spec attach(Disk.t(), atom(), plugin_callback(), keyword()) :: Disk.t()
+  def attach(%Disk{plugins: plugins} = disk, name, callback, opts \\ []) when is_atom(name) and is_list(opts) do
+    %{disk | plugins: List.keystore(plugins, name, 0, {name, plugin_callback!(callback), opts})}
+  end
+
+  defp plugin_callback!(fun) when is_function(fun, 3), do: fun
+
+  defp plugin_callback!({module, function} = callback) when is_atom(module) and is_atom(function) do
+    if Code.ensure_loaded?(module) and function_exported?(module, function, 3) do
+      callback
+    else
+      raise ArgumentError, "#{inspect(module)}.#{function}/3 is not a function, so it can't be a plugin callback"
+    end
+  end
+
+  defp plugin_callback!(other) do
+    raise ArgumentError,
+          "expected a function of arity 3 or {module, function} as a plugin callback, got: #{inspect(other)}"
+  end
+
+  @doc """
+  Removes a plugin from a disk. Removing a name that isn't attached returns the disk unchanged.
+  """
+  @doc section: :building
+  @spec detach(Disk.t(), atom()) :: Disk.t()
+  def detach(%Disk{plugins: plugins} = disk, name) when is_atom(name) do
+    %{disk | plugins: List.keydelete(plugins, name, 0)}
+  end
 
   ## ------------------------------------------------------------------
   ## Reading

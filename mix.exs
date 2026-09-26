@@ -73,7 +73,7 @@ defmodule Fil.MixProject do
       api_reference: false,
       source_ref: "v#{@version}",
       extra_section: "Guides",
-      extras: ["guides/installation.md"],
+      extras: ["guides/installation.md", "guides/plugins.md"],
       groups_for_docs: [
         Building: &(&1[:section] == :building),
         Operations: &(&1[:section] == :operations),
@@ -81,7 +81,7 @@ defmodule Fil.MixProject do
       ],
       groups_for_modules: [
         Adapters: [Fil.Adapter, Local, S3, Memory],
-        Plugins: [Fil.Plugin, Fil.Op, ContentType, URL],
+        Plugins: [Fil.Op, ContentType, URL],
         Integrations: [Fil.Plug],
         Errors: [Fil.Error, Fil.TransportError]
       ]

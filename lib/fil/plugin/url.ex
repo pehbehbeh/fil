@@ -54,18 +54,23 @@ defmodule Fil.Plugin.URL do
   # The same cap as S3's presigned URLs, so a URL that works on one disk works on every disk.
   @max_expires_in 7 * 24 * 60 * 60
 
-  @doc "Attaches the plugin to `disk` under the name `:url`."
+  @doc """
+  Attaches the plugin to `disk` under the name `Fil.Plugin.URL`.
+
+  The same as `plugins: [{Fil.Plugin.URL, :call, opts}]` in `Fil.disk/1`, except that the options are validated here
+  instead of on the first URL.
+  """
   @spec attach(Fil.Disk.t(), keyword()) :: Fil.Disk.t()
   def attach(%Fil.Disk{} = disk, opts) do
-    Fil.Plugin.attach(disk, :url, &call/3, NimbleOptions.validate!(opts, @schema))
+    Fil.attach(disk, __MODULE__, {__MODULE__, :call}, NimbleOptions.validate!(opts, @schema))
   end
 
   @doc false
   # The secret `Fil.Plug` verifies requests with, or `nil` for a disk that doesn't sign URLs with this plugin.
   @spec secret(Fil.Disk.t()) :: String.t() | nil
   def secret(%Fil.Disk{plugins: plugins}) do
-    case List.keyfind(plugins, :url, 0) do
-      {:url, _fun, opts} -> Keyword.get(opts, :secret)
+    case List.keyfind(plugins, __MODULE__, 0) do
+      {__MODULE__, _callback, opts} -> Keyword.get(opts, :secret)
       nil -> nil
     end
   end
@@ -100,7 +105,11 @@ defmodule Fil.Plugin.URL do
     ArgumentError -> {:error, :invalid_signature}
   end
 
-  defp call(%Op{name: :url} = op, _next, opts) do
+  @doc false
+  @spec call(Op.t(), (Op.t() -> Op.t()), keyword()) :: Op.t()
+  def call(%Op{name: :url} = op, _next, opts) do
+    opts = NimbleOptions.validate!(opts, @schema)
+
     result =
       with {:ok, path} <- Fil.Support.Path.normalize(op.path) do
         {:ok, String.trim_trailing(opts[:base_url], "/") <> "/" <> URL.encode_path(path)}
@@ -109,14 +118,16 @@ defmodule Fil.Plugin.URL do
     Op.put_result(op, result)
   end
 
-  defp call(%Op{name: :signed_url} = op, next, opts) do
+  def call(%Op{name: :signed_url} = op, next, opts) do
+    opts = NimbleOptions.validate!(opts, @schema)
+
     case opts[:secret] do
       nil -> next.(op)
       secret -> Op.put_result(op, signed_url(op, opts[:base_url], secret))
     end
   end
 
-  defp call(op, next, _opts), do: next.(op)
+  def call(op, next, _opts), do: next.(op)
 
   defp signed_url(op, base_url, secret) do
     with {:ok, path} <- Fil.Support.Path.normalize(op.path) do

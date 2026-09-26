@@ -24,8 +24,8 @@ defmodule Fil.Plugin.ContentType do
   The extension is looked up with [MIME](https://hex.pm/packages/mime), which you can extend with your own types in your
   config (see its docs).
 
-  It's also the smallest complete example of a plugin (see `Fil.Plugin`): an `attach/2` that validates its options, and
-  a callback that handles one operation and passes the rest on.
+  It's also the smallest complete example of a plugin module (see the [Plugins guide](plugins.md)): a public callback that validates its
+  options, handles one operation and passes the rest on, and an `attach/2` for piping.
 
   ## Options
 
@@ -34,19 +34,28 @@ defmodule Fil.Plugin.ContentType do
 
   alias Fil.Op
 
-  @doc "Attaches the plugin to `disk` under the name `:content_type`."
+  @doc """
+  Attaches the plugin to `disk` under the name `Fil.Plugin.ContentType`.
+
+  The same as `plugins: [{Fil.Plugin.ContentType, :call, opts}]` in `Fil.disk/1`, except that the options are validated
+  here instead of on the first write.
+  """
   @spec attach(Fil.Disk.t(), keyword()) :: Fil.Disk.t()
   def attach(%Fil.Disk{} = disk, opts \\ []) do
-    Fil.Plugin.attach(disk, :content_type, &call/3, NimbleOptions.validate!(opts, @schema))
+    Fil.attach(disk, __MODULE__, {__MODULE__, :call}, NimbleOptions.validate!(opts, @schema))
   end
 
-  defp call(%Op{name: :write} = op, next, opts) do
+  @doc false
+  @spec call(Op.t(), (Op.t() -> Op.t()), keyword()) :: Op.t()
+  def call(%Op{name: :write} = op, next, opts) do
+    opts = NimbleOptions.validate!(opts, @schema)
+
     op
     |> Op.put_new_option(:content_type, content_type(op.path, opts[:default]))
     |> next.()
   end
 
-  defp call(op, next, _opts), do: next.(op)
+  def call(op, next, _opts), do: next.(op)
 
   defp content_type(path, default) do
     extension =

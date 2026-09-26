@@ -30,7 +30,7 @@
   no registry, nothing to add to your supervision tree. That keeps `Fil` usable in a script or a Livebook with a single
   `Mix.install/1`, and the code stays functional: build a disk, pass it around, attach things to it.
 - **Pluggable.** Anything that isn't about where files are stored belongs in a
-  [plugin](https://fil.hexdocs.pm/Fil.Plugin.html) attached to a disk. Plugins see every operation on it, for example
+  [plugin](https://fil.hexdocs.pm/plugins.html) attached to a disk. Plugins see every operation on it, for example
   to set content types or to log. A trash can, encryption, compression or caching could follow.
 - **Few dependencies.** At runtime, `Fil` needs only [Req](https://github.com/wojtekmach/req),
   [NimbleOptions](https://github.com/dashbitco/nimble_options) and [MIME](https://github.com/elixir-plug/mime) (and
@@ -112,18 +112,20 @@ s3 =
 {:ok, report} = Fil.write(s3, "reports/q3.pdf", pdf)
 ```
 
+For a disk built from config, `Fil.disk/1` takes plugins as data: `plugins: [{Fil.Plugin.ContentType, :call, []}]`.
+
 Your own plugin is a function. It gets the operation, calls `next` to run the rest, and returns the result:
 
 ```elixir
 local =
   Fil.disk(adapter: Fil.Adapter.Local, root: "priv/storage")
-  |> Fil.Plugin.attach(:log, fn op, next, _opts ->
+  |> Fil.attach(:log, fn op, next, _opts ->
     IO.puts("#{op.name} #{op.path}")
     next.(op)
   end)
 ```
 
-[`Fil.Plugin`](https://fil.hexdocs.pm/Fil.Plugin.html) explains how to write plugins: matching on operations,
+The [plugins guide](https://fil.hexdocs.pm/plugins.html) explains how to write plugins: matching on operations,
 changing content, handling errors and answering without the adapter.
 
 ### Semantics
@@ -153,6 +155,10 @@ Every function that can fail has a bang variant that returns the bare result and
 
 ## Usage
 
+The [installation guide](https://fil.hexdocs.pm/installation.html) is the full setup for an application: a module
+for your disks, the config for each environment (local disks in development, memory disks in tests and S3 in
+production), signed URLs and tests. This section is only a quick tour of the API.
+
 Add `fil` to your dependencies:
 
 ```elixir
@@ -162,9 +168,6 @@ def deps do
   ]
 end
 ```
-
-The [installation guide](guides/installation.md) sets `Fil` up in an application, with local disks in development and
-tests and S3 in production.
 
 Build one disk per storage backend:
 

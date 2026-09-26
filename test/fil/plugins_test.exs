@@ -1,7 +1,6 @@
-defmodule Fil.PluginTest do
+defmodule Fil.PluginsTest do
   alias Fil.Adapter.Local
   alias Fil.Op
-  alias Fil.Plugin
 
   use ExUnit.Case, async: true
 
@@ -21,12 +20,18 @@ defmodule Fil.PluginTest do
     end
   end
 
-  describe "attach/4" do
+  def upcase(op, next, _opts) do
+    op
+    |> Op.update_content(binary: &String.upcase/1)
+    |> next.()
+  end
+
+  describe "Fil.attach/4" do
     test "runs every operation through the plugins, first attached outermost", %{disk: disk} do
       disk =
         disk
-        |> Plugin.attach(:outer, tracer(self(), :outer))
-        |> Plugin.attach(:inner, tracer(self(), :inner))
+        |> Fil.attach(:outer, tracer(self(), :outer))
+        |> Fil.attach(:inner, tracer(self(), :inner))
 
       assert {:ok, _} = Fil.write(disk, "a.txt", "content")
 
@@ -41,7 +46,7 @@ defmodule Fil.PluginTest do
 
     test "passes the attach options to the callback", %{disk: disk} do
       disk =
-        Plugin.attach(
+        Fil.attach(
           disk,
           :prefix,
           fn op, next, opts -> next.(%{op | path: opts[:prefix] <> "/" <> op.path}) end,
@@ -50,15 +55,30 @@ defmodule Fil.PluginTest do
 
       assert {:ok, ref} = Fil.write(disk, "a.txt", "content")
       assert ref.path == "tenant/a.txt"
-      assert Fil.read(Plugin.detach(disk, :prefix), "tenant/a.txt") == {:ok, "content"}
+      assert Fil.read(Fil.detach(disk, :prefix), "tenant/a.txt") == {:ok, "content"}
+    end
+
+    test "takes a {module, function} callback", %{disk: disk} do
+      disk = Fil.attach(disk, :upcase, {__MODULE__, :upcase}, [])
+
+      assert {:ok, _} = Fil.write(disk, "a.txt", "content")
+      assert Fil.read(Fil.detach(disk, :upcase), "a.txt") == {:ok, "CONTENT"}
+
+      assert_raise ArgumentError, ~r/FilTest.nope\/3 is not a function/, fn ->
+        Fil.attach(disk, :nope, {FilTest, :nope})
+      end
+
+      assert_raise ArgumentError, ~r/expected a function of arity 3/, fn ->
+        Fil.attach(disk, :nope, fn op -> op end)
+      end
     end
 
     test "replaces a plugin with the same name in place", %{disk: disk} do
       disk =
         disk
-        |> Plugin.attach(:first, tracer(self(), :first))
-        |> Plugin.attach(:second, tracer(self(), :second))
-        |> Plugin.attach(:first, tracer(self(), :replaced))
+        |> Fil.attach(:first, tracer(self(), :first))
+        |> Fil.attach(:second, tracer(self(), :second))
+        |> Fil.attach(:first, tracer(self(), :replaced))
 
       assert [:first, :second] = Enum.map(disk.plugins, &elem(&1, 0))
 
@@ -70,16 +90,16 @@ defmodule Fil.PluginTest do
     test "detach/2 removes a plugin", %{disk: disk} do
       disk =
         disk
-        |> Plugin.attach(:trace, tracer(self(), :trace))
-        |> Plugin.detach(:trace)
+        |> Fil.attach(:trace, tracer(self(), :trace))
+        |> Fil.detach(:trace)
 
       assert {:ok, _} = Fil.write(disk, "a.txt", "content")
       refute_received {:in, :trace, _name}
-      assert Plugin.detach(disk, :nope) == disk
+      assert Fil.detach(disk, :nope) == disk
     end
 
     test "per-call options are validated as before", %{disk: disk} do
-      disk = Plugin.attach(disk, :noop, fn op, next, _opts -> next.(op) end)
+      disk = Fil.attach(disk, :noop, fn op, next, _opts -> next.(op) end)
 
       assert_raise ArgumentError, ~r/unknown options \[:tenant\]/, fn ->
         Fil.read(disk, "a.txt", tenant: "acme")
@@ -90,7 +110,7 @@ defmodule Fil.PluginTest do
   describe "the chain" do
     test "a plugin can answer without the adapter", %{disk: disk} do
       disk =
-        Plugin.attach(disk, :cache, fn
+        Fil.attach(disk, :cache, fn
           %Op{name: :read} = op, _next, _opts -> Op.put_result(op, {:ok, "cached"})
           op, next, _opts -> next.(op)
         end)
@@ -101,7 +121,7 @@ defmodule Fil.PluginTest do
 
     test "errors come back through the chain and can be recovered", %{disk: disk} do
       disk =
-        Plugin.attach(disk, :default, fn op, next, _opts ->
+        Fil.attach(disk, :default, fn op, next, _opts ->
           case next.(op) do
             %Op{name: :read, result: {:error, :enoent}} = op -> Op.put_result(op, {:ok, ""})
             op -> op
@@ -114,7 +134,7 @@ defmodule Fil.PluginTest do
 
     test "a rewritten path can't escape the disk root", %{disk: disk, tmp_dir: tmp_dir} do
       escape = fn op, next, _opts -> next.(%{op | path: "../" <> op.path, dest: op.dest && "../" <> op.dest}) end
-      escaping = Plugin.attach(disk, :escape, escape)
+      escaping = Fil.attach(disk, :escape, escape)
 
       assert Fil.write(escaping, "a.txt", "content") == {:error, :ebadpath}
       refute File.exists?(Path.join(tmp_dir, "a.txt"))
@@ -124,13 +144,13 @@ defmodule Fil.PluginTest do
     end
 
     test "a callback that doesn't return an op raises", %{disk: disk} do
-      disk = Plugin.attach(disk, :broken, fn _op, _next, _opts -> :oops end)
+      disk = Fil.attach(disk, :broken, fn _op, _next, _opts -> :oops end)
 
       assert_raise Fil.Error, ~r/bad_plugin_return/, fn -> Fil.read(disk, "a.txt") end
     end
 
     test "a chain that ends without a result raises", %{disk: disk} do
-      disk = Plugin.attach(disk, :lazy, fn op, _next, _opts -> op end)
+      disk = Fil.attach(disk, :lazy, fn op, _next, _opts -> op end)
 
       assert_raise Fil.Error, ~r/bad_plugin_result/, fn -> Fil.read(disk, "a.txt") end
     end
@@ -139,7 +159,7 @@ defmodule Fil.PluginTest do
       test_pid = self()
 
       disk =
-        Plugin.attach(disk, :spy, fn op, next, _opts ->
+        Fil.attach(disk, :spy, fn op, next, _opts ->
           send(test_pid, {op.name, op.path, op.dest})
           next.(op)
         end)
@@ -152,12 +172,12 @@ defmodule Fil.PluginTest do
     end
 
     test "a copy across disks runs each disk's plugins", %{disk: disk, tmp_dir: tmp_dir} do
-      disk = Plugin.attach(disk, :source, tracer(self(), :source))
+      disk = Fil.attach(disk, :source, tracer(self(), :source))
 
       other =
         [adapter: Local, root: Path.join(tmp_dir, "other")]
         |> Fil.disk()
-        |> Plugin.attach(:dest, tracer(self(), :dest))
+        |> Fil.attach(:dest, tracer(self(), :dest))
 
       assert {:ok, _} = Fil.write(disk, "a.txt", "content")
       assert {:ok, _} = Fil.rename(Fil.ref(disk, "a.txt"), Fil.ref(other, "a.txt"))
@@ -171,7 +191,7 @@ defmodule Fil.PluginTest do
   describe "Fil.Op content" do
     test "update_content and update_result transform whole content", %{disk: disk} do
       disk =
-        Plugin.attach(disk, :rot, fn op, next, _opts ->
+        Fil.attach(disk, :rot, fn op, next, _opts ->
           op
           |> Op.update_content(binary: &:zlib.gzip/1)
           |> next.()
@@ -180,12 +200,12 @@ defmodule Fil.PluginTest do
 
       assert {:ok, _} = Fil.write(disk, "a.txt", ["Hello", [", ", "World"]])
       assert Fil.read(disk, "a.txt") == {:ok, "Hello, World"}
-      assert Fil.read(Plugin.detach(disk, :rot), "a.txt") == {:ok, :zlib.gzip("Hello, World")}
+      assert Fil.read(Fil.detach(disk, :rot), "a.txt") == {:ok, :zlib.gzip("Hello, World")}
     end
 
     test "chunk: alone gets the content as a single chunk", %{disk: disk} do
       disk =
-        Plugin.attach(disk, :upcase, fn op, next, _opts ->
+        Fil.attach(disk, :upcase, fn op, next, _opts ->
           op
           |> Op.update_content(chunk: &String.upcase/1)
           |> next.()

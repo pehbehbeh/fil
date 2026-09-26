@@ -24,6 +24,41 @@ defmodule FilTest do
         Fil.disk(adapter: "Fil.Adapter.Local")
       end
     end
+
+    test "attaches plugins in order, under the name of their module" do
+      disk =
+        Fil.disk(
+          adapter: Local,
+          root: "/tmp/fil",
+          plugins: [
+            {Fil.Plugin.ContentType, :call, []},
+            {Fil.Plugin.URL, :call, base_url: "http://localhost/files"}
+          ]
+        )
+
+      assert [
+               {Fil.Plugin.ContentType, {Fil.Plugin.ContentType, :call}, []},
+               {Fil.Plugin.URL, {Fil.Plugin.URL, :call}, [base_url: "http://localhost/files"]}
+             ] = disk.plugins
+
+      assert Fil.url(disk, "a.txt") == {:ok, "http://localhost/files/a.txt"}
+    end
+
+    test "rejects plugins that aren't a public function of arity 3" do
+      assert_raise ArgumentError, ~r/String.call\/3 is not a function/, fn ->
+        Fil.disk(adapter: Local, root: "/tmp/fil", plugins: [{String, :call, []}])
+      end
+
+      assert_raise ArgumentError, ~r/invalid list in :plugins option/, fn ->
+        Fil.disk(adapter: Local, root: "/tmp/fil", plugins: [Fil.Plugin.ContentType])
+      end
+    end
+
+    test "plugins from config validate their options when they run" do
+      disk = Fil.disk(adapter: Local, root: "/tmp/fil", plugins: [{Fil.Plugin.URL, :call, base: "http://localhost"}])
+
+      assert_raise NimbleOptions.ValidationError, ~r/unknown options \[:base\]/, fn -> Fil.url(disk, "a.txt") end
+    end
   end
 
   describe "argument handling" do

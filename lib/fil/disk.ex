@@ -7,8 +7,8 @@ defmodule Fil.Disk do
       disk = Fil.disk(adapter: Fil.Adapter.Local, root: "priv/storage")
 
   The struct holds the adapter module together with the state its `c:Fil.Adapter.init/1` returned, and the plugins
-  attached with `Fil.Plugin.attach/4`. The adapter state may contain credentials, so `%Fil.Disk{}` has a custom
-  `Inspect` implementation that prints only the adapter label:
+  attached with `Fil.attach/4` or the `:plugins` option of `Fil.disk/1`. The adapter state may contain
+  credentials, so `%Fil.Disk{}` has a custom `Inspect` implementation that prints only the adapter label:
 
       iex> inspect(Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil"))
       "#Fil.Disk<local>"
@@ -20,7 +20,7 @@ defmodule Fil.Disk do
 
   @type t :: %__MODULE__{
           adapter: {module(), term()},
-          plugins: [{atom(), Fil.Plugin.callback(), keyword()}]
+          plugins: [{atom(), Fil.plugin_callback(), keyword()}]
         }
 
   @doc """

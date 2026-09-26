@@ -5,7 +5,7 @@ defmodule Fil.Adapter do
   An adapter is a stateless module. `c:init/1` turns the options into a state term once, when `Fil.disk/1` builds the
   disk, and every other callback gets that state. There's no process to start, supervise or shut down.
 
-  Plugins (`Fil.Plugin`) run in `Fil` before an adapter is called, so an adapter never needs to know about them.
+  [Plugins](plugins.md) run in `Fil` before an adapter is called, so an adapter never needs to know about them.
 
   Two rules keep adapters small:
 

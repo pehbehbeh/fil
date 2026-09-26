@@ -14,11 +14,15 @@ The Hex package is `fil`.
   instead of repeating it.
 - **Refs:** every public function accepts `disk, path` or a `%Fil.Ref{}`, built with `Fil.ref/2`. There's
   no tuple form and no other input union type, so there are exactly two ways to name a file.
-- **Plugins:** a plugin is a callback `(op, next, opts)` attached with `Fil.Plugin.attach/4`, with no behaviour.
+- **Plugins:** a plugin is a callback `(op, next, opts)` attached with `Fil.attach/4`, with no behaviour. The
+  callback is a function or a `{module, function}` pair. The `plugins:` option of `Fil.disk/1` takes
+  `{module, function, opts}` entries and attaches each under the module's name, so disks built from config need no
+  functions. Plugin modules have a public `call/3` (`@doc false`) that validates its own options, because entries from
+  config skip `attach/2`.
 - Options come only from `attach`; there are no registered or global options. Callbacks
   match on `op.name` and change content only through the `Fil.Op` helpers (`update_content/2`, `update_result/2`),
-  so they keep working once streaming lands. Every operation goes through `Fil.Op.run/1`. Plugin docs live in the
-  `Fil.Plugin` moduledoc only, not in the README.
+  so they keep working once streaming lands. Every operation goes through `Fil.Op.run/1`. Plugin docs live in
+  `guides/plugins.md` only, not in the README.
 - **Same behaviour on every adapter:** critical behaviour (read, write, list, copy, checksums, public and signed URLs)
   works on every disk. When a backend lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.URL` builds and
   signs URLs for Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with `{:unsupported, _}`.

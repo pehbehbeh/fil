@@ -2,8 +2,8 @@ defmodule Fil.Op do
   @moduledoc """
   One call to a `Fil` function, as plugins see it.
 
-  Every operation builds a `%Fil.Op{}` and passes it through the disk's plugins to the adapter. See `Fil.Plugin` for how
-  to write a plugin.
+  Every operation builds a `%Fil.Op{}` and passes it through the disk's plugins to the adapter. See the
+  [Plugins guide](plugins.md) for how to write a plugin.
 
     * `:disk`: the `Fil.Disk` the operation runs on
     * `:name`: the operation, `:read`, `:write`, `:stat`, `:ls`, `:rm`, `:rm_rf`, `:cp`, `:rename`, `:url` or
@@ -214,10 +214,10 @@ defmodule Fil.Op do
     chain =
       plugins
       |> Enum.reverse()
-      |> Enum.reduce(&adapter/1, fn {name, fun, opts}, next ->
+      |> Enum.reduce(&adapter/1, fn {name, callback, opts}, next ->
         fn op ->
-          op
-          |> fun.(next, opts)
+          callback
+          |> call_plugin(op, next, opts)
           |> plugin_return!(name, op)
         end
       end)
@@ -227,6 +227,9 @@ defmodule Fil.Op do
       %__MODULE__{result: other} -> raise_error(op, {:bad_plugin_result, other})
     end
   end
+
+  defp call_plugin({module, function}, op, next, opts), do: apply(module, function, [op, next, opts])
+  defp call_plugin(fun, op, next, opts), do: fun.(op, next, opts)
 
   defp plugin_return!(%__MODULE__{} = returned, _name, _op), do: returned
   defp plugin_return!(other, name, op), do: raise_error(op, {:bad_plugin_return, name, other})
