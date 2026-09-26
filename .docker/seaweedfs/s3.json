@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "fil",
+      "credentials": [
+        {
+          "accessKey": "filaccesskey",
+          "secretKey": "filsecretkey"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

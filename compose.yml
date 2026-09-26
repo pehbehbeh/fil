@@ -1,0 +1,18 @@
+# The S3 emulator for Fil's integration tests.
+#
+#     docker compose up -d          # start it
+#     mix test.integration          # run the suite against it
+#     docker compose down -v        # stop it and delete the data
+#
+# The suite creates its own bucket per run and recreates it between tests, so the container can keep running between
+# runs.
+
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.80
+    command: server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json -s3.port=8333
+    ports:
+      - "8333:8333"
+      - "9333:9333"
+    volumes:
+      - .docker/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
