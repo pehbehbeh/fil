@@ -56,8 +56,8 @@ defmodule Fil.MixProject do
   defp package do
     [
       licenses: ["Apache-2.0"],
-      links: %{"GitHub" => @source_url},
-      files: ~w(lib guides mix.exs README.md LICENSE)
+      links: %{"GitHub" => @source_url, "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"},
+      files: ~w(lib guides mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 
@@ -67,7 +67,7 @@ defmodule Fil.MixProject do
       api_reference: false,
       source_ref: "v#{@version}",
       extra_section: "Guides",
-      extras: ["guides/installation.md", "guides/plugins.md"],
+      extras: ["guides/installation.md", "guides/plugins.md", "CHANGELOG.md"],
       groups_for_docs: [
         Building: &(&1[:section] == :building),
         Operations: &(&1[:section] == :operations),

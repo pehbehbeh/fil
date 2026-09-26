@@ -5,6 +5,8 @@ on:
     # `v[0-9]*` are maintenance branches for backports (see "Releasing" in AGENTS.md).
     branches: [main, develop, "v[0-9]*"]
   pull_request:
+  # release.yml runs the whole workflow before it publishes.
+  workflow_call:
 
 permissions:
   contents: read
@@ -113,83 +115,3 @@ jobs:
       - name: SeaweedFS logs
         if: failure()
         run: docker compose logs seaweedfs
-
-  release:
-    name: Release
-    # Every push to main or a maintenance branch whose version isn't on Hex yet is a release: publish the package and
-    # its docs, push the tag and create the GitHub release from the changelog. See "Releasing" in AGENTS.md.
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/v'))
-    needs: [checks, test, integration]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    env:
-      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: erlef/setup-beam@v1
-        with:
-          elixir-version: "1.20"
-          otp-version: "29"
-
-      - uses: actions/cache@v6
-        with:
-          path: |
-            deps
-            _build
-          key: checks-elixir-1.20-otp-29-${{ hashFiles('mix.lock') }}
-
-      - run: mix deps.get
-
-      - name: Read the version
-        run: echo "VERSION=$(mix eval 'IO.puts(Mix.Project.config()[:version])')" >> "$GITHUB_ENV"
-
-      - name: Check the changelog
-        run: |
-          awk -v version="$VERSION" '
-            BEGIN { gsub(/\./, "\\.", version) }
-            $0 ~ "^## v" version "( |$)" { section = 1; next }
-            /^## / { section = 0 }
-            section
-          ' CHANGELOG.md > release-notes.md
-
-          if ! grep -q '[^[:space:]]' release-notes.md; then
-            echo "CHANGELOG.md has no section for v$VERSION"
-            exit 1
-          fi
-
-          unreleased=$(awk '/^## Unreleased/ { section = 1; next } /^## / { section = 0 } section' CHANGELOG.md)
-          if echo "$unreleased" | grep -q '[^[:space:]]'; then
-            echo "CHANGELOG.md still has entries under Unreleased"
-            exit 1
-          fi
-
-      - name: Check whether the version is on Hex
-        run: |
-          status=$(curl -s -o /dev/null -w '%{http_code}' "https://hex.pm/api/packages/fil/releases/$VERSION")
-          case "$status" in
-            200) echo "PUBLISHED=true" >> "$GITHUB_ENV" ;;
-            404) echo "PUBLISHED=false" >> "$GITHUB_ENV" ;;
-            *) echo "hex.pm answered $status"; exit 1 ;;
-          esac
-
-      - name: Publish to Hex
-        if: env.PUBLISHED == 'false'
-        run: mix hex.publish --yes
-
-      - name: Push the tag
-        run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
-            exit 0
-          fi
-          git tag "v$VERSION"
-          git push origin "v$VERSION"
-
-      - name: Create the GitHub release
-        run: |
-          if gh release view "v$VERSION" > /dev/null 2>&1; then
-            exit 0
-          fi
-          gh release create "v$VERSION" --title "v$VERSION" --notes-file release-notes.md

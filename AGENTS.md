@@ -83,22 +83,30 @@ maintenance branches.
 
 ## Releasing
 
-Nobody publishes by hand. CI's `release` job publishes whenever `main` (or a `v0.N` maintenance branch) carries a
-version that isn't on Hex yet: it checks the changelog, runs `mix hex.publish` (package and docs), pushes the `vX.Y.Z`
-tag and creates the GitHub release from the changelog section. Pushes whose version is already on Hex do nothing, and a
-rerun after a partial failure picks up where it stopped. It needs the `HEX_API_KEY` repository secret, created once
-with `mix hex.user key generate --key-name github-actions --permission api:write`.
+Nobody publishes by hand. `.github/workflows/release.yml` does the whole release when started with a version, from the
+Actions tab or with `gh workflow run release.yml -f version=0.2.0`. It runs on the branch it's started from (`develop`
+by default) and, in order: runs CI, bumps `@version` in `mix.exs`, renames `## Unreleased` in `CHANGELOG.md` to
+`## v0.2.0 (date)` and commits "Release v0.2.0", merges into `main`, publishes package and docs with `mix hex.publish`,
+pushes the `v0.2.0` tag, creates the GitHub release from the changelog section, merges `main` back into `develop` and
+puts a fresh `## Unreleased` heading on top of the changelog there. Every step skips what's already done, so a failed
+run is rerun with the same version. It refuses a changelog without entries under Unreleased. Pushes made by the workflow
+don't trigger CI on `main` and `develop`, and don't need to: the workflow ran CI first.
+
+One-time setup: create a key on the hex.pm dashboard (Keys page, permission "API write") and store it as the
+`HEX_API_KEY` repository secret. `mix hex.user key generate` no longer exists in Hex 2.5; 2FA applies to your own
+sessions, API keys publish without a code.
 
 - **Changelog:** `CHANGELOG.md`, newest first, one line per user-visible change, added in the same commit as the change
   under `## Unreleased`. Released sections are headed `## v0.2.0 (2026-10-01)`. The file is in the Hex package and a
   Guides tab on HexDocs, so each published version carries its changelog.
-- **Release:** branch `release/0.2.0` from `develop`. Bump `@version` in `mix.exs` and rename `## Unreleased` to
-  `## v0.2.0 (date)`; the next change on `develop` adds a fresh `## Unreleased`. Merge into `main`, then `main` back
-  into `develop`. The release job refuses a version without a changelog section or with entries left under Unreleased.
-- **Hotfix:** branch `hotfix/0.2.1` from `main`, fix, add a `## v0.2.1 (date)` section, bump the version, merge into
-  `main` and back into `develop`.
-- **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix, bump to `0.1.1`, add the changelog
-  section, push. The branch is never merged anywhere; `main` may note the backport in the current section.
+- **Release:** `gh workflow run release.yml -f version=0.2.0`.
+- **Hotfix:** branch `hotfix/0.2.1` from `main`, fix it with a line under `## Unreleased` (add the heading, `main` has
+  none), push, then `gh workflow run release.yml --ref hotfix/0.2.1 -f version=0.2.1`. The workflow merges the branch
+  into `main` and `main` back into `develop` like any release; delete the branch afterwards.
+- **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix with its changelog line under a new
+  `## Unreleased`, push, then `gh workflow run release.yml --ref v0.1 -f version=0.1.1`. A `v0.N` branch is released
+  onto itself, keeps its own changelog and is never merged anywhere; `main` may note the backport in the current
+  section.
 - **Bad release:** `mix hex.retire fil 0.2.0 security --message "..."` warns users on `mix deps.get`. A version can't be
   replaced, so the fix is the next patch version.
 
