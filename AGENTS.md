@@ -75,9 +75,10 @@ mix credo                   # strict, every check enabled (see .credo.exs)
 
 ## CI
 
-`.github/workflows/ci.yml` checks formatting on the latest Elixir and runs `mix test` on every supported Elixir minor
-version, each with the newest OTP it supports (plus OTP 26 on Elixir 1.16). The integration suite runs once, on the
-latest Elixir, against SeaweedFS started from `compose.yml`. When `elixir:` in `mix.exs` changes, update the matrix.
+`.github/workflows/ci.yml` checks formatting, `mix credo` and `mix docs --warnings-as-errors` on the latest Elixir, and
+runs `mix test` on every supported Elixir minor version, each with the newest OTP it supports (plus OTP 26 on Elixir
+1.16). The integration suite runs once, on the latest Elixir, against SeaweedFS started from `compose.yml`. When
+`elixir:` in `mix.exs` changes, update the matrix.
 
 ## Testing conventions
 
