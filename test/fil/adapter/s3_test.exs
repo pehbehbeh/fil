@@ -182,39 +182,69 @@ defmodule Fil.Adapter.S3Test do
     end
   end
 
-  describe "read/1" do
-    test "maps the status codes" do
-      for {status, reason} <- [{404, :enoent}, {403, :eacces}, {412, :precondition_failed}] do
-        stub([response(status, error_xml("NoSuchKey"))])
+  describe "errors" do
+    test "map the status when there's no error code" do
+      for {status, error} <- [
+            {404, Fil.NotFoundError},
+            {403, Fil.AccessDeniedError},
+            {409, Fil.AlreadyExistsError},
+            {412, Fil.AlreadyExistsError},
+            {429, Fil.UnavailableError},
+            {503, Fil.UnavailableError},
+            {418, Fil.UnknownError}
+          ] do
+        stub([response(status)])
 
-        assert Fil.read(disk(), "a.txt") == {:error, reason}
+        assert {:error, %^error{reason: {:http_status, ^status}}} = Fil.read(disk(), "a.txt")
       end
     end
 
-    test "a server error is a transport error" do
-      stub([response(503, "<Error><Code>SlowDown</Code></Error>")])
+    test "map the error code whatever the status" do
+      for {code, error} <- [
+            {"NoSuchKey", Fil.NotFoundError},
+            {"AccessDenied", Fil.AccessDeniedError},
+            {"EntityTooLarge", Fil.InvalidRequestError},
+            {"KeyTooLongError", Fil.InvalidRequestError},
+            {"PreconditionFailed", Fil.AlreadyExistsError},
+            {"ConditionalRequestConflict", Fil.AlreadyExistsError},
+            {"BadDigest", Fil.ChecksumMismatchError},
+            {"NoSuchBucket", Fil.ConfigurationError},
+            {"SlowDown", Fil.UnavailableError},
+            {"OperationAborted", Fil.UnavailableError},
+            {"InternalError", Fil.UnavailableError},
+            {"ServiceUnavailable", Fil.UnavailableError}
+          ] do
+        stub([response(400, error_xml(code))])
 
-      assert {:error, %Fil.TransportError{reason: {:http_status, 503}}} =
-               Fil.read(disk(), "a.txt")
+        assert {:error, %^error{reason: ^code}} = Fil.read(disk(), "a.txt")
+      end
     end
 
-    test "a client failure is a transport error" do
+    test "a 409 with another code doesn't mean the file exists" do
+      stub([response(409, error_xml("BucketNotEmpty"))])
+
+      assert {:error, %Fil.UnknownError{reason: "BucketNotEmpty"}} = Fil.read(disk(), "a.txt")
+    end
+
+    test "an unknown code is an unknown error that keeps it" do
+      stub([response(400, error_xml("InvalidArgument"))])
+
+      assert {:error, %Fil.UnknownError{reason: "InvalidArgument"}} = Fil.read(disk(), "a.txt")
+    end
+
+    test "a client failure is unavailable" do
       stub([{:error, :timeout}])
 
-      assert {:error, %Fil.TransportError{reason: :timeout} = error} = Fil.read(disk(), "a.txt")
-      assert Exception.message(error) == "transport error: timeout"
+      assert {:error, %Fil.UnavailableError{reason: :timeout} = error} = Fil.read(disk(), "a.txt")
+      assert Exception.message(error) =~ "the storage is unavailable (:timeout)"
     end
 
-    test "an unexpected status keeps the code from the body" do
-      stub([response(429, error_xml("SlowDown"))])
-
-      assert Fil.read(disk(), "a.txt") == {:error, {:unexpected_status, 429, "SlowDown"}}
-    end
-
-    test "a redirect names the region" do
+    test "a redirect or a 400 that names a region is a configuration error" do
       stub([response(301, "", [{"x-amz-bucket-region", "us-west-2"}])])
+      assert {:error, %Fil.ConfigurationError{reason: {:wrong_region, "us-west-2"}}} = Fil.read(disk(), "a.txt")
 
-      assert Fil.read(disk(), "a.txt") == {:error, {:wrong_region, "us-west-2"}}
+      stub([response(400, error_xml("AuthorizationHeaderMalformed"), [{"x-amz-bucket-region", "us-west-2"}])])
+      assert {:error, %Fil.ConfigurationError{reason: {:wrong_region, "us-west-2"}}} = Fil.read(disk(), "a.txt")
     end
   end
 
@@ -240,19 +270,19 @@ defmodule Fil.Adapter.S3Test do
       assert header(request!(), "content-type") == "text/plain"
     end
 
-    test "if_none_match: :any becomes If-None-Match: *" do
+    test "if_exists: :error becomes If-None-Match: *" do
       stub([response(200)])
 
-      assert {:ok, _} = Fil.write(disk(), "a.txt", "x", if_none_match: :any)
+      assert {:ok, _} = Fil.write(disk(), "a.txt", "x", if_exists: :error)
 
       assert header(request!(), "if-none-match") == "*"
     end
 
-    test "a lost race is a failed precondition" do
+    test "a lost race means the file already exists" do
       stub([response(412, error_xml("PreconditionFailed"))])
 
-      assert Fil.write(disk(), "a.txt", "x", if_none_match: :any) ==
-               {:error, :precondition_failed}
+      assert {:error, %Fil.AlreadyExistsError{reason: "PreconditionFailed"}} =
+               Fil.write(disk(), "a.txt", "x", if_exists: :error)
     end
   end
 
@@ -264,6 +294,12 @@ defmodule Fil.Adapter.S3Test do
       assert {:ok, _} = Fil.rm(disk(), "a.txt")
 
       assert Enum.map(requests(), & &1.method) == [:delete, :delete]
+    end
+
+    test "a missing bucket is still an error" do
+      stub([response(404, error_xml("NoSuchBucket"))])
+
+      assert {:error, %Fil.ConfigurationError{reason: "NoSuchBucket"}} = Fil.rm(disk(), "a.txt")
     end
   end
 
@@ -284,7 +320,26 @@ defmodule Fil.Adapter.S3Test do
     test "copy notices a failure reported inside a 200" do
       stub([response(200, error_xml("InternalError"))])
 
-      assert Fil.cp(disk(), "a.txt", "b.txt") == {:error, "InternalError"}
+      assert {:error, %Fil.UnavailableError{reason: "InternalError"}} = Fil.cp(disk(), "a.txt", "b.txt")
+    end
+
+    test "a missing source is not found" do
+      stub([response(404, error_xml("NoSuchKey")), response(400, error_xml("NoSuchKey"))])
+
+      assert {:error, %Fil.NotFoundError{path: "a.txt"}} = Fil.cp(disk(), "a.txt", "b.txt")
+      assert {:error, %Fil.NotFoundError{path: "a.txt"}} = Fil.cp(disk(), "a.txt", "b.txt")
+    end
+
+    test "a plain 400 checks whether the source exists" do
+      stub([response(400, error_xml("InvalidArgument")), response(404)])
+
+      assert {:error, %Fil.NotFoundError{reason: {:http_status, 404}}} = Fil.cp(disk(), "a.txt", "b.txt")
+      assert [%{method: :put}, %{method: :head, url: url}] = requests()
+      assert url == "https://bucket.s3.eu-central-1.amazonaws.com/a.txt"
+
+      stub([response(400, error_xml("InvalidArgument")), response(200)])
+
+      assert {:error, %Fil.UnknownError{reason: "InvalidArgument"}} = Fil.cp(disk(), "a.txt", "b.txt")
     end
 
     test "rename copies and then deletes" do
@@ -362,10 +417,10 @@ defmodule Fil.Adapter.S3Test do
       assert Enum.map(refs, & &1.path) == ["photos/a.jpg"]
     end
 
-    test "an unparsable body is a transport error" do
+    test "an unparsable body is unavailable" do
       stub([response(200, "not xml at all")])
 
-      assert {:error, %Fil.TransportError{reason: :invalid_xml}} = Fil.ls(disk(), "photos")
+      assert {:error, %Fil.UnavailableError{reason: :invalid_xml}} = Fil.ls(disk(), "photos")
     end
   end
 
@@ -408,10 +463,10 @@ defmodule Fil.Adapter.S3Test do
       refute Fil.dir?(disk(), "nope")
     end
 
-    test "a missing key with nothing under it is :enoent" do
+    test "a missing key with nothing under it is not found" do
       stub([response(404), response(200, empty_list())])
 
-      assert Fil.stat(disk(), "photos") == {:error, :enoent}
+      assert {:error, %Fil.NotFoundError{reason: {:http_status, 404}}} = Fil.stat(disk(), "photos")
     end
 
     test "the disk root is always a directory" do
@@ -452,7 +507,7 @@ defmodule Fil.Adapter.S3Test do
     test "stops at the first key it cannot delete" do
       stub([response(200, list_recursive()), response(403, error_xml("AccessDenied"))])
 
-      assert Fil.rm_rf(disk(), "photos") == {:error, :eacces}
+      assert {:error, %Fil.AccessDeniedError{reason: "AccessDenied"}} = Fil.rm_rf(disk(), "photos")
     end
 
     test "deletes nothing when there is nothing" do
@@ -520,8 +575,9 @@ defmodule Fil.Adapter.S3Test do
     end
 
     test "validates the expiry and the method" do
-      assert Fil.signed_url(disk(), "cv.pdf", expires_in: 8 * 24 * 60 * 60) ==
-               {:error, {:invalid_option, :expires_in}}
+      assert_raise ArgumentError, ~r/invalid value for :expires_in option/, fn ->
+        Fil.signed_url(disk(), "cv.pdf", expires_in: 8 * 24 * 60 * 60)
+      end
 
       assert_raise ArgumentError, ~r/invalid value for :method option/, fn ->
         Fil.signed_url(disk(), "cv.pdf", method: :delete)
@@ -531,7 +587,8 @@ defmodule Fil.Adapter.S3Test do
     test "needs credentials" do
       disk = Fil.disk(adapter: S3, bucket: "public", req_options: req_options())
 
-      assert Fil.signed_url(disk, "cv.pdf") == {:error, :missing_credentials}
+      assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :missing_credentials}} =
+               Fil.signed_url(disk, "cv.pdf")
     end
   end
 
@@ -567,7 +624,8 @@ defmodule Fil.Adapter.S3Test do
     test "BadDigest is a checksum mismatch" do
       stub([response(400, error_xml("BadDigest"))])
 
-      assert Fil.write(disk(), "a.txt", "Hello", checksum: :sha256) == {:error, :checksum_mismatch}
+      assert {:error, %Fil.ChecksumMismatchError{reason: "BadDigest"}} =
+               Fil.write(disk(), "a.txt", "Hello", checksum: :sha256)
     end
 
     test "stat returns the stored checksum" do
@@ -596,7 +654,8 @@ defmodule Fil.Adapter.S3Test do
     test "a read with a mismatching checksum fails" do
       stub([response(200, "Hellø", [{"x-amz-checksum-sha256", @checksums[:sha256]}])])
 
-      assert Fil.read(disk(), "a.txt", verify_checksum: true) == {:error, :checksum_mismatch}
+      assert {:error, %Fil.ChecksumMismatchError{reason: :checksum_mismatch}} =
+               Fil.read(disk(), "a.txt", verify_checksum: true)
     end
 
     test "a read skips checksums it can't verify" do

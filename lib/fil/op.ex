@@ -12,8 +12,8 @@ defmodule Fil.Op do
     * `:dest`: the destination path of a `:cp` or `:rename` on the same disk, `nil` otherwise
     * `:content`: the content of a `:write`, `nil` otherwise. Change it with `update_content/2`
     * `:options`: the validated options of the call
-    * `:result`: `nil` on the way in, then `{:ok, value}` or `{:error, reason}` with the same value the `Fil` function
-      returns. Change a read result with `update_result/2`
+    * `:result`: `nil` on the way in, then `{:ok, value}` or `{:error, exception}` with the same value the `Fil`
+      function returns. Change a read result with `update_result/2`
     * `:private`: a map for plugins to pass data along
   """
 
@@ -32,7 +32,7 @@ defmodule Fil.Op do
           dest: Path.t() | nil,
           content: iodata() | nil,
           options: keyword(),
-          result: {:ok, term()} | {:error, term()} | nil,
+          result: {:ok, term()} | {:error, Exception.t()} | nil,
           private: map()
         }
 
@@ -86,9 +86,11 @@ defmodule Fil.Op do
   @doc """
   Sets the result.
 
-  A plugin that sets the result instead of calling `next` answers the call itself, and the adapter never runs.
+  A plugin that sets the result instead of calling `next` answers the call itself, and the adapter never runs. An error
+  is an exception: one of `Fil`'s (see [Errors](Fil.Adapter.html#module-errors)) or the plugin's own. `Fil` fills in
+  the `:op`, `:path` and `:disk` of its own errors where the plugin left them `nil`.
   """
-  @spec put_result(t(), {:ok, term()} | {:error, term()}) :: t()
+  @spec put_result(t(), {:ok, term()} | {:error, Exception.t()}) :: t()
   def put_result(%__MODULE__{} = op, {tag, _value} = result) when tag in [:ok, :error] do
     %{op | result: result}
   end
@@ -209,33 +211,51 @@ defmodule Fil.Op do
 
   @doc false
   # Runs the disk's plugins around the adapter call. The first plugin attached is the outermost layer.
-  @spec run(t()) :: {:ok, term()} | {:error, term()}
-  def run(%__MODULE__{disk: %Disk{plugins: plugins}} = op) do
+  #
+  # Errors get their context from `caller`, the op as the caller made it, not from the op a plugin may have rewritten:
+  # `error.path` is the path the caller passed, so `Fil.ref(error.disk, error.path)` is a ref to the same file.
+  @spec run(t()) :: {:ok, term()} | {:error, Exception.t()}
+  def run(%__MODULE__{disk: %Disk{plugins: plugins}} = caller) do
     chain =
       plugins
       |> Enum.reverse()
-      |> Enum.reduce(&adapter/1, fn {name, callback, opts}, next ->
+      |> Enum.reduce(&adapter(&1, caller), fn {name, callback, opts}, next ->
         fn op ->
           callback
           |> call_plugin(op, next, opts)
-          |> plugin_return!(name, op)
+          |> plugin_return!(name, caller)
         end
       end)
 
-    case chain.(op) do
-      %__MODULE__{result: {tag, _value} = result} when tag in [:ok, :error] -> result
-      %__MODULE__{result: other} -> raise_error(op, {:bad_plugin_result, other})
-    end
+    chain.(caller).result
   end
 
   defp call_plugin({module, function}, op, next, opts), do: apply(module, function, [op, next, opts])
   defp call_plugin(fun, op, next, opts), do: fun.(op, next, opts)
 
-  defp plugin_return!(%__MODULE__{} = returned, _name, _op), do: returned
-  defp plugin_return!(other, name, op), do: raise_error(op, {:bad_plugin_return, name, other})
+  # A plugin's result goes up the chain with its context filled in, so the plugins above see what the caller will see.
+  defp plugin_return!(%__MODULE__{result: {:ok, _value}} = returned, _name, _caller), do: returned
+
+  defp plugin_return!(%__MODULE__{result: {:error, %{__exception__: true} = error}} = returned, _name, caller) do
+    %{returned | result: {:error, put_context(error, caller)}}
+  end
+
+  defp plugin_return!(%__MODULE__{result: {:error, reason}}, name, _caller) do
+    raise ArgumentError,
+          "the plugin #{inspect(name)} returned {:error, #{inspect(reason)}}, but an error must be an exception, " <>
+            "such as %Fil.NotFoundError{}"
+  end
+
+  defp plugin_return!(%__MODULE__{result: other}, name, _caller) do
+    raise ArgumentError, "the plugin #{inspect(name)} returned an op without a result, got: #{inspect(other)}"
+  end
+
+  defp plugin_return!(other, name, _caller) do
+    raise ArgumentError, "the plugin #{inspect(name)} must return a %Fil.Op{}, got: #{inspect(other)}"
+  end
 
   # The end of the chain. The paths are normalized again, so a plugin that rewrites one can't escape the disk root.
-  defp adapter(%__MODULE__{} = op) do
+  defp adapter(%__MODULE__{} = op, caller) do
     with {:ok, path} <- Fil.Support.Path.normalize(op.path),
          {:ok, dest} <- normalize_dest(op.dest) do
       op = %{op | path: path, dest: dest}
@@ -245,10 +265,10 @@ defmodule Fil.Op do
         | result:
             op
             |> call_adapter()
-            |> to_result(op)
+            |> to_result(op, caller)
       }
     else
-      {:error, reason} -> %{op | result: {:error, reason}}
+      {:error, :ebadpath} -> %{op | result: {:error, put_context(%Fil.InvalidRequestError{reason: :ebadpath}, caller)}}
     end
   end
 
@@ -270,7 +290,7 @@ defmodule Fil.Op do
     if Code.ensure_loaded?(module) and function_exported?(module, name, 3) do
       apply(module, name, [state, op.path, op.options])
     else
-      {:error, {:unsupported, name}}
+      {:error, %Fil.UnsupportedError{reason: :no_callback}}
     end
   end
 
@@ -278,21 +298,34 @@ defmodule Fil.Op do
   defp call_adapter(%__MODULE__{name: name} = op, module, state), do: apply(module, name, [state, op.path, op.options])
 
   # Adapters return a bare `:ok` for mutations. The result is the ref the operation acted on.
-  defp to_result(:ok, %__MODULE__{name: name, dest: dest} = op) when name in [:cp, :rename] do
+  defp to_result(:ok, %__MODULE__{name: name, dest: dest} = op, _caller) when name in [:cp, :rename] do
     {:ok, %Ref{disk: op.disk, path: dest}}
   end
 
-  defp to_result(:ok, op), do: {:ok, %Ref{disk: op.disk, path: op.path}}
+  defp to_result(:ok, op, _caller), do: {:ok, %Ref{disk: op.disk, path: op.path}}
 
-  defp to_result({:ok, listed}, %__MODULE__{name: :ls, disk: disk}) when is_list(listed) do
+  defp to_result({:ok, listed}, %__MODULE__{name: :ls, disk: disk}, _caller) when is_list(listed) do
     {:ok, Enum.map(listed, fn {path, stat} -> %Ref{disk: disk, path: path, stat: stat} end)}
   end
 
-  defp to_result({:ok, value}, _op), do: {:ok, value}
-  defp to_result({:error, reason}, _op), do: {:error, reason}
-  defp to_result(other, op), do: raise_error(op, {:bad_adapter_return, other})
+  defp to_result({:ok, value}, _op, _caller), do: {:ok, value}
 
-  defp raise_error(%__MODULE__{disk: disk, name: name, path: path}, reason) do
-    raise Fil.Error, op: name, path: path, adapter: Disk.adapter(disk), reason: reason
+  # An adapter that failed on the destination of a copy says so with `path: dest`, in its own (possibly rewritten)
+  # terms, so that's translated back to the caller's destination.
+  defp to_result({:error, %{__exception__: true} = error}, %__MODULE__{dest: dest}, caller) when dest != nil do
+    error = if Map.get(error, :path) == dest, do: %{error | path: caller.dest}, else: error
+    {:error, put_context(error, caller)}
+  end
+
+  defp to_result({:error, %{__exception__: true} = error}, _op, caller), do: {:error, put_context(error, caller)}
+
+  defp to_result(other, op, _caller) do
+    raise ArgumentError,
+          "#{inspect(Disk.adapter(op.disk))}.#{op.name} must return :ok, {:ok, value} or {:error, exception}, " <>
+            "got: #{inspect(other)}"
+  end
+
+  defp put_context(error, %__MODULE__{disk: disk, name: name, path: path}) do
+    Fil.Support.Error.put_context(error, op: name, path: path, disk: disk)
   end
 end

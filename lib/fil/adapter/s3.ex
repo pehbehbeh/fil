@@ -88,8 +88,8 @@ defmodule Fil.Adapter.S3 do
   | `Fil` | S3 |
   | --- | --- |
   | `read/3` | GetObject (`x-amz-checksum-mode: ENABLED` for `verify_checksum: true`) |
-  | `write/4` | PutObject (`If-None-Match: *` for `if_none_match: :any`, `x-amz-checksum-*` for `checksum:`) |
-  | `rm/3` | DeleteObject, which S3 already treats as idempotent |
+  | `write/4` | PutObject (`If-None-Match: *` for `if_exists: :error`, `x-amz-checksum-*` for `checksum:`) |
+  | `rm/3` | DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error) |
   | `stat/3` | HeadObject (`x-amz-checksum-mode: ENABLED` for `checksum:`), then a prefix probe so `dir?/1` works |
   | `ls/3` | ListObjectsV2, `delimiter=/` unless recursive, paginated internally |
   | `cp/4` | CopyObject |
@@ -100,15 +100,27 @@ defmodule Fil.Adapter.S3 do
 
   ## Errors
 
-  | Backend response | `Fil` error |
+  `:reason` is the error code from the response body (`"NoSuchKey"`), or `{:http_status, status}` when there's none.
+  Failures before a response keep Req's reason (`:timeout`, an exception). The error code decides first, whatever the
+  status, because S3-compatible servers don't all send the same one.
+
+  | S3 response | `Fil` error |
   | --- | --- |
-  | `404` | `:enoent` |
-  | `403` | `:eacces` |
-  | `409`, `412` | `:precondition_failed` |
-  | a `400` with `BadDigest`, or a body that doesn't match its stored checksum | `:checksum_mismatch` |
-  | `301`, or a `400` that names another region | `{:wrong_region, region}` |
-  | timeouts, connection failures, `5xx` | `%Fil.TransportError{}` |
-  | anything else | `{:unexpected_status, status, code}` |
+  | `NoSuchKey`, or `404` | `Fil.NotFoundError` |
+  | `NoSuchBucket` | `Fil.ConfigurationError` |
+  | a `400` for a copy whose source doesn't exist (checked with HeadObject) | `Fil.NotFoundError` |
+  | `AccessDenied`, or `403` | `Fil.AccessDeniedError` |
+  | `EntityTooLarge`, `KeyTooLongError` | `Fil.InvalidRequestError` |
+  | `PreconditionFailed`, `ConditionalRequestConflict` | `Fil.AlreadyExistsError` |
+  | `412`, or a `409` without a code | `Fil.AlreadyExistsError` |
+  | `BadDigest` | `Fil.ChecksumMismatchError` |
+  | a body that doesn't match its stored checksum | `Fil.ChecksumMismatchError`, `reason: :checksum_mismatch` |
+  | a signed URL on a disk without credentials | `Fil.UnsupportedError`, `reason: :missing_credentials` |
+  | `301`, or a `400` that gives another region | `Fil.ConfigurationError`, `reason: {:wrong_region, region}` |
+  | `SlowDown`, `OperationAborted`, `InternalError`, `ServiceUnavailable` | `Fil.UnavailableError` |
+  | `429`, `5xx` | `Fil.UnavailableError` |
+  | timeouts, failed connections, an unreadable listing | `Fil.UnavailableError` |
+  | anything else, including an error inside the `200` of a CopyObject | `Fil.UnknownError` |
   """
 
   @behaviour Fil.Adapter
@@ -116,12 +128,10 @@ defmodule Fil.Adapter.S3 do
   alias Fil.Stat
   alias Fil.Support.Checksum
   alias Fil.Support.XML
-  alias Fil.TransportError
 
   import Fil.Support.Timestamps
   import Fil.Support.URL
 
-  @max_expires_in 7 * 24 * 60 * 60
   @checksum_mode {"x-amz-checksum-mode", "ENABLED"}
 
   @derive {Inspect, only: [:bucket, :region, :prefix, :endpoint, :path_style]}
@@ -179,7 +189,7 @@ defmodule Fil.Adapter.S3 do
     headers =
       opts
       |> content_type_header()
-      |> put_if_none_match(opts)
+      |> put_if_exists(opts)
       |> put_checksum(opts, body)
 
     case request(state, :put, key(state, path), headers: headers, body: body) do
@@ -192,11 +202,16 @@ defmodule Fil.Adapter.S3 do
   @impl Fil.Adapter
   def rm(state, path, _opts) do
     case request(state, :delete, key(state, path)) do
-      {:ok, %{status: status}} when status in [200, 204, 404] -> :ok
+      {:ok, %{status: status}} when status in [200, 204] -> :ok
+      {:ok, %{status: 404} = response} -> missing_is_ok(error(response))
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # A missing file is fine for an idempotent delete, a missing bucket isn't.
+  defp missing_is_ok(%Fil.NotFoundError{}), do: :ok
+  defp missing_is_ok(error), do: {:error, error}
 
   @impl Fil.Adapter
   def stat(_state, ".", _opts), do: {:ok, %Stat{type: :directory}}
@@ -229,11 +244,23 @@ defmodule Fil.Adapter.S3 do
     headers = [{"x-amz-copy-source", copy_source(state, src)}]
 
     case request(state, :put, key(state, dest), headers: headers) do
-      {:ok, %{status: 200, body: body}} -> copy_result(body)
+      {:ok, %{status: 200} = response} -> copy_result(response)
+      {:ok, %{status: 400} = response} -> copy_error(state, src, error(response))
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # AWS answers a missing source with `404 NoSuchKey`, but some S3-compatible servers (SeaweedFS) send a plain 400, so
+  # an unexplained 400 is checked against the source.
+  defp copy_error(state, src, %Fil.UnknownError{} = error) do
+    case request(state, :head, key(state, src)) do
+      {:ok, %{status: 404}} -> {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
+      _other -> {:error, error}
+    end
+  end
+
+  defp copy_error(_state, _src, error), do: {:error, error}
 
   @impl Fil.Adapter
   def rename(state, src, dest, opts) do
@@ -266,21 +293,11 @@ defmodule Fil.Adapter.S3 do
 
   @impl Fil.Adapter
   def signed_url(state, path, opts) do
-    method = Keyword.get(opts, :method, :get)
-    expires_in = Keyword.get(opts, :expires_in, 900)
-
-    cond do
-      is_nil(state.access_key_id) or is_nil(state.secret_access_key) ->
-        {:error, :missing_credentials}
-
-      method not in [:get, :put] ->
-        {:error, {:invalid_option, :method}}
-
-      expires_in > @max_expires_in ->
-        {:error, {:invalid_option, :expires_in}}
-
-      true ->
-        {:ok, presign(state, key(state, path), method, expires_in)}
+    # `Fil` has validated `:method` and `:expires_in` (at most 7 days, the limit of S3).
+    if is_nil(state.access_key_id) or is_nil(state.secret_access_key) do
+      {:error, %Fil.UnsupportedError{reason: :missing_credentials}}
+    else
+      {:ok, presign(state, key(state, path), Keyword.get(opts, :method, :get), Keyword.get(opts, :expires_in, 900))}
     end
   end
 
@@ -316,10 +333,11 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  defp put_if_none_match(headers, opts) do
-    case Keyword.get(opts, :if_none_match) do
-      :any -> [{"if-none-match", "*"} | headers]
-      nil -> headers
+  # S3 creates an object only if none exists when the request has `If-None-Match: *`.
+  defp put_if_exists(headers, opts) do
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite -> headers
+      :error -> [{"if-none-match", "*"} | headers]
     end
   end
 
@@ -351,7 +369,9 @@ defmodule Fil.Adapter.S3 do
         {:ok, body}
 
       {algorithm, checksum} ->
-        if Checksum.digest(algorithm, body) == checksum, do: {:ok, body}, else: {:error, :checksum_mismatch}
+        if Checksum.digest(algorithm, body) == checksum,
+          do: {:ok, body},
+          else: {:error, %Fil.ChecksumMismatchError{reason: :checksum_mismatch}}
     end
   end
 
@@ -377,8 +397,8 @@ defmodule Fil.Adapter.S3 do
     # error here.
     case Req.request(options) do
       {:ok, response} -> {:ok, response}
-      {:error, %Req.TransportError{reason: reason}} -> {:error, %TransportError{reason: reason}}
-      {:error, exception} -> {:error, %TransportError{reason: exception}}
+      {:error, %Req.TransportError{reason: reason}} -> {:error, %Fil.UnavailableError{reason: reason}}
+      {:error, exception} -> {:error, %Fil.UnavailableError{reason: exception}}
     end
   end
 
@@ -439,11 +459,11 @@ defmodule Fil.Adapter.S3 do
   defp copy_source(state, src), do: "/" <> state.bucket <> "/" <> encode_path(key(state, src))
 
   # CopyObject can report failure inside a 200 response body.
-  defp copy_result(body) when is_binary(body) do
-    if String.contains?(body, "<Error"), do: {:error, error_code(body)}, else: :ok
+  defp copy_result(%{body: body} = response) when is_binary(body) do
+    if String.contains?(body, "<Error"), do: {:error, error(response)}, else: :ok
   end
 
-  defp copy_result(_body), do: :ok
+  defp copy_result(_response), do: :ok
 
   ## ------------------------------------------------------------------
   ## Keys and prefixes
@@ -503,7 +523,7 @@ defmodule Fil.Adapter.S3 do
   defp parse_xml(body) do
     case XML.parse(body) do
       {:ok, element} -> {:ok, element}
-      {:error, :invalid_xml} -> {:error, %TransportError{reason: :invalid_xml}}
+      {:error, :invalid_xml} -> {:error, %Fil.UnavailableError{reason: :invalid_xml}}
     end
   end
 
@@ -557,7 +577,7 @@ defmodule Fil.Adapter.S3 do
   defp directory_stat(state, path) do
     with {:ok, contents, prefixes} <- list_all(state, list_prefix(state, path), "/") do
       if contents == [] and prefixes == [] do
-        {:error, :enoent}
+        {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
       else
         {:ok, %Stat{type: :directory}}
       end
@@ -568,24 +588,41 @@ defmodule Fil.Adapter.S3 do
   ## Errors
   ## ------------------------------------------------------------------
 
-  defp error(%{status: 404}), do: :enoent
-  defp error(%{status: 403}), do: :eacces
-  defp error(%{status: status}) when status in [409, 412], do: :precondition_failed
-  defp error(%{status: 301} = response), do: {:wrong_region, bucket_region(response)}
+  @codes %{
+    "NoSuchKey" => Fil.NotFoundError,
+    "NoSuchBucket" => Fil.ConfigurationError,
+    "AccessDenied" => Fil.AccessDeniedError,
+    "EntityTooLarge" => Fil.InvalidRequestError,
+    "KeyTooLongError" => Fil.InvalidRequestError,
+    "PreconditionFailed" => Fil.AlreadyExistsError,
+    "ConditionalRequestConflict" => Fil.AlreadyExistsError,
+    "BadDigest" => Fil.ChecksumMismatchError,
+    "SlowDown" => Fil.UnavailableError,
+    "OperationAborted" => Fil.UnavailableError,
+    "InternalError" => Fil.UnavailableError,
+    "ServiceUnavailable" => Fil.UnavailableError
+  }
 
-  defp error(%{status: 400} = response) do
-    case {bucket_region(response), error_code(response.body)} do
-      {nil, "BadDigest"} -> :checksum_mismatch
-      {nil, code} -> {:unexpected_status, 400, code}
-      {region, _code} -> {:wrong_region, region}
+  # The error code decides before the status, because S3-compatible servers don't all send the status AWS does.
+  defp error(%{status: status} = response) do
+    region = bucket_region(response)
+    code = error_code(response.body)
+
+    cond do
+      status == 301 or (status == 400 and is_binary(region)) -> %Fil.ConfigurationError{reason: {:wrong_region, region}}
+      Map.has_key?(@codes, code) -> struct(Map.fetch!(@codes, code), reason: code)
+      true -> struct(status_error(status, code), reason: code || {:http_status, status})
     end
   end
 
-  defp error(%{status: status}) when status >= 500 do
-    %TransportError{reason: {:http_status, status}}
-  end
-
-  defp error(%{status: status, body: body}), do: {:unexpected_status, status, error_code(body)}
+  # A 409 means an `if_exists: :error` write found a file only without another code: S3 sends 409 for other conflicts
+  # too.
+  defp status_error(404, _code), do: Fil.NotFoundError
+  defp status_error(403, _code), do: Fil.AccessDeniedError
+  defp status_error(412, _code), do: Fil.AlreadyExistsError
+  defp status_error(409, nil), do: Fil.AlreadyExistsError
+  defp status_error(status, _code) when status == 429 or status >= 500, do: Fil.UnavailableError
+  defp status_error(_status, _code), do: Fil.UnknownError
 
   defp bucket_region(%{headers: headers}), do: header(headers, "x-amz-bucket-region")
 

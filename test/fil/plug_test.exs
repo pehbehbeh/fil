@@ -121,6 +121,55 @@ defmodule Fil.PlugTest do
     assert get_resp_header(request(:get, get_url, disk), "content-type") == ["application/json"]
   end
 
+  describe "errors" do
+    test "a failed write gets the status of its error", %{memory: disk} do
+      for {error, status} <- [
+            {%Fil.AlreadyExistsError{reason: :eexist}, 409},
+            {%Fil.StorageFullError{reason: :enospc}, 507},
+            {%Fil.UnavailableError{reason: :timeout}, 503}
+          ] do
+        failing = failing_writes(disk, error)
+        {:ok, url} = Fil.signed_url(failing, "a.txt", method: :put)
+
+        assert request(:put, url, failing, "content").status == status
+      end
+    end
+
+    test "a denied file is a 404, like a missing one", %{memory: disk} do
+      {:ok, _} = Fil.write(disk, "secret.txt", "secret")
+
+      denied =
+        Fil.attach(disk, :deny, fn
+          %Fil.Op{name: name} = op, _next, _opts when name in [:stat, :read] ->
+            Fil.Op.put_result(op, {:error, %Fil.AccessDeniedError{reason: :eacces}})
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      {:ok, url} = Fil.signed_url(denied, "secret.txt")
+
+      assert request(:get, url, denied).status == 404
+    end
+
+    @tag :capture_log
+    test "any other error is a 500 that keeps the details in the log", %{memory: disk} do
+      failing = failing_writes(disk, %Fil.UnknownError{reason: "InvalidArgument"})
+      {:ok, url} = Fil.signed_url(failing, "a.txt", method: :put)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          conn = request(:put, url, failing, "content")
+
+          assert conn.status == 500
+          assert conn.resp_body == "internal server error"
+        end)
+
+      assert log =~ ~s|could not write "a.txt"|
+      assert log =~ "InvalidArgument"
+    end
+  end
+
   test "resolves the disk from a function or an MFA", %{memory: disk} do
     {:ok, _} = Fil.write(disk, "a.txt", "a")
     {:ok, url} = Fil.signed_url(disk, "a.txt")
@@ -253,6 +302,13 @@ defmodule Fil.PlugTest do
 
   # Mounted like `forward "/storage", Fil.Plug, disk: disk`: the prefix is stripped from `path_info`, and
   # `request_path` keeps it.
+  defp failing_writes(disk, error) do
+    Fil.attach(disk, :failing, fn
+      %Fil.Op{name: :write} = op, _next, _opts -> Fil.Op.put_result(op, {:error, error})
+      op, next, _opts -> next.(op)
+    end)
+  end
+
   defp request(method, url, disk, body \\ nil) do
     uri = URI.parse(url)
 

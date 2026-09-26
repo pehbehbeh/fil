@@ -11,13 +11,14 @@ defmodule Fil.Adapter.S3IntegrationTest do
   `FIL_S3_REGION` point the suite at another S3 endpoint, AWS included.
   """
 
-  # SeaweedFS answers a second `If-None-Match: *` PUT with 200 instead of refusing it, so the conditional write test
-  # can't pass here. It also accepts `x-amz-checksum-*` on a PUT but returns no stored checksum from HeadObject. The
-  # unit tests cover the requests `Fil` sends, and AWS honours both.
+  # SeaweedFS answers a second `If-None-Match: *` PUT with 200 instead of refusing it, so the `if_exists: :error` test
+  # can't pass here. It also accepts `x-amz-checksum-*` on a PUT but returns no stored checksum from HeadObject, and
+  # it answers a DeleteObject on a prefix with a 500, because it stores prefixes as real directories. The unit tests
+  # cover the requests `Fil` sends, and AWS handles all three.
   alias Fil.Adapter.S3
   alias Fil.Emulator
 
-  use Fil.AdapterCase, async: false, tags: [:integration], unsupported: [:conditional_write, :checksum]
+  use Fil.AdapterCase, async: false, tags: [:integration], unsupported: [:if_exists, :checksum, :rm_directory]
 
   setup_all do
     Emulator.require!(:s3)
@@ -58,9 +59,8 @@ defmodule Fil.Adapter.S3IntegrationTest do
           secret_access_key: "not-the-secret"
         )
 
-      assert {:error, reason} = Fil.read(disk, "nope.txt")
-      assert reason in [:eacces, :enoent] or match?({:unexpected_status, _status, _code}, reason)
-      refute reason == :enoent, "SeaweedFS accepted a request signed with the wrong secret"
+      assert {:error, error} = Fil.read(disk, "nope.txt")
+      refute match?(%Fil.NotFoundError{}, error), "SeaweedFS accepted a request signed with the wrong secret"
     end
   end
 

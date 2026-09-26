@@ -118,18 +118,22 @@ end
 ## Errors
 
 Errors come back through the chain like any other result, so a callback matches on `op.result` after `next` and can
-change it. This one turns a missing file into an empty one:
+change it. They're the same structs the caller gets, with the operation and the path already filled in. This one turns
+a missing file into an empty one:
 
 ```elixir
 def call(%Fil.Op{name: :read} = op, next, _opts) do
   case next.(op) do
-    %Fil.Op{result: {:error, :enoent}} = op -> Fil.Op.put_result(op, {:ok, ""})
+    %Fil.Op{result: {:error, %Fil.NotFoundError{}}} = op -> Fil.Op.put_result(op, {:ok, ""})
     op -> op
   end
 end
 ```
 
-A callback that returns something other than a `Fil.Op`, or leaves the result empty, raises `Fil.Error`.
+A callback that answers with an error puts an exception in the result: one of `Fil`'s errors, such as
+`%Fil.UnsupportedError{reason: :read_only}`, or its own. `Fil` fills in the operation, the path and the disk of its
+own errors. A callback that returns something other than a `Fil.Op`, leaves the result empty or puts anything else in
+`{:error, _}` raises `ArgumentError`, because that's a bug in the plugin.
 
 ## Content
 
@@ -141,7 +145,8 @@ these functions will keep working when it lands.
 ## Paths
 
 A plugin may rewrite `op.path` (to put everything under a tenant prefix, for example). The path is normalized again
-before the adapter sees it, so a rewritten path can't escape the disk root either: it fails with `{:error, :ebadpath}`.
+before the adapter sees it, so a rewritten path can't escape the disk root either: it fails with a
+`Fil.InvalidRequestError` whose `:reason` is `:ebadpath`.
 
 ## Copies and renames
 

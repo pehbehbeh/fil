@@ -37,11 +37,21 @@ A disk is a plain value, so your application needs a place that builds it. One f
 defmodule MyApp.Storage do
   @moduledoc "The disks MyApp stores files on."
 
-  def uploads, do: Fil.Plugin.ContentType.attach(disk(:uploads))
-  def backups, do: disk(:backups)
+  @doc "Returns the uploads disk."
+  def uploads do
+    disk_from_config(:uploads)
+    |> Fil.Plugin.ContentType.attach()
+  end
 
-  defp disk(name) do
-    Fil.disk(Keyword.fetch!(Application.fetch_env!(:my_app, __MODULE__), name))
+  @doc "Returns the backups disk."
+  def backups do
+    disk_from_config(:backups)
+  end
+
+  defp disk_from_config(name) do
+    Application.fetch_env!(:my_app, __MODULE__)
+    |> Keyword.fetch!(name)
+    |> Fil.disk()
   end
 end
 ```
@@ -52,10 +62,11 @@ extension, so browsers can display uploads. Plugins that only some environments 
 
 Building a disk only validates the options (no network, no process), so it's fine to build it on every call.
 
-The rest of the application doesn't know which backend is behind a disk:
+The rest of the application doesn't know which storage is behind a disk:
 
 ```elixir
-Fil.write(MyApp.Storage.uploads(), "avatars/#{user.id}.png", png)
+disk = MyApp.Storage.uploads()
+Fil.write(disk, "avatars/#{user.id}.png", png)
 ```
 
 `Fil` doesn't need this module. It has no application config of its own, so read the options from anywhere you like.
@@ -113,7 +124,8 @@ end
 A signed URL lets a browser download or upload a file directly:
 
 ```elixir
-Fil.signed_url(MyApp.Storage.uploads(), "avatars/1.png", method: :put, expires_in: 300)
+disk = MyApp.Storage.uploads()
+Fil.signed_url(disk, "avatars/1.png", method: :put, expires_in: 300)
 ```
 
 S3 signs its own URLs. Local and memory disks can't, so `Fil.Plugin.URL` signs them and `Fil.Plug` serves them from

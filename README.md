@@ -22,33 +22,34 @@
 
 ## Features and goals
 
-- **Many storage backends behind one API.** `Fil` aims to be a solid file abstraction that behaves the same on every
-  backend. Local disk, S3 (including S3-compatible stores) and an in-memory disk for tests are there today. The
-  in-memory disk keeps a store per test process, so tests can run with `async: true`. Azure Blob Storage, Google Cloud
-  Storage, SFTP and many more are possible. `cp` and `rename` copy and move files between disks with the same calls.
-- **Lightweight, [Req](https://github.com/wojtekmach/req)-like API.** A disk is a plain value: no application config,
-  no registry, nothing to add to your supervision tree. That keeps `Fil` usable in a script or a Livebook with a single
-  `Mix.install/1`, and the code stays functional: build a disk, pass it around, attach things to it.
-- **Pluggable.** Anything that isn't about where files are stored belongs in a
-  [plugin](https://fil.hexdocs.pm/plugins.html) attached to a disk. Plugins see every operation on it, for example
-  to set content types or to log. A trash can, encryption, compression or caching could follow.
-- **Few dependencies.** At runtime, `Fil` needs only [Req](https://github.com/wojtekmach/req),
-  [NimbleOptions](https://github.com/dashbitco/nimble_options) and [MIME](https://github.com/elixir-plug/mime) (and
-  Plug for `Fil.Plug`, as an optional dependency). Cloud adapters use Req for HTTP and request signing, and upcoming
-  ones (Google Cloud Storage, Azure) should too, instead of each bringing its own client or SDK. Timeouts, proxies and
-  connection pools for S3 are set per disk, as Req options.
-- **Public and signed URLs.** Every disk returns public URLs and signed GET and PUT URLs. S3 serves its own, and for
-  any other disk, [`Fil.Plugin.URL`](https://fil.hexdocs.pm/Fil.Plugin.URL.html) builds them and
-  [`Fil.Plug`](https://fil.hexdocs.pm/Fil.Plug.html) serves them from your application. With `public: true`,
-  `Fil.Plug` serves any disk over HTTP, like `Plug.Static`.
-- **Safe writes and paths.** Create-if-absent writes with `if_none_match: :any` are atomic on local disk and on AWS
-  S3. With checksums, S3 rejects an upload that doesn't match, and reads can verify it. Paths are checked against the
-  disk root, so a `../` in user input can't climb out of it.
+- **One API for many kinds of storage.** Local disk, S3 (and S3-compatible stores) and an in-memory disk for async
+  tests, with the same behaviour on every adapter. `cp` and `rename` work across disks.
+- **Just values.** A disk is a plain value: no application config, no registry, nothing to supervise. It works in a
+  script or a Livebook with `Mix.install/1`.
+- **Pluggable.** Anything that isn't about where files are stored is a [plugin](https://fil.hexdocs.pm/plugins.html),
+  such as setting content types or logging.
+- **Few dependencies.** Req, NimbleOptions and MIME, plus Plug if you serve files. Cloud adapters use Req instead of
+  their own SDKs.
+- **URLs on every disk.** Public and signed GET and PUT URLs, from S3 itself or from `Fil.Plugin.URL` and `Fil.Plug`.
+- **Safe by default.** Paths can't climb out of the disk root, `if_exists: :error` never replaces a file, and S3
+  verifies checksums.
+- **Errors you can act on.** Each error, such as `Fil.NotFoundError` or `Fil.UnavailableError`, says what to do next
+  and is the same on every adapter.
 
 ## Concepts
 
-`Fil` uses the names of Elixir's `File` module (`read`, `write`, `stat`, `ls`, `cp`, `rename`, `rm`, `rm_rf`). Every
-function that can fail returns `{:ok, result}` or `{:error, reason}`.
+`Fil` uses the function names of Elixir's `File` module (`read`, `write`, `stat`, `ls`, `cp`, `rename`, `rm`,
+`rm_rf`), but on every adapter they behave like an object store:
+
+- `write` creates missing parent directories
+- `rm` on a missing file succeeds
+- `ls` on a missing directory returns an empty list
+- paths are always relative to the disk root, and `.` is the root
+- a path that climbs above the root fails with a `Fil.InvalidRequestError`
+
+The [contract in `Fil.Adapter`](https://fil.hexdocs.pm/Fil.Adapter.html#module-contract) lists every difference from
+`File`. Every function that can fail returns `{:ok, result}` or `{:error, error}`, with an error from the Errors
+section below.
 
 ### Disks
 
@@ -128,30 +129,23 @@ local =
 The [plugins guide](https://fil.hexdocs.pm/plugins.html) explains how to write plugins: matching on operations,
 changing content, handling errors and answering without the adapter.
 
-### Semantics
-
-The names come from `File`, but the semantics follow the object store model, on every backend:
-
-- `write` creates missing parent directories
-- `rm` on a missing file succeeds
-- `ls` on a missing directory returns an empty list
-- paths are always relative to the disk root, and `.` is the root
-- a path that climbs above the root fails with `{:error, :ebadpath}`
-
-The [contract in `Fil.Adapter`](https://fil.hexdocs.pm/Fil.Adapter.html#module-contract) lists every difference from
-`File`.
-
 ### Errors
 
-Backend failures are mapped onto POSIX atoms where one fits (`:enoent`, `:eacces`, `:eisdir`). Apart from those:
+Every error is an exception struct that says what you can do about it, and means the same on every disk:
 
-  * `{:unsupported, op}`: the adapter can't do this at all
-  * `:precondition_failed`: an `if_none_match: :any` write found the file already there
-  * `:checksum_mismatch`: the content doesn't match its checksum
-  * `:ebadpath`: the path escapes the disk root
-  * `%Fil.TransportError{}`: the backend couldn't be reached
+```elixir
+case Fil.read(disk, "report.txt") do
+  {:ok, content} -> content
+  {:error, %Fil.NotFoundError{}} -> nil
+  {:error, %Fil.UnavailableError{}} -> :retry_later
+end
+```
 
-Every function that can fail has a bang variant that returns the bare result and raises `Fil.Error` instead.
+The structs contain the operation, the path, the disk and what the storage reported (`:reason`), so a log line says
+which file failed and why. Each error has its own page under Errors in the docs, and
+[Errors in `Fil.Adapter`](https://fil.hexdocs.pm/Fil.Adapter.html#module-errors) explains how adapters use them.
+
+Every function that can fail has a bang variant that returns the bare result and raises the same struct instead.
 
 ## Usage
 
@@ -169,7 +163,7 @@ def deps do
 end
 ```
 
-Build one disk per storage backend:
+Build one disk per kind of storage:
 
 ```elixir
 local = Fil.disk(adapter: Fil.Adapter.Local, root: "priv/storage")
@@ -214,12 +208,14 @@ and stores the checksum with the object, so later reads can check it:
 {:ok, %Fil.Stat{checksum: {:sha256, checksum}}} = Fil.stat(report, checksum: :sha256)
 ```
 
-With `if_none_match: :any`, a write only succeeds if nothing exists at the path yet. That's enough for a simple lock:
+To create a file only if it doesn't exist yet, pass `if_exists: :error`. If the file is already there, nothing is
+overwritten and the write returns a `Fil.AlreadyExistsError`. That makes a simple lock: whoever creates the file
+first runs the job.
 
 ```elixir
-case Fil.write(s3, "jobs/today.lock", "started", if_none_match: :any) do
+case Fil.write(s3, "jobs/today.lock", "started", if_exists: :error) do
   {:ok, _lock} -> :run_the_job
-  {:error, :precondition_failed} -> :someone_else_won
+  {:error, %Fil.AlreadyExistsError{}} -> :someone_else_won
 end
 ```
 
@@ -240,7 +236,7 @@ at another S3 endpoint.
 
 `Fil` builds on ideas from these projects:
 
-- [Flysystem](https://flysystem.thephpleague.com) (PHP): the scope, one API across many storage backends
+- [Flysystem](https://flysystem.thephpleague.com) (PHP): the scope, one API across many kinds of storage
 - [Req](https://github.com/wojtekmach/req): the API design, with disks as plain values and plugins that attach to them
 - [Plug](https://github.com/elixir-plug/plug): plugins as small units you add to a disk, each doing one thing to every
   operation that passes through

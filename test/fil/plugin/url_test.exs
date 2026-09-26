@@ -38,7 +38,7 @@ defmodule Fil.Plugin.URLTest do
     end
 
     test "rejects paths escaping the root", %{disk: disk} do
-      assert Fil.url(disk, "../a.txt") == {:error, :ebadpath}
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.url(disk, "../a.txt")
     end
   end
 
@@ -63,12 +63,15 @@ defmodule Fil.Plugin.URLTest do
     end
 
     test "caps the expiry at 7 days, as on S3", %{disk: disk} do
-      assert Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60 + 1) ==
-               {:error, {:invalid_option, :expires_in}}
+      assert {:ok, _url} = Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60)
+
+      assert_raise ArgumentError, ~r/expires_in/, fn ->
+        Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60 + 1)
+      end
     end
 
     test "rejects paths escaping the root", %{disk: disk} do
-      assert Fil.signed_url(disk, "../a.txt") == {:error, :ebadpath}
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.signed_url(disk, "../a.txt")
     end
 
     test "leaves signing to the adapter without a secret", %{tmp_dir: tmp_dir} do
@@ -77,7 +80,7 @@ defmodule Fil.Plugin.URLTest do
         |> Fil.disk()
         |> URL.attach(base_url: "http://localhost")
 
-      assert Fil.signed_url(local, "a.txt") == {:error, {:unsupported, :signed_url}}
+      assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :no_callback}} = Fil.signed_url(local, "a.txt")
 
       s3 =
         [adapter: Fil.Adapter.S3, bucket: "bucket", region: "eu-central-1", access_key_id: "a", secret_access_key: "s"]

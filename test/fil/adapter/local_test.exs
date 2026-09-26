@@ -41,8 +41,8 @@ defmodule Fil.Adapter.LocalTest do
     test "applies when the adapter is called directly", %{tmp_dir: tmp_dir} do
       {:ok, state} = Local.init(root: tmp_dir)
 
-      assert Local.read(state, "../../etc/passwd", []) == {:error, :ebadpath}
-      assert Local.write(state, "../escape.txt", "x", []) == {:error, :ebadpath}
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Local.read(state, "../../etc/passwd", [])
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Local.write(state, "../escape.txt", "x", [])
       refute File.exists?(Path.join(tmp_dir, "../escape.txt"))
     end
 
@@ -51,8 +51,7 @@ defmodule Fil.Adapter.LocalTest do
       File.mkdir_p!(Path.join(tmp_dir, "root-sibling"))
       File.write!(Path.join(tmp_dir, "root-sibling/secret.txt"), "secret")
 
-      assert Local.read(state, "../root-sibling/secret.txt", []) ==
-               {:error, :ebadpath}
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Local.read(state, "../root-sibling/secret.txt", [])
     end
   end
 
@@ -74,11 +73,11 @@ defmodule Fil.Adapter.LocalTest do
       assert Fil.read(disk, "atomic.txt") == {:ok, "second"}
     end
 
-    test "an exclusive create does not truncate the existing file", %{disk: disk} do
+    test "if_exists: :error does not truncate the existing file", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "once.txt", "original")
 
-      assert {:error, :precondition_failed} =
-               Fil.write(disk, "once.txt", "clobber", if_none_match: :any)
+      assert {:error, %Fil.AlreadyExistsError{reason: :eexist}} =
+               Fil.write(disk, "once.txt", "clobber", if_exists: :error)
 
       assert Fil.read(disk, "once.txt") == {:ok, "original"}
     end
@@ -111,17 +110,35 @@ defmodule Fil.Adapter.LocalTest do
     end
   end
 
-  describe "cp/2" do
-    test "copying a missing file is :enoent", %{disk: disk} do
-      assert Fil.cp(disk, "nope.txt", "target.txt") == {:error, :enoent}
+  describe "errors" do
+    test "a directory is :eisdir", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
+
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} = Fil.read(disk, "dir")
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} = Fil.cp(disk, "dir", "copy.txt")
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} = Fil.write(disk, "dir", "content")
+
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} =
+               Fil.write(disk, "dir", "content", if_exists: :error)
+    end
+
+    test "a path under a file is :enotdir", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "file.txt", "content")
+
+      assert {:error, %Fil.InvalidRequestError{reason: :enotdir}} = Fil.write(disk, "file.txt/child.txt", "child")
+
+      assert {:error, %Fil.InvalidRequestError{reason: :enotdir}} =
+               Fil.write(disk, "file.txt/deeper/child.txt", "child")
+
+      assert {:error, %Fil.InvalidRequestError{reason: :enotdir, path: "file.txt/copy.txt"}} =
+               Fil.cp(disk, "file.txt", "file.txt/copy.txt")
     end
   end
 
   describe "rm/1" do
     test "refuses to delete a directory", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
-      assert {:error, reason} = Fil.rm(disk, "dir")
-      assert reason in [:eperm, :eisdir]
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} = Fil.rm(disk, "dir")
       assert Fil.read(disk, "dir/file.txt") == {:ok, "content"}
     end
   end
@@ -130,8 +147,8 @@ defmodule Fil.Adapter.LocalTest do
     test "needs Fil.Plugin.URL", %{tmp_dir: tmp_dir} do
       disk = Fil.disk(adapter: Local, root: tmp_dir)
 
-      assert Fil.url(disk, "a.txt") == {:error, {:unsupported, :url}}
-      assert Fil.signed_url(disk, "a.txt") == {:error, {:unsupported, :signed_url}}
+      assert {:error, %Fil.UnsupportedError{op: :url, reason: :no_callback}} = Fil.url(disk, "a.txt")
+      assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :no_callback}} = Fil.signed_url(disk, "a.txt")
     end
   end
 end

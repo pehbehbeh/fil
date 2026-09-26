@@ -123,36 +123,100 @@ defmodule Fil.PluginsTest do
       disk =
         Fil.attach(disk, :default, fn op, next, _opts ->
           case next.(op) do
-            %Op{name: :read, result: {:error, :enoent}} = op -> Op.put_result(op, {:ok, ""})
+            %Op{name: :read, result: {:error, %Fil.NotFoundError{}}} = op -> Op.put_result(op, {:ok, ""})
             op -> op
           end
         end)
 
       assert Fil.read(disk, "missing.txt") == {:ok, ""}
-      assert Fil.stat(disk, "missing.txt") == {:error, :enoent}
+
+      assert {:error, %Fil.NotFoundError{op: :stat, path: "missing.txt", reason: :enoent}} =
+               Fil.stat(disk, "missing.txt")
+    end
+
+    test "plugins see errors with their context filled in", %{disk: disk} do
+      test_pid = self()
+
+      disk =
+        Fil.attach(disk, :spy, fn op, next, _opts ->
+          op = next.(op)
+          send(test_pid, {:result, op.result})
+          op
+        end)
+
+      assert {:error, error} = Fil.read(disk, "missing.txt")
+      assert_received {:result, {:error, ^error}}
+      assert %Fil.NotFoundError{op: :read, path: "missing.txt", disk: ^disk} = error
+    end
+
+    test "an error a plugin builds gets the context it left out", %{disk: disk} do
+      disk =
+        Fil.attach(disk, :read_only, fn
+          %Op{name: :write} = op, _next, _opts -> Op.put_result(op, {:error, %Fil.UnsupportedError{reason: :read_only}})
+          op, next, _opts -> next.(op)
+        end)
+
+      assert {:error, error} = Fil.write(disk, "a.txt", "content")
+      assert error == %Fil.UnsupportedError{op: :write, path: "a.txt", disk: disk, reason: :read_only}
+    end
+
+    test "a plugin may return its own exception", %{disk: disk} do
+      disk =
+        Fil.attach(disk, :own, fn op, _next, _opts -> Op.put_result(op, {:error, %RuntimeError{message: "no"}}) end)
+
+      assert Fil.read(disk, "a.txt") == {:error, %RuntimeError{message: "no"}}
+    end
+
+    test "an error that isn't an exception raises", %{disk: disk} do
+      disk = Fil.attach(disk, :bare, fn op, _next, _opts -> Op.put_result(op, {:error, :enoent}) end)
+
+      assert_raise ArgumentError, ~r/the plugin :bare returned \{:error, :enoent\}/, fn -> Fil.read(disk, "a.txt") end
+    end
+
+    test "errors name the caller's path, not a rewritten one", %{disk: disk} do
+      tenant = fn op, next, _opts ->
+        next.(%{op | path: "tenant/" <> op.path, dest: op.dest && "tenant/" <> op.dest})
+      end
+
+      disk = Fil.attach(disk, :tenant, tenant)
+
+      assert {:error, %Fil.NotFoundError{path: "a.txt"} = error} = Fil.read(disk, "a.txt")
+
+      assert {:ok, _} = Fil.write(error.disk, error.path, "content")
+      assert Fil.read(Fil.ref(error.disk, error.path)) == {:ok, "content"}
+
+      # Local reports a destination under a file with the destination's path, which is translated back too.
+      assert {:error, %Fil.InvalidRequestError{path: "a.txt/copy.txt", reason: :enotdir}} =
+               Fil.cp(disk, "a.txt", "a.txt/copy.txt")
     end
 
     test "a rewritten path can't escape the disk root", %{disk: disk, tmp_dir: tmp_dir} do
       escape = fn op, next, _opts -> next.(%{op | path: "../" <> op.path, dest: op.dest && "../" <> op.dest}) end
       escaping = Fil.attach(disk, :escape, escape)
 
-      assert Fil.write(escaping, "a.txt", "content") == {:error, :ebadpath}
+      assert {:error, %Fil.InvalidRequestError{path: "a.txt", reason: :ebadpath}} =
+               Fil.write(escaping, "a.txt", "content")
+
       refute File.exists?(Path.join(tmp_dir, "a.txt"))
 
       assert {:ok, _} = Fil.write(disk, "a.txt", "content")
-      assert Fil.cp(escaping, "a.txt", "b.txt") == {:error, :ebadpath}
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.cp(escaping, "a.txt", "b.txt")
     end
 
     test "a callback that doesn't return an op raises", %{disk: disk} do
       disk = Fil.attach(disk, :broken, fn _op, _next, _opts -> :oops end)
 
-      assert_raise Fil.Error, ~r/bad_plugin_return/, fn -> Fil.read(disk, "a.txt") end
+      assert_raise ArgumentError, ~r/the plugin :broken must return a %Fil.Op\{\}, got: :oops/, fn ->
+        Fil.read(disk, "a.txt")
+      end
     end
 
     test "a chain that ends without a result raises", %{disk: disk} do
       disk = Fil.attach(disk, :lazy, fn op, _next, _opts -> op end)
 
-      assert_raise Fil.Error, ~r/bad_plugin_result/, fn -> Fil.read(disk, "a.txt") end
+      assert_raise ArgumentError, ~r/the plugin :lazy returned an op without a result/, fn ->
+        Fil.read(disk, "a.txt")
+      end
     end
 
     test "copies within a disk are one operation with a destination", %{disk: disk} do

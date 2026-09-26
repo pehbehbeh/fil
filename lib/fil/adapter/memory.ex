@@ -45,7 +45,7 @@ defmodule Fil.Adapter.Memory do
 
     * directories exist only as prefixes, like on an object store. There are no empty directories, and a stat on a
       directory returns `%Fil.Stat{type: :directory}` with every other field `nil`.
-    * writes are atomic, and `if_none_match: :any` uses `:ets.insert_new/2`, so a create-if-absent write is atomic too.
+    * writes are atomic, and `if_exists: :error` uses `:ets.insert_new/2`, so its check is atomic too.
     * `stat/3` sets `:etag` to the MD5 of the content in hex (the ETag S3 returns for a single-part upload), and
       `:content_type` to the `content_type:` the write stored.
     * checksums work as on S3: a write with `checksum:` stores the checksum of the content, `stat/3` with the same
@@ -60,12 +60,13 @@ defmodule Fil.Adapter.Memory do
 
   ## Errors
 
-  | Situation | `Fil` error |
-  | --- | --- |
-  | a missing file | `:enoent` |
-  | an exclusive create finding the file already there | `:precondition_failed` |
-  | a URL without `Fil.Plugin.URL` | `{:unsupported, :url}` |
-  | a signed URL without a `:secret` for `Fil.Plugin.URL` | `{:unsupported, :signed_url}` |
+  `:reason` is the POSIX atom `Fil.Adapter.Local` would return in the same situation.
+
+  | Situation | `Fil` error | `:reason` |
+  | --- | --- | --- |
+  | a missing file | `Fil.NotFoundError` | `:enoent` |
+  | an exclusive create finding the file already there | `Fil.AlreadyExistsError` | `:eexist` |
+  | `verify_checksum: true` and content that doesn't match | `Fil.ChecksumMismatchError` | `:checksum_mismatch` |
   """
 
   @behaviour Fil.Adapter
@@ -150,7 +151,7 @@ defmodule Fil.Adapter.Memory do
   def read(state, path, opts) do
     case :ets.lookup(store!(), key(state, path)) do
       [{_key, content, _content_type, _mtime, checksum}] -> verify(content, checksum, opts)
-      [] -> {:error, :enoent}
+      [] -> {:error, %Fil.NotFoundError{reason: :enoent}}
     end
   end
 
@@ -159,9 +160,9 @@ defmodule Fil.Adapter.Memory do
     content = IO.iodata_to_binary(content)
     entry = {key(state, path), content, Keyword.get(opts, :content_type), now(), checksum(content, opts)}
 
-    case Keyword.get(opts, :if_none_match) do
-      :any -> if :ets.insert_new(store!(), entry), do: :ok, else: {:error, :precondition_failed}
-      nil -> insert(store!(), entry)
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite -> insert(store!(), entry)
+      :error -> if :ets.insert_new(store!(), entry), do: :ok, else: {:error, %Fil.AlreadyExistsError{reason: :eexist}}
     end
   end
 
@@ -203,7 +204,7 @@ defmodule Fil.Adapter.Memory do
         insert(store, {key(state, dest), content, content_type, now(), checksum})
 
       [] ->
-        {:error, :enoent}
+        {:error, %Fil.NotFoundError{reason: :enoent}}
     end
   end
 
@@ -294,7 +295,7 @@ defmodule Fil.Adapter.Memory do
 
   defp directory_stat(store, state, path) do
     if entries_under(store, state, path) == [] do
-      {:error, :enoent}
+      {:error, %Fil.NotFoundError{reason: :enoent}}
     else
       {:ok, %Stat{type: :directory}}
     end
@@ -328,7 +329,7 @@ defmodule Fil.Adapter.Memory do
 
   defp verify(content, {algorithm, checksum}, opts) do
     if Keyword.get(opts, :verify_checksum, false) and Checksum.digest(algorithm, content) != checksum do
-      {:error, :checksum_mismatch}
+      {:error, %Fil.ChecksumMismatchError{reason: :checksum_mismatch}}
     else
       {:ok, content}
     end

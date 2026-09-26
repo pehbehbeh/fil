@@ -32,8 +32,8 @@ defmodule Fil.Plugin.URL do
       #=> {:ok, "http://localhost:4000/storage/uploads/avatars/1.png?expires=...&signature=..."}
 
   The plugin answers `Fil.url/2` and, with a `:secret`, `Fil.signed_url/3` itself, so the adapter never runs. That's how
-  local and memory disks get URLs, since they have no backend that could build them. A public URL only works where
-  `Fil.Plug` serves the disk with `public: true` (or something else serves the files at `:base_url`).
+  local and memory disks get URLs, since there is no storage service that could build them. A public URL only works
+  where `Fil.Plug` serves the disk with `public: true` (or something else serves the files at `:base_url`).
 
   On an S3 disk, `:base_url` replaces the bucket URL in `Fil.url/2`, for a CDN in front of the bucket. Without a
   `:secret`, S3 still presigns `Fil.signed_url/3` itself. With one, signed URLs go to your application, which then
@@ -41,7 +41,8 @@ defmodule Fil.Plugin.URL do
   runs through your application, and files are read into memory whole.
 
   A signed URL is `:base_url`, the path, and two query parameters: `expires` (Unix seconds) and `signature`, an
-  HMAC-SHA256 over the method, the URL path and the expiry. `expires_in:` is capped at 7 days, as on S3.
+  HMAC-SHA256 over the method, the URL path and the expiry. `expires_in:` is capped at 7 days, as on S3, so a URL that
+  works on one disk works on every disk.
 
   ## Options
 
@@ -50,9 +51,6 @@ defmodule Fil.Plugin.URL do
 
   alias Fil.Op
   alias Fil.Support.URL
-
-  # The same cap as S3's presigned URLs, so a URL that works on one disk works on every disk.
-  @max_expires_in 7 * 24 * 60 * 60
 
   @doc """
   Attaches the plugin to `disk` under the name `Fil.Plugin.URL`.
@@ -111,7 +109,7 @@ defmodule Fil.Plugin.URL do
     opts = NimbleOptions.validate!(opts, @schema)
 
     result =
-      with {:ok, path} <- Fil.Support.Path.normalize(op.path) do
+      with {:ok, path} <- normalize(op.path) do
         {:ok, String.trim_trailing(opts[:base_url], "/") <> "/" <> URL.encode_path(path)}
       end
 
@@ -129,13 +127,15 @@ defmodule Fil.Plugin.URL do
 
   def call(op, next, _opts), do: next.(op)
 
+  # `Fil` has validated `:expires_in` (at most 7 days).
   defp signed_url(op, base_url, secret) do
-    with {:ok, path} <- Fil.Support.Path.normalize(op.path) do
-      if Keyword.get(op.options, :expires_in, 900) > @max_expires_in do
-        {:error, {:invalid_option, :expires_in}}
-      else
-        {:ok, sign(base_url, secret, path, op.options)}
-      end
+    with {:ok, path} <- normalize(op.path), do: {:ok, sign(base_url, secret, path, op.options)}
+  end
+
+  # An earlier plugin may have rewritten the path, so it's checked again, like `Fil` does before the adapter.
+  defp normalize(path) do
+    with {:error, :ebadpath} <- Fil.Support.Path.normalize(path) do
+      {:error, %Fil.InvalidRequestError{reason: :ebadpath}}
     end
   end
 

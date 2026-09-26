@@ -79,13 +79,21 @@ defmodule FilTest do
     test "a bare disk lists its root", %{disk: disk} do
       assert Fil.ls(disk) == Fil.ls(disk, ".")
     end
+
+    test "if_exists: takes :overwrite or :error", %{disk: disk} do
+      assert_raise ArgumentError, ~r/invalid value for :if_exists option/, fn ->
+        Fil.write(disk, "a.txt", "content", if_exists: :skip)
+      end
+    end
   end
 
   describe "dispatch" do
     test "raises on an unexpected adapter return value" do
       disk = Fil.disk(adapter: __MODULE__.BrokenAdapter)
 
-      assert_raise Fil.Error, ~r/bad_adapter_return/, fn -> Fil.read(disk, "a.txt") end
+      assert_raise ArgumentError, ~r/BrokenAdapter.read must return .* got: :surprise/, fn ->
+        Fil.read(disk, "a.txt")
+      end
     end
   end
 

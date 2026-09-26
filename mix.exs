@@ -1,8 +1,4 @@
 defmodule Fil.MixProject do
-  alias Fil.Adapter.Local
-  alias Fil.Adapter.Memory
-  alias Fil.Adapter.S3
-
   use Mix.Project
 
   @version "0.1.0"
@@ -78,10 +74,10 @@ defmodule Fil.MixProject do
         "Bang variants": &(&1[:section] == :bang)
       ],
       groups_for_modules: [
-        Adapters: [Fil.Adapter, Local, S3, Memory],
+        Adapters: ~r/^Fil\.Adapter(\.\w+)?$/,
         Plugins: ~r/^Fil\.Plugin\./,
         Integrations: [Fil.Plug],
-        Errors: [Fil.Error, Fil.TransportError]
+        Errors: ~r/^Fil\.\w+Error$/
       ]
     ]
   end

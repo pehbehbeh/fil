@@ -14,10 +14,10 @@ defmodule Fil.AdapterCase do
               """
             ],
             unsupported: [
-              type: {:list, {:in, [:conditional_write, :checksum]}},
+              type: {:list, {:in, [:if_exists, :checksum, :rm_directory]}},
               default: [],
               doc: """
-              Parts of the contract the backend under test doesn't implement. The matching test is then skipped instead
+              Parts of the contract the storage under test doesn't implement. The matching test is then skipped instead
               of failing. This is meant for emulators with known gaps, not for adapters that cut corners.
               """
             ]
@@ -55,28 +55,28 @@ defmodule Fil.AdapterCase do
   @doc "Builds the second disk, used by the cross-disk tests."
   @callback fil_other_disk(map()) :: Fil.Disk.t()
 
-  # Generated at compile time instead of branching at runtime, so each suite only contains the variant for its backend.
-  defp conditional_write_test(false) do
+  # Generated at compile time instead of branching at runtime, so each suite only contains the variant for its storage.
+  defp if_exists_test(false) do
     quote do
-      test "if_none_match: :any creates exclusively", %{disk: disk} do
-        assert {:ok, _} = Fil.write(disk, "once.txt", "first", if_none_match: :any)
+      test "if_exists: :error never replaces a file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "once.txt", "first", if_exists: :error)
 
-        assert {:error, :precondition_failed} =
-                 Fil.write(disk, "once.txt", "second", if_none_match: :any)
+        assert {:error, %Fil.AlreadyExistsError{}} =
+                 Fil.write(disk, "once.txt", "second", if_exists: :error)
 
         assert Fil.read(disk, "once.txt") == {:ok, "first"}
       end
     end
   end
 
-  defp conditional_write_test(true) do
+  defp if_exists_test(true) do
     quote do
       @tag :skip
-      test "if_none_match: :any creates exclusively", %{disk: disk} do
-        # This backend declares conditional writes unsupported. The test stays in as skipped, so the gap shows up in the
-        # test output.
-        assert {:error, :precondition_failed} =
-                 Fil.write(disk, "once.txt", "second", if_none_match: :any)
+      test "if_exists: :error never replaces a file", %{disk: disk} do
+        # The storage under test declares `if_exists: :error` unsupported. The test stays in as skipped, so the gap
+        # shows up in the test output.
+        assert {:error, %Fil.AlreadyExistsError{}} =
+                 Fil.write(disk, "once.txt", "second", if_exists: :error)
       end
     end
   end
@@ -109,9 +109,33 @@ defmodule Fil.AdapterCase do
     quote do
       @tag :skip
       test "stores and reports checksums", %{disk: disk} do
-        # This backend declares checksums unsupported. The test stays in as skipped, so the gap shows up in the test
-        # output.
+        # The storage under test declares checksums unsupported. The test stays in as skipped, so the gap shows up in
+        # the test output.
         assert {:ok, _} = Fil.write(disk, "checksum.txt", "content", checksum: :sha256)
+      end
+    end
+  end
+
+  defp rm_directory_test(false) do
+    quote do
+      test "deleting a directory removes nothing", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "tree/leaf.txt", "leaf")
+
+        # Local refuses, object stores have nothing to delete under that exact key.
+        result = Fil.rm(disk, "tree")
+        assert match?({:ok, _}, result) or match?({:error, %Fil.InvalidRequestError{reason: :eisdir}}, result)
+        assert Fil.read(disk, "tree/leaf.txt") == {:ok, "leaf"}
+      end
+    end
+  end
+
+  defp rm_directory_test(true) do
+    quote do
+      @tag :skip
+      test "deleting a directory removes nothing", %{disk: disk} do
+        # The storage under test declares deleting a directory unsupported. The test stays in as skipped, so the gap
+        # shows up in the test output.
+        assert {:ok, _} = Fil.rm(disk, "tree")
       end
     end
   end
@@ -123,8 +147,9 @@ defmodule Fil.AdapterCase do
     # `use Fil.AdapterCase, tags: [:integration]`.
     moduletags = for tag <- [:tmp_dir | opts[:tags]], do: quote(do: @moduletag(unquote(tag)))
     case_opts = [async: opts[:async]]
-    conditional_write = conditional_write_test(:conditional_write in opts[:unsupported])
+    if_exists = if_exists_test(:if_exists in opts[:unsupported])
     checksum = checksum_test(:checksum in opts[:unsupported])
+    rm_directory = rm_directory_test(:rm_directory in opts[:unsupported])
 
     # This quote block contains every test of the suite, which is why it's long.
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
@@ -190,13 +215,43 @@ defmodule Fil.AdapterCase do
         end
       end
 
-      test "reading a missing file is :enoent", %{disk: disk} do
-        assert Fil.read(disk, "nope.txt") == {:error, :enoent}
-        assert Fil.read(disk, "missing/nope.txt") == {:error, :enoent}
+      test "reading a missing file is not found", %{disk: disk} do
+        assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "nope.txt")
+        assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "missing/nope.txt")
       end
 
-      test "stat of a missing file is :enoent", %{disk: disk} do
-        assert Fil.stat(disk, "nope.txt") == {:error, :enoent}
+      test "errors carry the operation, the path, the disk and a reason", %{disk: disk} do
+        assert {:error, %Fil.NotFoundError{} = error} = Fil.read(disk, "missing/nope.txt")
+
+        assert error.op == :read
+        assert error.path == "missing/nope.txt"
+        assert error.disk == disk
+        refute error.reason == nil, "adapters must set :reason"
+
+        assert {:error, %Fil.NotFoundError{op: :cp, path: "nope.txt"} = error} = Fil.cp(disk, "nope.txt", "target.txt")
+        refute error.reason == nil, "adapters must set :reason"
+      end
+
+      test "stat of a missing file is not found", %{disk: disk} do
+        assert {:error, %Fil.NotFoundError{}} = Fil.stat(disk, "nope.txt")
+      end
+
+      test "a path through a file is a missing file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "report.txt", "report")
+
+        assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "report.txt/nope.txt")
+        assert {:error, %Fil.NotFoundError{}} = Fil.stat(disk, "report.txt/nope.txt")
+        assert {:error, %Fil.NotFoundError{}} = Fil.cp(disk, "report.txt/nope.txt", "target.txt")
+        assert {:ok, _} = Fil.rm(disk, "report.txt/nope.txt")
+        refute Fil.exists?(disk, "report.txt/nope.txt")
+      end
+
+      test "reading a directory fails", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "tree/leaf.txt", "leaf")
+
+        # A real directory (Local) or a prefix with no object of its own (S3, Memory).
+        assert {:error, error} = Fil.read(disk, "tree")
+        assert match?(%Fil.InvalidRequestError{}, error) or match?(%Fil.NotFoundError{}, error)
       end
 
       ## ----------------------------------------------------------------
@@ -207,7 +262,7 @@ defmodule Fil.AdapterCase do
         assert {:ok, _} = Fil.write(disk, "bye.txt", "later")
         assert {:ok, ref} = Fil.rm(disk, "bye.txt")
         assert ref.path == "bye.txt"
-        assert Fil.read(disk, "bye.txt") == {:error, :enoent}
+        assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "bye.txt")
         assert {:ok, ^ref} = Fil.rm(disk, "bye.txt")
         assert {:ok, _} = Fil.rm(disk, "never/existed.txt")
       end
@@ -218,14 +273,16 @@ defmodule Fil.AdapterCase do
         assert {:ok, _} = Fil.write(disk, "trash/nested/b.txt", "b")
 
         assert {:ok, 2} = Fil.rm_rf(disk, "trash")
-        assert Fil.read(disk, "trash/a.txt") == {:error, :enoent}
-        assert Fil.read(disk, "trash/nested/b.txt") == {:error, :enoent}
+        assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "trash/a.txt")
+        assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "trash/nested/b.txt")
         assert Fil.read(disk, "keep.txt") == {:ok, "keep"}
       end
 
       test "deleting a missing prefix removes nothing", %{disk: disk} do
         assert {:ok, 0} = Fil.rm_rf(disk, "never/existed")
       end
+
+      unquote(rm_directory)
 
       ## ----------------------------------------------------------------
       ## Predicates and metadata
@@ -333,10 +390,9 @@ defmodule Fil.AdapterCase do
         assert Fil.read(disk, "source.txt") == {:ok, "content"}
       end
 
-      test "copying a missing file fails", %{disk: disk} do
-        # `:enoent` on AWS and on the local filesystem; some S3-compatible servers report a plain 400 instead, which is
-        # still a refusal.
-        assert {:error, _reason} = Fil.cp(disk, "nope.txt", "target.txt")
+      test "copying or renaming a missing file is not found", %{disk: disk} do
+        assert {:error, %Fil.NotFoundError{}} = Fil.cp(disk, "nope.txt", "target.txt")
+        assert {:error, %Fil.NotFoundError{}} = Fil.rename(disk, "nope.txt", "target.txt")
         refute Fil.exists?(disk, "target.txt")
       end
 
@@ -346,7 +402,15 @@ defmodule Fil.AdapterCase do
 
         assert ref.path == "final/report.txt"
         assert Fil.read(disk, "final/report.txt") == {:ok, "content"}
-        assert Fil.read(disk, "draft.txt") == {:error, :enoent}
+        assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "draft.txt")
+      end
+
+      test "an error across disks names the call", %{disk: disk, other_disk: other_disk} do
+        assert {:error, %Fil.NotFoundError{op: :cp, path: "nope.txt"}} =
+                 Fil.cp(disk, "nope.txt", Fil.ref(other_disk, "target.txt"))
+
+        assert {:error, %Fil.NotFoundError{op: :rename, path: "nope.txt"}} =
+                 Fil.rename(disk, "nope.txt", Fil.ref(other_disk, "target.txt"))
       end
 
       test "copies across disks", %{disk: disk, other_disk: other_disk} do
@@ -364,14 +428,14 @@ defmodule Fil.AdapterCase do
 
         assert ref.disk == other_disk
         assert Fil.read(other_disk, "moved.txt") == {:ok, "content"}
-        assert Fil.read(disk, "moving.txt") == {:error, :enoent}
+        assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "moving.txt")
       end
 
       ## ----------------------------------------------------------------
-      ## Conditional writes
+      ## Exclusive writes
       ## ----------------------------------------------------------------
 
-      unquote(conditional_write)
+      unquote(if_exists)
 
       ## ----------------------------------------------------------------
       ## Checksums
@@ -405,8 +469,9 @@ defmodule Fil.AdapterCase do
       test "signed URLs expire after 7 days at most", %{disk: disk} do
         assert {:ok, _} = Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60)
 
-        assert Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60 + 1) ==
-                 {:error, {:invalid_option, :expires_in}}
+        assert_raise ArgumentError, ~r/expires_in/, fn ->
+          Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60 + 1)
+        end
       end
 
       ## ----------------------------------------------------------------
@@ -414,14 +479,14 @@ defmodule Fil.AdapterCase do
       ## ----------------------------------------------------------------
 
       test "rejects paths escaping the disk root", %{disk: disk} do
-        assert Fil.read(disk, "../escape.txt") == {:error, :ebadpath}
-        assert Fil.read(disk, "a/../../escape.txt") == {:error, :ebadpath}
-        assert Fil.write(disk, "../escape.txt", "nope") == {:error, :ebadpath}
-        assert Fil.rm(disk, "../escape.txt") == {:error, :ebadpath}
-        assert Fil.ls(disk, "..") == {:error, :ebadpath}
-        assert Fil.stat(disk, "../escape.txt") == {:error, :ebadpath}
-        assert Fil.cp(disk, "../escape.txt", "here.txt") == {:error, :ebadpath}
-        assert Fil.rm_rf(disk, "..") == {:error, :ebadpath}
+        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.read(disk, "../escape.txt")
+        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.read(disk, "a/../../escape.txt")
+        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.write(disk, "../escape.txt", "nope")
+        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.rm(disk, "../escape.txt")
+        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.ls(disk, "..")
+        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.stat(disk, "../escape.txt")
+        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.cp(disk, "../escape.txt", "here.txt")
+        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.rm_rf(disk, "..")
         refute Fil.exists?(disk, "../escape.txt")
       end
 
@@ -475,20 +540,17 @@ defmodule Fil.AdapterCase do
         assert Fil.rm_rf!(disk, ".") >= 1
       end
 
-      test "bang variants raise Fil.Error", %{disk: disk} do
-        error = assert_raise(Fil.Error, fn -> Fil.read!(disk, "nope.txt") end)
+      test "bang variants raise the error", %{disk: disk} do
+        error = assert_raise(Fil.NotFoundError, fn -> Fil.read!(disk, "nope.txt") end)
 
-        assert error.reason == :enoent
         assert error.op == :read
         assert error.path == "nope.txt"
-        assert error.adapter == Fil.Disk.adapter(disk)
-        assert error.message =~ "could not read"
-        assert error.message =~ "nope.txt"
-        assert error.message =~ inspect(Fil.Disk.adapter(disk))
+        assert error.disk == disk
+        assert Exception.message(error) =~ ~s|could not read "nope.txt" on #{inspect(disk)}|
 
-        assert_raise Fil.Error, fn -> Fil.read!(Fil.ref(disk, "../escape.txt")) end
-        assert_raise Fil.Error, fn -> Fil.stat!(disk, "nope.txt") end
-        assert_raise Fil.Error, fn -> Fil.cp!(disk, "nope.txt", "target.txt") end
+        assert_raise Fil.InvalidRequestError, fn -> Fil.read!(Fil.ref(disk, "../escape.txt")) end
+        assert_raise Fil.NotFoundError, fn -> Fil.stat!(disk, "nope.txt") end
+        assert_raise Fil.NotFoundError, fn -> Fil.cp!(disk, "nope.txt", "target.txt") end
       end
     end
   end

@@ -5,11 +5,11 @@ The Hex package is `fil`.
 
 ## Core rules
 
-- **Return values:** every function that can fail returns `{:ok, result} | {:error, reason}`. Actions on files return
-  `{:ok, %Fil.Ref{}}`. Bang variants raise `Fil.Error`.
+- **Return values:** every function that can fail returns `{:ok, result} | {:error, exception}`. Actions on files
+  return `{:ok, %Fil.Ref{}}`. Bang variants raise the same exception.
 - **Names and semantics:** the API, the adapter callbacks and the `Fil.Op` names use `File`'s vocabulary (`read`,
   `write`, `stat`, `ls`, `cp`, `rename`, `rm`, `rm_rf`, `exists?`, `dir?`), but the semantics follow the object store
-  model on every backend: `rm` is idempotent, `write` creates parents, paths are jailed to the disk root. Every
+  model on every adapter: `rm` is idempotent, `write` creates parents, paths are jailed to the disk root. Every
   difference from `File` is a row in the contract table in `Fil.Adapter`. Keep that table current, and link to it
   instead of repeating it.
 - **Refs:** every public function accepts `disk, path` or a `%Fil.Ref{}`, built with `Fil.ref/2`. There's
@@ -24,18 +24,23 @@ The Hex package is `fil`.
   so they keep working once streaming lands. Every operation goes through `Fil.Op.run/1`. Plugin docs live in
   `guides/plugins.md` only, not in the README.
 - **Same behaviour on every adapter:** critical behaviour (read, write, list, copy, checksums, public and signed URLs)
-  works on every disk. When a backend lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.URL` builds and
-  signs URLs for Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with `{:unsupported, _}`.
-  Differences that remain are edge cases, documented in the "Where the adapters differ" table in `Fil.Adapter` and
-  nowhere else. New behaviour gets a conformance test in `Fil.AdapterCase`.
-- **Backend features stay in adapters:** anything the backend has to do itself (checksums, conditional writes,
+  works on every disk. When the storage lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.URL` builds and
+  signs URLs for Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with a
+  `Fil.UnsupportedError`. Differences that remain are edge cases, documented in the "Where the adapters differ" table
+  in `Fil.Adapter` and nowhere else. New behaviour gets a conformance test in `Fil.AdapterCase`.
+- **Storage features stay in adapters:** anything the storage has to do itself (checksums, conditional writes,
   URLs) is an adapter option, not a plugin. So is addressing (root, bucket, prefix).
+- **Wording:** "adapter" is the module (`Fil.Adapter.S3`), "storage" is what's behind it (S3, the filesystem): "the same
+  on every adapter", "the storage refused access". Don't say "backend".
 - **Namespaces:** `Fil.Adapter.*` is only for adapters, `Fil.Plugin.*` only for plugins. `Fil.Plug` is the Plug
   that serves public and signed URLs (compiled only when the optional Plug dependency is there, listed under
   Integrations in the docs). Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
-- **Errors:** POSIX atoms where they fit, plus `{:unsupported, op}`, `:precondition_failed`, `:checksum_mismatch`,
-  `:ebadpath` and `%Fil.TransportError{}` for network failures. Bad options raise, because they're programming errors.
-  `{:error, _}` is only for storage conditions.
+- **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
+  `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
+  the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never
+  stored. A new storage failure maps onto an existing struct; `Fil.UnknownError` is for responses nobody has mapped
+  yet. A new error goes into `lib/fil/exceptions.ex` and `t:Fil.error/0`; the docs sidebar picks it up by name
+  (`Fil.*Error`). Bad options raise, because they're programming errors. `{:error, _}` is only for storage conditions.
 - **Options:** every options list is validated with NimbleOptions. Schemas have `:doc` strings, and the docs are
   generated from them (`NimbleOptions.docs/1`). No ad-hoc validation with `Keyword.get`.
 - **Line length:** 120 columns everywhere, prose included: `@moduledoc`, `@doc`, option `doc:` strings and `#`
@@ -78,7 +83,7 @@ latest Elixir, against SeaweedFS started from `compose.yml`. When `elixir:` in `
 
 - `Fil.AdapterCase` (test/support) is the shared conformance suite, and every adapter runs it. New behaviour gets a
   test there, not a copy per adapter.
-- Cloud unit tests stub the backend with a Req adapter function (`req_options: [adapter: &adapter/1]`), so `mix test`
+- Cloud unit tests stub the storage with a Req adapter function (`req_options: [adapter: &adapter/1]`), so `mix test`
   makes no network requests and needs no Plug. Req calls the adapter in the test process after its own request steps,
   so a test can record the request or message itself from it.
 - Integration tests create their own buckets and use a unique prefix per test.

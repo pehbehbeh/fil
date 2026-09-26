@@ -38,8 +38,8 @@ if Code.ensure_loaded?(Plug) do
         plug Fil.Plug, at: "/storage/uploads", disk: &MyApp.Storage.uploads/0
 
     The `:base_url` of the disk's `Fil.Plugin.URL` is then `"http://localhost:4000/storage/uploads"`, and every
-    URL `Fil.signed_url/3` builds for it is served here. `Plug.Parsers` would read the body of a JSON or form upload
-    before a router sees it, so a `forward` in the router only works for uploads with other content types.
+    URL `Fil.signed_url/3` builds for it is served here. To run plugs of your own first, such as authentication, use
+    a router instead (see [In a router](#module-in-a-router)).
 
     What it answers:
 
@@ -47,8 +47,11 @@ if Code.ensure_loaded?(Plug) do
         the extension
       * `PUT` on a URL signed for `:put` writes the request body, with the request's `content-type`, the same as a
         presigned PUT on S3. Plugins attached to the disk run as for any other write
-      * a request that doesn't match its signature, or comes after the URL expired, gets a `403`, and a missing file a
-        `404`
+      * a request that doesn't match its signature, or comes after the URL expired, gets a `403`
+      * a missing file gets a `404`, and so does a file the storage denies access to, so a client can't tell which
+        files exist
+      * a failed write gets a `409` if the file already exists, `507` if the storage is full and `503` if it's
+        unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
 
     Requests pass through untouched when the disk doesn't sign URLs with `Fil.Plugin.URL` (and the plug isn't public).
     An S3 disk without it signs URLs that go to S3 directly, so the plug can stay in the endpoint when production uses
@@ -65,6 +68,33 @@ if Code.ensure_loaded?(Plug) do
     `Fil.url/2` builds these URLs. Uploads still need a signed URL, and without a `:secret` for `Fil.Plugin.URL` on the
     disk, a `PUT` gets a `403`.
 
+    ## In a router
+
+    `forward` runs the plug behind a router pipeline, for example to let only signed-in users download from a public
+    disk:
+
+        pipeline :storage do
+          plug :require_authenticated_user
+        end
+
+        scope "/storage" do
+          pipe_through :storage
+          forward "/avatars", Fil.Plug, disk: &MyApp.Storage.avatars/0, public: true
+        end
+
+    `forward` removes `/storage/avatars` from the path, so the plug needs no `:at`. The `:base_url` of
+    `Fil.Plugin.URL` is still the full URL, `"http://localhost:4000/storage/avatars"`, because signatures cover the
+    whole request path.
+
+    Two things in a Phoenix app get in the way of uploads there:
+
+      * `Plug.Parsers` in the endpoint reads the bodies it has a parser for before the router runs (in a new Phoenix
+        app JSON, form and multipart bodies). A `PUT` with one of those content types reaches the plug with an empty
+        body, and the file is written empty. Other content types, such as `image/png` or `application/pdf`, pass
+        through unread. Use the endpoint for uploads in any format.
+      * the `:browser` pipeline's `protect_from_forgery` rejects a `PUT` without a CSRF token. Use a pipeline of your
+        own, as above.
+
     Needs [Plug](https://plug.hexdocs.pm), an optional dependency of `Fil`.
 
     ## Options
@@ -75,6 +105,8 @@ if Code.ensure_loaded?(Plug) do
     @behaviour Plug
 
     import Plug.Conn
+
+    require Logger
 
     @impl Plug
     def init(opts) do
@@ -140,7 +172,8 @@ if Code.ensure_loaded?(Plug) do
         |> put_resp_content_type(stat.content_type || MIME.from_path(path), nil)
         |> send_resp(200, if(conn.method == "HEAD", do: "", else: content))
       else
-        _missing -> send_error(conn, 404, "not found")
+        :directory -> send_error(conn, 404, "not found")
+        {:error, error} -> send_fil_error(conn, error)
       end
     end
 
@@ -156,10 +189,27 @@ if Code.ensure_loaded?(Plug) do
         send_resp(conn, 200, "")
       else
         {:error, :body} -> send_error(conn, 400, "the request body could not be read")
-        {:error, reason} -> send_error(conn, 500, Fil.Error.format_reason(reason))
+        {:error, error} -> send_fil_error(conn, error)
       end
     end
 
+    # A denied file is a 404 too, so a client can't tell which files exist.
+    defp send_fil_error(conn, %error{})
+         when error in [Fil.NotFoundError, Fil.AccessDeniedError, Fil.InvalidRequestError],
+         do: send_error(conn, 404, "not found")
+
+    defp send_fil_error(conn, %Fil.AlreadyExistsError{}), do: send_error(conn, 409, "the file already exists")
+    defp send_fil_error(conn, %Fil.StorageFullError{}), do: send_error(conn, 507, "no space left")
+    defp send_fil_error(conn, %Fil.UnavailableError{}), do: send_error(conn, 503, "the storage is unavailable")
+    # The message contains the path, the disk and what the storage reported, so it goes to the log and the client
+    # gets a generic body.
+    defp send_fil_error(conn, error) do
+      Logger.error("Fil.Plug: " <> Exception.message(error))
+      send_error(conn, 500, "internal server error")
+    end
+
+    # TODO: limit the body size (a `:max_body_size` option, `413` above it). Until then a PUT URL accepts any size, and
+    # all of it ends up in memory. Streaming uploads into `Fil.write` remove the memory part.
     defp read_whole_body(conn, acc) do
       case read_body(conn) do
         {:ok, chunk, conn} -> {:ok, IO.iodata_to_binary([acc, chunk]), conn}

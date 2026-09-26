@@ -24,8 +24,8 @@ defmodule Fil.Plugin.ContentType do
   The extension is looked up with [MIME](https://hex.pm/packages/mime), which you can extend with your own types in your
   config (see its docs).
 
-  It's also the smallest complete example of a plugin module (see the [Plugins guide](plugins.md)): a public callback that validates its
-  options, handles one operation and passes the rest on, and an `attach/2` for piping.
+  It's also the smallest complete example of a plugin module (see the [Plugins guide](plugins.md)): a public callback
+  that validates its options, handles one operation and passes the rest on, and an `attach/2` for piping.
 
   ## Options
 

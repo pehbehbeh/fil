@@ -38,7 +38,7 @@ defmodule Fil.Adapter.MemoryTest do
       other = Fil.disk(adapter: Memory, root: "secondary")
 
       assert {:ok, _} = Fil.write(other, "a.txt", "a")
-      assert Fil.read(disk, "a.txt") == {:error, :enoent}
+      assert {:error, %Fil.NotFoundError{reason: :enoent}} = Fil.read(disk, "a.txt")
       assert Fil.ls(disk) == {:ok, []}
     end
   end
@@ -160,8 +160,8 @@ defmodule Fil.Adapter.MemoryTest do
     test "needs Fil.Plugin.URL" do
       disk = Fil.disk(adapter: Memory)
 
-      assert Fil.url(disk, "a.txt") == {:error, {:unsupported, :url}}
-      assert Fil.signed_url(disk, "a.txt") == {:error, {:unsupported, :signed_url}}
+      assert {:error, %Fil.UnsupportedError{op: :url, reason: :no_callback}} = Fil.url(disk, "a.txt")
+      assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :no_callback}} = Fil.signed_url(disk, "a.txt")
     end
   end
 end

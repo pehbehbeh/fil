@@ -18,7 +18,24 @@ defmodule Fil do
   alias Fil.Stat
   alias Fil.Support.Checksum
 
-  @type result(value) :: {:ok, value} | {:error, term()}
+  @typedoc """
+  An error from an adapter or from `Fil` itself. Each struct stands for what the caller can do about it, and means the
+  same on every adapter; see [Errors in `Fil.Adapter`](Fil.Adapter.html#module-errors).
+  """
+  @type error ::
+          Fil.NotFoundError.t()
+          | Fil.AccessDeniedError.t()
+          | Fil.InvalidRequestError.t()
+          | Fil.AlreadyExistsError.t()
+          | Fil.ChecksumMismatchError.t()
+          | Fil.StorageFullError.t()
+          | Fil.UnsupportedError.t()
+          | Fil.ConfigurationError.t()
+          | Fil.UnavailableError.t()
+          | Fil.UnknownError.t()
+
+  @typedoc "A result. Plugins may return their own exceptions, so an error isn't always one of `t:error/0`."
+  @type result(value) :: {:ok, value} | {:error, error() | Exception.t()}
 
   @typedoc "A plugin callback: a function or a `{module, function}` pair. See the [Plugins guide](plugins.md)."
   @type plugin_callback :: (Op.t(), (Op.t() -> Op.t()), keyword() -> Op.t()) | {module(), atom()}
@@ -28,23 +45,26 @@ defmodule Fil do
   @checksums Checksum.algorithms()
 
   @write_schema NimbleOptions.new!(
-                  if_none_match: [
-                    type: {:in, [:any]},
+                  if_exists: [
+                    type: {:in, [:overwrite, :error]},
+                    default: :overwrite,
                     doc: """
-                    Pass `:any` to only create the file: the write fails with `{:error, :precondition_failed}` if the
-                    file already exists.
+                    What to do if the file already exists. `:overwrite` replaces it. `:error` writes nothing and returns
+                    a `Fil.AlreadyExistsError`, like `File.write/3` with `[:exclusive]`. That check is atomic on local
+                    disk, in memory and on AWS S3, so two processes can't both create the file. Some S3-compatible
+                    servers ignore it.
                     """
                   ],
                   content_type: [
                     type: :string,
-                    doc: "Stored as the object's content type where the backend keeps one."
+                    doc: "Stored as the object's content type where the storage keeps one."
                   ],
                   checksum: [
                     type: {:in, @checksums},
                     doc: """
                     Computes a checksum of the content with this algorithm (`:sha256`, `:sha1` or `:crc32`) and sends it
-                    along, where the backend supports it. S3 rejects the write with `{:error, :checksum_mismatch}` if
-                    the content it received doesn't match, and stores the checksum with the object. The local filesystem
+                    along, where the storage supports it. S3 rejects the write with `Fil.ChecksumMismatchError` if the
+                    content it received doesn't match, and stores the checksum with the object. The local filesystem
                     stores nothing.
                     """
                   ]
@@ -58,33 +78,12 @@ defmodule Fil do
                ]
              )
 
-  @disk_schema NimbleOptions.new!(
-                 adapter: [
-                   type: :atom,
-                   required: true,
-                   doc: """
-                   The adapter module. Every option given to `disk/1` other than `:adapter` and `:plugins` is passed to
-                   the adapter, which validates it against its own schema.
-                   """
-                 ],
-                 plugins: [
-                   type: {:list, {:tuple, [:atom, :atom, :keyword_list]}},
-                   default: [],
-                   doc: """
-                   Plugins to attach, in order, so the first one is the outermost. Each is a plugin callback as
-                   `{module, function, opts}`, attached under the name `module` (see `attach/4`). They're plain data,
-                   so the plugins can come from config along with the adapter options:
-                   `plugins: [{Fil.Plugin.ContentType, :call, default: "text/plain"}]`.
-                   """
-                 ]
-               )
-
   @read_schema NimbleOptions.new!(
                  verify_checksum: [
                    type: :boolean,
                    default: false,
                    doc: """
-                   Checks the content against the checksum stored with it and returns `{:error, :checksum_mismatch}` if
+                   Checks the content against the checksum stored with it and returns `Fil.ChecksumMismatchError` if
                    they differ. Only S3 stores checksums (see the `:checksum` option of `write/4`). Content without a
                    stored checksum is returned unchecked.
                    """
@@ -114,9 +113,9 @@ defmodule Fil do
                          doc: "`:get` for a download URL, `:put` for a direct upload."
                        ],
                        expires_in: [
-                         type: :pos_integer,
+                         type: {:in, 1..(7 * 24 * 60 * 60)},
                          default: 900,
-                         doc: "How long the URL stays valid, in seconds. Most backends cap this at 7 days."
+                         doc: "How long the URL stays valid, in seconds. At most 7 days (`604800`), the cap of S3."
                        ]
                      )
 
@@ -125,45 +124,15 @@ defmodule Fil do
   ## ------------------------------------------------------------------
 
   @doc """
-  Builds a disk.
+  Builds a disk. Shorthand for `Fil.Disk.new/1`, which lists the options.
 
       iex> Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
       #Fil.Disk<local>
 
-  The adapter validates its options here, once. Invalid options raise `ArgumentError` when the disk is built instead of
-  failing on first use.
-
-  ## Options
-
-  #{NimbleOptions.docs(@disk_schema)}
   """
   @doc section: :building
   @spec disk(keyword()) :: Disk.t()
-  def disk(opts) when is_list(opts) do
-    # `Fil` only validates its own options here. The adapter validates the rest in its init/1.
-    {own_opts, adapter_opts} = Keyword.split(opts, [:adapter, :plugins])
-    disk_opts = validate!(own_opts, @disk_schema)
-    module = adapter_module!(disk_opts[:adapter])
-
-    case module.init(adapter_opts) do
-      {:ok, state} ->
-        Enum.reduce(disk_opts[:plugins], %Disk{adapter: {module, state}}, fn {plugin, function, plugin_opts}, disk ->
-          attach(disk, plugin, {plugin, function}, plugin_opts)
-        end)
-
-      {:error, reason} ->
-        raise ArgumentError,
-              "invalid options for #{inspect(module)}: " <> Fil.Error.format_reason(reason)
-    end
-  end
-
-  defp adapter_module!(module) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :init, 1) do
-      module
-    else
-      raise ArgumentError, "#{inspect(module)} is not a Fil adapter"
-    end
-  end
+  defdelegate disk(opts), to: Disk, as: :new
 
   @doc """
   Builds a ref. Shorthand for `Fil.Ref.new/2`.
@@ -234,8 +203,7 @@ defmodule Fil do
       iex> Fil.write!(disk, "hello.txt", "World")
       iex> Fil.read(disk, "hello.txt")
       {:ok, "World"}
-      iex> Fil.read(disk, "nope.txt")
-      {:error, :enoent}
+      iex> {:error, %Fil.NotFoundError{path: "nope.txt", reason: :enoent}} = Fil.read(disk, "nope.txt")
 
   ## Options
 
@@ -272,8 +240,7 @@ defmodule Fil do
       iex> {:ok, stat} = Fil.stat(disk, "hello.txt")
       iex> {stat.size, stat.type}
       {5, :regular}
-      iex> Fil.stat(disk, "nope.txt")
-      {:error, :enoent}
+      iex> {:error, %Fil.NotFoundError{path: "nope.txt", reason: :enoent}} = Fil.stat(disk, "nope.txt")
 
   ## Options
 
@@ -305,7 +272,7 @@ defmodule Fil do
   @doc """
   Whether anything exists at this path.
 
-  Predicates return a plain boolean, so an unreachable backend or an invalid path is `false`. Use `stat/1` when you need
+  Predicates return a plain boolean, so unreachable storage or an invalid path is `false`. Use `stat/1` when you need
   to tell those cases apart.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
@@ -352,7 +319,7 @@ defmodule Fil do
   a missing prefix returns an empty list.
 
   A one-level listing includes directories. A recursive listing returns files only, because object stores only have
-  directories implicitly and the result should be the same on every backend.
+  directories implicitly and the result should be the same on every adapter.
 
   ## Options
 
@@ -426,8 +393,8 @@ defmodule Fil do
       iex> {:ok, report} = Fil.write(disk, "reports/q3.pdf", ["%PDF", "-1.7"])
       iex> report
       #Fil.Ref<memory:reports/q3.pdf>
-      iex> Fil.write(disk, "reports/q3.pdf", "again", if_none_match: :any)
-      {:error, :precondition_failed}
+      iex> {:error, %Fil.AlreadyExistsError{reason: :eexist}} =
+      ...>   Fil.write(disk, "reports/q3.pdf", "again", if_exists: :error)
 
   """
   @doc section: :operations
@@ -635,8 +602,7 @@ defmodule Fil do
   Without the plugin, a local or memory disk returns an error:
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
-      iex> Fil.url(disk, "1.png")
-      {:error, {:unsupported, :url}}
+      iex> {:error, %Fil.UnsupportedError{op: :url, reason: :no_callback}} = Fil.url(disk, "1.png")
 
   """
   @doc section: :operations
@@ -685,8 +651,7 @@ defmodule Fil do
   Without the plugin, a local or memory disk returns an error:
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
-      iex> Fil.signed_url(disk, "cv.pdf")
-      {:error, {:unsupported, :signed_url}}
+      iex> {:error, %Fil.UnsupportedError{op: :signed_url, reason: :no_callback}} = Fil.signed_url(disk, "cv.pdf")
 
   """
   @doc section: :operations
@@ -716,170 +681,170 @@ defmodule Fil do
   ## Bang variants
   ## ------------------------------------------------------------------
 
-  @doc "Same as `read/1`, raising `Fil.Error` on failure."
+  @doc "Same as `read/1`, raising the error on failure."
   @doc section: :bang
   @spec read!(Ref.t()) :: binary()
-  def read!(ref), do: unwrap!(read(ref), :read, ref)
+  def read!(ref), do: unwrap!(read(ref))
 
-  @doc "Same as `read/2`, raising `Fil.Error` on failure."
+  @doc "Same as `read/2`, raising the error on failure."
   @doc section: :bang
   @spec read!(Disk.t(), Path.t()) :: binary()
   @spec read!(Ref.t(), keyword()) :: binary()
-  def read!(a, b), do: unwrap!(read(a, b), :read, target(a, b))
+  def read!(a, b), do: unwrap!(read(a, b))
 
-  @doc "Same as `read/3`, raising `Fil.Error` on failure."
+  @doc "Same as `read/3`, raising the error on failure."
   @doc section: :bang
   @spec read!(Disk.t(), Path.t(), keyword()) :: binary()
-  def read!(a, b, c), do: unwrap!(read(a, b, c), :read, target(a, b))
+  def read!(a, b, c), do: unwrap!(read(a, b, c))
 
-  @doc "Same as `stat/1`, raising `Fil.Error` on failure."
+  @doc "Same as `stat/1`, raising the error on failure."
   @doc section: :bang
   @spec stat!(Ref.t()) :: Stat.t()
-  def stat!(ref), do: unwrap!(stat(ref), :stat, ref)
+  def stat!(ref), do: unwrap!(stat(ref))
 
-  @doc "Same as `stat/2`, raising `Fil.Error` on failure."
+  @doc "Same as `stat/2`, raising the error on failure."
   @doc section: :bang
   @spec stat!(Disk.t(), Path.t()) :: Stat.t()
   @spec stat!(Ref.t(), keyword()) :: Stat.t()
-  def stat!(a, b), do: unwrap!(stat(a, b), :stat, target(a, b))
+  def stat!(a, b), do: unwrap!(stat(a, b))
 
-  @doc "Same as `stat/3`, raising `Fil.Error` on failure."
+  @doc "Same as `stat/3`, raising the error on failure."
   @doc section: :bang
   @spec stat!(Disk.t(), Path.t(), keyword()) :: Stat.t()
-  def stat!(a, b, c), do: unwrap!(stat(a, b, c), :stat, target(a, b))
+  def stat!(a, b, c), do: unwrap!(stat(a, b, c))
 
-  @doc "Same as `ls/1`, raising `Fil.Error` on failure."
+  @doc "Same as `ls/1`, raising the error on failure."
   @doc section: :bang
   @spec ls!(Disk.t()) :: [Ref.t()]
   @spec ls!(Ref.t()) :: [Ref.t()]
-  def ls!(target), do: unwrap!(ls(target), :ls, target)
+  def ls!(target), do: unwrap!(ls(target))
 
-  @doc "Same as `ls/2`, raising `Fil.Error` on failure."
+  @doc "Same as `ls/2`, raising the error on failure."
   @doc section: :bang
   @spec ls!(Disk.t(), Path.t()) :: [Ref.t()]
   @spec ls!(Ref.t(), keyword()) :: [Ref.t()]
-  def ls!(a, b), do: unwrap!(ls(a, b), :ls, target(a, b))
+  def ls!(a, b), do: unwrap!(ls(a, b))
 
-  @doc "Same as `ls/3`, raising `Fil.Error` on failure."
+  @doc "Same as `ls/3`, raising the error on failure."
   @doc section: :bang
   @spec ls!(Disk.t(), Path.t(), keyword()) :: [Ref.t()]
-  def ls!(a, b, c), do: unwrap!(ls(a, b, c), :ls, target(a, b))
+  def ls!(a, b, c), do: unwrap!(ls(a, b, c))
 
-  @doc "Same as `write/2`, raising `Fil.Error` on failure."
+  @doc "Same as `write/2`, raising the error on failure."
   @doc section: :bang
   @spec write!(Ref.t(), iodata()) :: Ref.t()
-  def write!(ref, content), do: unwrap!(write(ref, content), :write, ref)
+  def write!(ref, content), do: unwrap!(write(ref, content))
 
-  @doc "Same as `write/3`, raising `Fil.Error` on failure."
+  @doc "Same as `write/3`, raising the error on failure."
   @doc section: :bang
   @spec write!(Disk.t(), Path.t(), iodata()) :: Ref.t()
   @spec write!(Ref.t(), iodata(), keyword()) :: Ref.t()
-  def write!(a, b, c), do: unwrap!(write(a, b, c), :write, target(a, b))
+  def write!(a, b, c), do: unwrap!(write(a, b, c))
 
-  @doc "Same as `write/4`, raising `Fil.Error` on failure."
+  @doc "Same as `write/4`, raising the error on failure."
   @doc section: :bang
   @spec write!(Disk.t(), Path.t(), iodata(), keyword()) :: Ref.t()
-  def write!(a, b, c, d), do: unwrap!(write(a, b, c, d), :write, target(a, b))
+  def write!(a, b, c, d), do: unwrap!(write(a, b, c, d))
 
-  @doc "Same as `rm/1`, raising `Fil.Error` on failure."
+  @doc "Same as `rm/1`, raising the error on failure."
   @doc section: :bang
   @spec rm!(Ref.t()) :: Ref.t()
-  def rm!(ref), do: unwrap!(rm(ref), :rm, ref)
+  def rm!(ref), do: unwrap!(rm(ref))
 
-  @doc "Same as `rm/2`, raising `Fil.Error` on failure."
+  @doc "Same as `rm/2`, raising the error on failure."
   @doc section: :bang
   @spec rm!(Disk.t(), Path.t()) :: Ref.t()
   @spec rm!(Ref.t(), keyword()) :: Ref.t()
-  def rm!(a, b), do: unwrap!(rm(a, b), :rm, target(a, b))
+  def rm!(a, b), do: unwrap!(rm(a, b))
 
-  @doc "Same as `rm/3`, raising `Fil.Error` on failure."
+  @doc "Same as `rm/3`, raising the error on failure."
   @doc section: :bang
   @spec rm!(Disk.t(), Path.t(), keyword()) :: Ref.t()
-  def rm!(a, b, c), do: unwrap!(rm(a, b, c), :rm, target(a, b))
+  def rm!(a, b, c), do: unwrap!(rm(a, b, c))
 
-  @doc "Same as `rm_rf/1`, raising `Fil.Error` on failure."
+  @doc "Same as `rm_rf/1`, raising the error on failure."
   @doc section: :bang
   @spec rm_rf!(Ref.t()) :: non_neg_integer()
   def rm_rf!(ref) do
-    unwrap!(rm_rf(ref), :rm_rf, ref)
+    unwrap!(rm_rf(ref))
   end
 
-  @doc "Same as `rm_rf/2`, raising `Fil.Error` on failure."
+  @doc "Same as `rm_rf/2`, raising the error on failure."
   @doc section: :bang
   @spec rm_rf!(Disk.t(), Path.t()) :: non_neg_integer()
   @spec rm_rf!(Ref.t(), keyword()) :: non_neg_integer()
-  def rm_rf!(a, b), do: unwrap!(rm_rf(a, b), :rm_rf, target(a, b))
+  def rm_rf!(a, b), do: unwrap!(rm_rf(a, b))
 
-  @doc "Same as `rm_rf/3`, raising `Fil.Error` on failure."
+  @doc "Same as `rm_rf/3`, raising the error on failure."
   @doc section: :bang
   @spec rm_rf!(Disk.t(), Path.t(), keyword()) :: non_neg_integer()
   def rm_rf!(a, b, c) do
-    unwrap!(rm_rf(a, b, c), :rm_rf, target(a, b))
+    unwrap!(rm_rf(a, b, c))
   end
 
-  @doc "Same as `cp/2`, raising `Fil.Error` on failure."
+  @doc "Same as `cp/2`, raising the error on failure."
   @doc section: :bang
   @spec cp!(Ref.t(), Ref.t() | Path.t()) :: Ref.t()
-  def cp!(src, dest), do: unwrap!(cp(src, dest), :cp, src)
+  def cp!(src, dest), do: unwrap!(cp(src, dest))
 
-  @doc "Same as `cp/3`, raising `Fil.Error` on failure."
+  @doc "Same as `cp/3`, raising the error on failure."
   @doc section: :bang
   @spec cp!(Disk.t(), Path.t(), Ref.t() | Path.t()) :: Ref.t()
   @spec cp!(Ref.t(), Ref.t() | Path.t(), keyword()) :: Ref.t()
-  def cp!(a, b, c), do: unwrap!(cp(a, b, c), :cp, target(a, b))
+  def cp!(a, b, c), do: unwrap!(cp(a, b, c))
 
-  @doc "Same as `cp/4`, raising `Fil.Error` on failure."
+  @doc "Same as `cp/4`, raising the error on failure."
   @doc section: :bang
   @spec cp!(Disk.t(), Path.t(), Ref.t() | Path.t(), keyword()) :: Ref.t()
-  def cp!(a, b, c, d), do: unwrap!(cp(a, b, c, d), :cp, target(a, b))
+  def cp!(a, b, c, d), do: unwrap!(cp(a, b, c, d))
 
-  @doc "Same as `rename/2`, raising `Fil.Error` on failure."
+  @doc "Same as `rename/2`, raising the error on failure."
   @doc section: :bang
   @spec rename!(Ref.t(), Ref.t() | Path.t()) :: Ref.t()
-  def rename!(src, dest), do: unwrap!(rename(src, dest), :rename, src)
+  def rename!(src, dest), do: unwrap!(rename(src, dest))
 
-  @doc "Same as `rename/3`, raising `Fil.Error` on failure."
+  @doc "Same as `rename/3`, raising the error on failure."
   @doc section: :bang
   @spec rename!(Disk.t(), Path.t(), Ref.t() | Path.t()) :: Ref.t()
   @spec rename!(Ref.t(), Ref.t() | Path.t(), keyword()) :: Ref.t()
-  def rename!(a, b, c), do: unwrap!(rename(a, b, c), :rename, target(a, b))
+  def rename!(a, b, c), do: unwrap!(rename(a, b, c))
 
-  @doc "Same as `rename/4`, raising `Fil.Error` on failure."
+  @doc "Same as `rename/4`, raising the error on failure."
   @doc section: :bang
   @spec rename!(Disk.t(), Path.t(), Ref.t() | Path.t(), keyword()) :: Ref.t()
-  def rename!(a, b, c, d), do: unwrap!(rename(a, b, c, d), :rename, target(a, b))
+  def rename!(a, b, c, d), do: unwrap!(rename(a, b, c, d))
 
-  @doc "Same as `url/1`, raising `Fil.Error` on failure."
+  @doc "Same as `url/1`, raising the error on failure."
   @doc section: :bang
   @spec url!(Ref.t()) :: String.t()
-  def url!(ref), do: unwrap!(url(ref), :url, ref)
+  def url!(ref), do: unwrap!(url(ref))
 
-  @doc "Same as `url/2`, raising `Fil.Error` on failure."
+  @doc "Same as `url/2`, raising the error on failure."
   @doc section: :bang
   @spec url!(Disk.t(), Path.t()) :: String.t()
   @spec url!(Ref.t(), keyword()) :: String.t()
-  def url!(a, b), do: unwrap!(url(a, b), :url, target(a, b))
+  def url!(a, b), do: unwrap!(url(a, b))
 
-  @doc "Same as `url/3`, raising `Fil.Error` on failure."
+  @doc "Same as `url/3`, raising the error on failure."
   @doc section: :bang
   @spec url!(Disk.t(), Path.t(), keyword()) :: String.t()
-  def url!(a, b, c), do: unwrap!(url(a, b, c), :url, target(a, b))
+  def url!(a, b, c), do: unwrap!(url(a, b, c))
 
-  @doc "Same as `signed_url/1`, raising `Fil.Error` on failure."
+  @doc "Same as `signed_url/1`, raising the error on failure."
   @doc section: :bang
   @spec signed_url!(Ref.t()) :: String.t()
-  def signed_url!(ref), do: unwrap!(signed_url(ref), :signed_url, ref)
+  def signed_url!(ref), do: unwrap!(signed_url(ref))
 
-  @doc "Same as `signed_url/2`, raising `Fil.Error` on failure."
+  @doc "Same as `signed_url/2`, raising the error on failure."
   @doc section: :bang
   @spec signed_url!(Disk.t(), Path.t()) :: String.t()
   @spec signed_url!(Ref.t(), keyword()) :: String.t()
-  def signed_url!(a, b), do: unwrap!(signed_url(a, b), :signed_url, target(a, b))
+  def signed_url!(a, b), do: unwrap!(signed_url(a, b))
 
-  @doc "Same as `signed_url/3`, raising `Fil.Error` on failure."
+  @doc "Same as `signed_url/3`, raising the error on failure."
   @doc section: :bang
   @spec signed_url!(Disk.t(), Path.t(), keyword()) :: String.t()
-  def signed_url!(a, b, c), do: unwrap!(signed_url(a, b, c), :signed_url, target(a, b))
+  def signed_url!(a, b, c), do: unwrap!(signed_url(a, b, c))
 
   ## ------------------------------------------------------------------
   ## Dispatch
@@ -897,21 +862,27 @@ defmodule Fil do
   end
 
   defp run(ref, name, opts, fields \\ []) do
-    with {:ok, %Ref{disk: disk, path: path}} <- resolve(ref) do
+    with {:ok, %Ref{disk: disk, path: path}} <- resolve(ref, name) do
       Op.run(struct!(%Op{disk: disk, name: name, path: path, options: opts}, fields))
     end
   end
 
   defp transfer(src, dest, opts, name) do
-    with {:ok, src_ref} <- resolve(src),
-         {:ok, dest_ref} <- resolve(dest, src_ref) do
+    with {:ok, src_ref} <- resolve(src, name),
+         {:ok, dest_ref} <- resolve_dest(dest, src_ref, name) do
       if src_ref.disk == dest_ref.disk do
         run(src_ref, name, opts, dest: dest_ref.path)
       else
-        cross_disk(name, src_ref, dest_ref, opts)
+        name
+        |> cross_disk(src_ref, dest_ref, opts)
+        |> name_op(name)
       end
     end
   end
+
+  # A copy across disks runs as a read, a write and a delete, but the error reports the call the caller made.
+  defp name_op({:error, %{op: _} = error}, name), do: {:error, %{error | op: name}}
+  defp name_op(result, _name), do: result
 
   defp cross_disk(:cp, src, dest, opts) do
     with {:ok, content} <- read(src), do: write(dest, content, opts)
@@ -924,27 +895,18 @@ defmodule Fil do
     end
   end
 
-  defp resolve(%Ref{} = ref), do: Ref.normalize(ref)
+  defp resolve(%Ref{} = ref, name) do
+    with {:error, error} <- Ref.normalize(ref), do: {:error, %{error | op: name}}
+  end
 
-  defp resolve(other) do
+  defp resolve(other, _name) do
     raise ArgumentError,
           "expected a %Fil.Ref{}, got: #{inspect(other)}"
   end
 
-  defp resolve(path, %Ref{disk: disk}) when is_binary(path), do: resolve(Ref.new(disk, path))
-  defp resolve(ref, _src), do: resolve(ref)
+  defp resolve_dest(path, %Ref{disk: disk}, name) when is_binary(path), do: resolve(Ref.new(disk, path), name)
+  defp resolve_dest(ref, _src, name), do: resolve(ref, name)
 
-  defp target(%Disk{} = disk, path) when is_binary(path), do: Ref.new(disk, path)
-  defp target(first, _second), do: first
-
-  defp unwrap!({:ok, value}, _op, _ref), do: value
-
-  defp unwrap!({:error, reason}, op, ref) do
-    {path, adapter} = describe(ref)
-    raise Fil.Error, reason: reason, op: op, path: path, adapter: adapter
-  end
-
-  defp describe(%Ref{disk: disk, path: path}), do: {path, Disk.adapter(disk)}
-  defp describe(%Disk{} = disk), do: {@root, Disk.adapter(disk)}
-  defp describe(_other), do: {nil, nil}
+  defp unwrap!({:ok, value}), do: value
+  defp unwrap!({:error, error}), do: raise(error)
 end
