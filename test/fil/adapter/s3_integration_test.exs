@@ -34,9 +34,11 @@ defmodule Fil.Adapter.S3IntegrationTest do
     :ok
   end
 
+  # The smallest part size S3 allows, so the conformance suite's large streams (`Fil.AdapterCase.large/0`) are
+  # uploaded in parts.
   def fil_disk(%{bucket: bucket}) do
     Fil.disk(
-      [adapter: S3, bucket: bucket, endpoint: Emulator.url(:s3), path_style: true] ++
+      [adapter: S3, bucket: bucket, endpoint: Emulator.url(:s3), path_style: true, part_size: 5_242_880] ++
         Emulator.s3_credentials()
     )
   end
@@ -119,6 +121,88 @@ defmodule Fil.Adapter.S3IntegrationTest do
       assert {:ok, %{status: status}} = put(url, "Uploaded")
       assert status in [200, 201]
       assert Fil.read(disk, "uploaded.txt") == {:ok, "Uploaded"}
+    end
+  end
+
+  describe "uploads in parts" do
+    test "complete with the content type, and an ETag that counts the parts", %{disk: disk} do
+      content = :crypto.strong_rand_bytes(large())
+
+      assert {:ok, _} = Fil.write(disk, "video.mp4", chunked(content, 65_536), content_type: "video/mp4")
+      assert {:ok, %Fil.Stat{content_type: "video/mp4", etag: etag}} = Fil.stat(disk, "video.mp4")
+      assert String.ends_with?(etag, "-2")
+    end
+
+    test "a failed upload leaves no upload behind", %{disk: disk, bucket: bucket} do
+      broken = then_run(large_chunks(), fn -> raise "broken" end)
+
+      assert_raise RuntimeError, "broken", fn -> Fil.write(disk, "broken.bin", broken) end
+      assert Emulator.list_s3_uploads(bucket) == {:ok, []}
+
+      assert {:ok, _} = Fil.write(disk, "exists.bin", "first")
+
+      assert {:error, %Fil.AlreadyExistsError{}} =
+               Fil.write(disk, "exists.bin", large_chunks(), if_exists: :error)
+
+      assert Emulator.list_s3_uploads(bucket) == {:ok, []}
+    end
+
+    test "the upload of a killed writer is aborted", %{disk: disk, bucket: bucket} do
+      test = self()
+
+      blocking =
+        then_run(large_chunks(), fn ->
+          send(test, :blocked)
+          Process.sleep(:infinity)
+        end)
+
+      writer = spawn(fn -> Fil.write(disk, "killed.bin", blocking) end)
+
+      assert_receive :blocked, 10_000
+      assert {:ok, [{"killed.bin", _upload_id}]} = Emulator.list_s3_uploads(bucket)
+
+      Process.exit(writer, :kill)
+
+      assert eventually(fn -> Emulator.list_s3_uploads(bucket) == {:ok, []} end)
+      refute Fil.exists?(disk, "killed.bin")
+    end
+
+    test "a SHA-256 of an upload in parts covers the parts", %{disk: disk} do
+      content = :crypto.strong_rand_bytes(large())
+
+      assert {:ok, _} = Fil.write(disk, "sha.bin", chunked(content, 65_536), checksum: :sha256)
+
+      # S3 stores a checksum of the parts' checksums, which isn't the checksum of the file.
+      assert {:ok, %Fil.Stat{checksum: nil}} = Fil.stat(disk, "sha.bin", checksum: :sha256)
+      assert Fil.read(disk, "sha.bin", verify_checksum: true) == {:ok, content}
+
+      assert disk
+             |> Fil.stream!("sha.bin", verify_checksum: true)
+             |> Enum.join() == content
+    end
+  end
+
+  defp large_chunks do
+    "a"
+    |> :binary.copy(large())
+    |> chunked(65_536)
+  end
+
+  # `chunks`, then a chunk that runs `fun`.
+  defp then_run(chunks, fun), do: Stream.concat(chunks, Stream.map([:next], fn _next -> fun.() end))
+
+  # Polls `fun` every 50 ms for up to 2 seconds.
+  defp eventually(fun, attempts \\ 40) do
+    cond do
+      fun.() ->
+        true
+
+      attempts > 1 ->
+        Process.sleep(50)
+        eventually(fun, attempts - 1)
+
+      true ->
+        false
     end
   end
 

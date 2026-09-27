@@ -1,8 +1,8 @@
 defmodule Fil.Support.XML do
   @moduledoc false
 
-  # The little XML reading that object store listings need. S3 responds in XML, and `Fil` only ever asks for the
-  # children named X or the text of Y.
+  # The little XML that object stores need. S3 responds in XML, and `Fil` only ever asks for the children named X or
+  # the text of Y. The one document `Fil` sends, the part list that completes a multipart upload, uses `escape/1`.
   #
   # Parsing uses OTP's `:xmerl_sax_parser`, built into plain `{name, attributes, children}` tuples of strings. The SAX
   # parser reports names as charlists, so no atoms are created from what the server sent. Documents with a DTD are
@@ -10,8 +10,12 @@ defmodule Fil.Support.XML do
 
   @type element :: {String.t(), [{String.t(), String.t()}], [element() | String.t()]}
 
+  # S3 may send whitespace before the document: it keeps a long CompleteMultipartUpload or CopyObject alive with it
+  # after the `200` has gone out.
   @spec parse(binary()) :: {:ok, element()} | {:error, :invalid_xml}
   def parse(binary) when is_binary(binary) do
+    binary = String.trim_leading(binary)
+
     with false <- String.contains?(binary, "<!DOCTYPE"),
          {:ok, {:done, element}, _rest} <- :xmerl_sax_parser.stream(binary, event_fun: &event/3, event_state: []) do
       {:ok, element}
@@ -65,5 +69,15 @@ defmodule Fil.Support.XML do
     children
     |> Enum.filter(&is_binary/1)
     |> Enum.join()
+  end
+
+  @doc "Escapes text for an element's content or an attribute value."
+  @spec escape(String.t()) :: String.t()
+  def escape(text) do
+    text
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+    |> String.replace("\"", "&quot;")
   end
 end

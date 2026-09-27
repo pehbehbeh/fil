@@ -72,8 +72,10 @@ defmodule Fil do
       doc: """
       Computes a checksum of the content with this algorithm (`:sha256`, `:sha1` or `:crc32`) and sends it along, where
       the storage supports it. S3 rejects the write with `Fil.ChecksumMismatchError` if the content it received doesn't
-      match, and stores the checksum with the object. The local filesystem stores nothing. S3 needs the checksum before
-      the content, so it collects a stream into memory first.
+      match, and stores the checksum with the object. The local filesystem stores nothing. S3 uploads a stream with a
+      checksum in parts, and for SHA-1 and SHA-256 then stores a checksum of the parts' checksums instead of the file's,
+      so use `:crc32` for large streams whose checksum you need later (see
+      [Checksums in `Fil.Adapter.S3`](Fil.Adapter.S3.html#module-checksums)).
       """
     ]
   ]
@@ -85,9 +87,9 @@ defmodule Fil do
     size: [
       type: :non_neg_integer,
       doc: """
-      The size of the content in bytes. S3 sends a stream of known size as it's read, and collects one without a size
-      into memory first. Content of another size raises `ArgumentError` and writes nothing, whatever the plugins do
-      with it. Plugins that transform the content drop the size.
+      The size of the content in bytes. S3 sends a stream of known size as it's read, in one request, and uploads one
+      without a size in parts. Content of another size raises `ArgumentError` and writes nothing, whatever the plugins
+      do with it. Plugins that transform the content drop the size.
       """
     ]
   ]
@@ -476,7 +478,7 @@ defmodule Fil do
   `content` is iodata, or a stream of it (see `t:content/0`). A stream is written as it's read, without holding the
   content in memory at once, and a file is only there once the stream has ended. If reading the stream raises, nothing
   is written: one of `Fil`'s errors (from a stream of `stream/3`, say) comes back as `{:error, error}`, and any other
-  exception propagates. Pass the size with `:size` if you know it, so S3 can stream too.
+  exception propagates. Pass the size with `:size` if you know it, so S3 can send the stream in one request.
 
   ## Options
 
@@ -605,9 +607,9 @@ defmodule Fil do
   Copies a file and returns the destination ref.
 
   Within one disk, `Fil` uses the adapter's native copy. Across disks, it streams the file from the source to the
-  destination (see `stream/3`), with the size the source's adapter found, so S3 streams the upload too. When a plugin
-  on the source changes the content, or the adapter doesn't know the size, S3 collects the file into memory first. A
-  source that changes size while it's copied fails the copy with a `Fil.ConflictError`. The destination may be a
+  destination (see `stream/3`), with the size the source's adapter found, so S3 sends the upload in one request too.
+  When a plugin on the source changes the content, or the adapter doesn't know the size, S3 uploads the file in parts.
+  A source that changes size while it's copied fails the copy with a `Fil.ConflictError`. The destination may be a
   ref, or a bare path on the source's disk.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)

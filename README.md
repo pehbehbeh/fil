@@ -211,8 +211,8 @@ stream as well as a binary, so a file can go from one disk to another, or from a
 {:ok, _} = Fil.write(s3, "backups/db.dump", File.stream!("db.dump", 65_536), size: File.stat!("db.dump").size)
 ```
 
-With `size:`, S3 sends the stream as it's read. Without it, S3 collects the stream into memory first (the local and
-memory disks don't need the size).
+With `size:`, S3 sends the stream as it's read, in one request. Without it, S3 uploads the stream in parts of 8 MiB
+(the local and memory disks don't need the size).
 
 `url` returns the public URL of a file, and `signed_url` an expiring one, so clients can download or upload a file
 directly instead of going through your application code. S3 serves its URLs itself. For local and in-memory disks,

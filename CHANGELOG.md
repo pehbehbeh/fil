@@ -9,12 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- S3 uploads a stream without a size, and content over 5 GiB, in parts (a multipart upload), with one part in memory
+  at a time: 8 MiB by default, set with the new `:part_size` option. A stream that fits in one part is still one
+  PutObject. A part that fails because the storage is unavailable is sent once more, a second later. A failed upload
+  is aborted, and so is the upload of a process that's killed.
+  ([#11](https://github.com/pehbehbeh/fil/pull/11))
 - `Fil.stream/1,2,3` and `Fil.stream!/1,2,3` return a file's content as a stream of binaries, on every disk. They
   check the file right away and read it when the stream is enumerated.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `Fil.write/4` takes a stream as well as iodata, with its size in the new `size:` option if it's known. A stream that
-  raises writes nothing. S3 sends a stream with a size as it's read, and collects one without a size, or with
-  `checksum:`, into memory first.
+  raises writes nothing. S3 sends a stream with a size as it's read, and uploads one without a size in parts.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `Fil.Op.update_content/2` and `Fil.Op.update_result/2` take a `stream:` function, which transforms a stream lazily,
   chunk by chunk or with state across chunks. `op.streaming` marks a read from `Fil.stream/3`. A read transform that
@@ -36,6 +40,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- S3 reads a stream with `checksum:` one part at a time instead of collecting it into memory. A `:crc32` checksum
+  covers the whole file, however it's uploaded. A `:sha256` or `:sha1` checksum of an upload in parts covers each
+  part, and S3 stores a checksum of those: `Fil.stat/3` returns `nil` for it, and `verify_checksum: true` checks the
+  content against it.
+  ([#11](https://github.com/pehbehbeh/fil/pull/11))
 - `Fil.Op.update_content/2` and `update_result/2` take `iodata:` instead of `binary:`, which now raises
   `ArgumentError` like any unknown transform. The function gets the same argument as before.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
@@ -43,7 +52,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   response, so neither has to fit in memory.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - A copy or a move across disks streams the file instead of reading it into memory, with the source's size, so S3
-  streams it too (unless a plugin on the source changes the content).
+  sends it in one request as it's read (in parts when a plugin on the source changes the content).
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `if_exists: :error` on a local disk writes to a temporary file and hard-links it into place, so a failed write no
   longer leaves a partial file behind.

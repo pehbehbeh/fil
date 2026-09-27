@@ -41,6 +41,13 @@ defmodule Fil.AdapterCase do
   #{NimbleOptions.docs(@schema)}
   """
 
+  @doc """
+  The size of content that S3 uploads in parts on the integration disk (`part_size: 5_242_880`): 5.5 MiB, two parts.
+  Only streams without a size reach the parts, because S3 sends a stream with its size as it's read.
+  """
+  @spec large() :: pos_integer()
+  def large, do: 5_767_168
+
   @doc "Splits `content` into a stream of `size`-byte chunks, the way a file or an upload arrives."
   @spec chunked(binary(), pos_integer()) :: Enumerable.t()
   def chunked(content, size) do
@@ -106,7 +113,7 @@ defmodule Fil.AdapterCase do
 
       alias Fil.Adapter.Local
 
-      import Fil.AdapterCase, only: [chunked: 2, gzip: 1, gunzip: 1]
+      import Fil.AdapterCase, only: [chunked: 2, gzip: 1, gunzip: 1, large: 0]
 
       unquote_splicing(moduletags)
 
@@ -233,6 +240,18 @@ defmodule Fil.AdapterCase do
         assert {:ok, %Fil.Stat{size: 300_000}} = Fil.stat(disk, "sized.bin")
       end
 
+      test "writes a stream larger than a part, without its size", %{disk: disk} do
+        content = :crypto.strong_rand_bytes(large())
+
+        assert {:ok, _} = Fil.write(disk, "large.bin", chunked(content, 65_536), content_type: "video/mp4")
+        assert {:ok, %Fil.Stat{size: size, content_type: content_type}} = Fil.stat(disk, "large.bin")
+        assert size == large()
+        assert content_type in ["video/mp4", nil]
+
+        assert {:ok, read} = Fil.read(disk, "large.bin")
+        assert :crypto.hash(:sha256, read) == :crypto.hash(:sha256, content)
+      end
+
       test "streams a file in chunks, as often as it's read", %{disk: disk} do
         content = :crypto.strong_rand_bytes(1_000_000)
         assert {:ok, _} = Fil.write(disk, "big.bin", content)
@@ -312,6 +331,18 @@ defmodule Fil.AdapterCase do
           assert_raise RuntimeError, "the upload broke off", fn -> Fil.write(disk, "new.txt", failing, opts) end
         end
 
+        # Past the first part, so S3 has started a multipart upload when the stream raises.
+        large =
+          <<0>>
+          |> :binary.copy(65_536)
+          |> List.duplicate(div(large(), 65_536))
+          |> Stream.concat(Stream.map([:broken], fn _chunk -> raise "the upload broke off" end))
+
+        for opts <- [[], [if_exists: :error]] do
+          assert_raise RuntimeError, "the upload broke off", fn -> Fil.write(disk, "kept.txt", large, opts) end
+          assert_raise RuntimeError, "the upload broke off", fn -> Fil.write(disk, "new.txt", large, opts) end
+        end
+
         assert Fil.read(disk, "kept.txt") == {:ok, "original"}
         refute Fil.exists?(disk, "new.txt")
         assert {:ok, [kept]} = Fil.ls(disk)
@@ -340,6 +371,36 @@ defmodule Fil.AdapterCase do
         assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "once.txt", second, if_exists: :error)
         assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "once.txt", second, if_exists: :error, size: 6)
         assert Fil.read(disk, "once.txt") == {:ok, "first"}
+
+        large = :binary.copy("l", large())
+
+        assert {:ok, _} = Fil.write(disk, "large.txt", chunked(large, 65_536), if_exists: :error)
+
+        assert {:error, %Fil.AlreadyExistsError{}} =
+                 Fil.write(disk, "large.txt", chunked(large, 65_536), if_exists: :error)
+
+        assert {:error, %Fil.AlreadyExistsError{}} =
+                 Fil.write(disk, "once.txt", chunked(large, 65_536), if_exists: :error)
+
+        assert Fil.read(disk, "once.txt") == {:ok, "first"}
+      end
+
+      test "if_exists: :error checks when the stream has ended", %{disk: disk} do
+        # A file that appears while the stream is written, after S3 has uploaded the first part, wins.
+        race =
+          Stream.flat_map([:race], fn _race ->
+            Fil.write!(disk, "race.txt", "second")
+            ["r"]
+          end)
+
+        racing =
+          "r"
+          |> :binary.copy(large())
+          |> chunked(65_536)
+          |> Stream.concat(race)
+
+        assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "race.txt", racing, if_exists: :error)
+        assert Fil.read(disk, "race.txt") == {:ok, "second"}
       end
 
       test "plugins transform a stream chunk by chunk", %{disk: disk} do
@@ -430,6 +491,19 @@ defmodule Fil.AdapterCase do
 
         assert {:ok, _} = Fil.write(disk, "checked.bin", stream, checksum: :sha256)
         assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}}} = Fil.stat(disk, "checked.bin", checksum: :sha256)
+        assert Fil.read(disk, "checked.bin", verify_checksum: true) == {:ok, content}
+
+        assert disk
+               |> Fil.stream!("checked.bin", verify_checksum: true)
+               |> Enum.join() == content
+      end
+
+      test "stores and verifies a CRC32 of a stream larger than a part", %{disk: disk} do
+        content = :crypto.strong_rand_bytes(large())
+        checksum = Base.encode64(<<:erlang.crc32(content)::32>>)
+
+        assert {:ok, _} = Fil.write(disk, "checked.bin", chunked(content, 65_536), checksum: :crc32)
+        assert {:ok, %Fil.Stat{checksum: {:crc32, ^checksum}}} = Fil.stat(disk, "checked.bin", checksum: :crc32)
         assert Fil.read(disk, "checked.bin", verify_checksum: true) == {:ok, content}
 
         assert disk

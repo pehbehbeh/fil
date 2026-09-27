@@ -42,7 +42,7 @@ defmodule Fil.Adapter do
   Options that `File` has no equivalent for:
 
     * `size:` on `c:write/4` is the size of a stream, when the caller knows it. Storage that needs the size before the
-      content uses it, and collects a stream without one first
+      content uses it, and uploads a stream without one in parts
     * `checksum:` on `c:write/4` sends a checksum of the content where the storage keeps one, and storage that finds
       the content doesn't match fails with `Fil.ChecksumMismatchError`. Storage without checksums ignores the option
     * `checksum:` on `c:stat/3` fills in `Fil.Stat`'s `:checksum`, from the storage or computed from the content
