@@ -76,15 +76,16 @@ docker compose up -d        # RustFS (S3, verifies SigV4)
 mix test.integration        # runs the @tag :integration suites against the compose.yml services
 mix format                  # 120 columns, Quokka plugin
 mix credo                   # strict, every check enabled (see .credo.exs)
+bin/check-changelog         # every entry under Unreleased links to its pull request (see Releasing)
 bin/release 0.2.0           # releases main to Hex (see Releasing)
 ```
 
 ## CI
 
-`.github/workflows/ci.yml` checks formatting, `mix credo` and `mix docs --warnings-as-errors` on the latest Elixir, and
-runs `mix test` on every supported Elixir minor version, each with the newest OTP it supports (plus OTP 26 on Elixir
-1.16). The integration suite runs once, on the latest Elixir, against RustFS started from `compose.yml`. When
-`elixir:` in `mix.exs` changes, update the matrix.
+`.github/workflows/ci.yml` checks formatting, `mix credo`, `mix docs --warnings-as-errors` and `bin/check-changelog` on
+the latest Elixir, and runs `mix test` on every supported Elixir minor version, each with the newest OTP it supports
+(plus OTP 26 on Elixir 1.16). The integration suite runs once, on the latest Elixir, against RustFS started from
+`compose.yml`. When `elixir:` in `mix.exs` changes, update the matrix.
 
 The last job, `CI passed`, fails if any other job failed, was cancelled or was skipped. It's the only check the ruleset
 on `main` requires, so the ruleset stays the same when the matrix changes. A new job goes into its `needs:`.
@@ -102,27 +103,35 @@ bin/release 0.2.0
 ```
 
 It checks that `main` is clean, in sync with `origin` and has a green CI run, refuses a version that is tagged or on
-Hex, and a changelog without entries under Unreleased, and asks before releasing while the milestone `v0.2.0` has open
-issues or pull requests. Then it bumps `@version` in `mix.exs`, renames `## [Unreleased]`
-in `CHANGELOG.md` to `## [0.2.0] - date` and adds its compare link, commits "Release v0.2.0", tags `v0.2.0`, runs
-`mix hex.publish` (package and docs, with your own Hex login and 2FA), commits a fresh `## [Unreleased]` heading, pushes
-branch and tag, creates the GitHub release from the changelog section and closes the milestone. Nothing is pushed
-before Hex accepted the package, and on failure the script prints how to undo the local commits. The release commits
-go to `main` directly, which the ruleset allows only for repository admins (its bypass list).
+Hex, and a changelog without entries under Unreleased or with an entry that doesn't link to its pull request, and asks
+before releasing while the milestone `v0.2.0` has open issues or pull requests. Then it bumps `@version` in `mix.exs`,
+renames `## [Unreleased]` in `CHANGELOG.md` to `## [0.2.0] - date` and adds its compare link, commits "Release v0.2.0",
+tags `v0.2.0`, runs `mix hex.publish` (package and docs, with your own Hex login and 2FA), commits a fresh
+`## [Unreleased]` heading, pushes branch and tag, creates the GitHub release from the changelog section and closes the
+milestone. Nothing is pushed before Hex accepted the package, and on failure the script prints how to undo the local
+commits. The release commits go to `main` directly, which the ruleset allows only for repository admins (its bypass
+list).
 
 - **Changelog:** `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first,
   one entry per user-visible change under `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, added
-  under `## [Unreleased]` in the same commit as the change. Released sections are headed `## [0.2.0] - 2026-10-01`.
-  `bin/release` keeps the link definitions at the end, which compare each version with the one before. The file is in
-  the Hex package and a Guides tab on HexDocs, so each published version includes its changelog.
+  under `## [Unreleased]` in the same pull request as the change. User-visible changes always go through a pull request;
+  direct pushes to `main` are only for changes without an entry. Each entry ends with an inline link to its pull
+  request, such as `([#1](https://github.com/pehbehbeh/fil/pull/1))`, or `([#1](...), [#4](...))` for several. Add it in
+  a commit once `gh pr create` has returned the number: issues and pull requests share their numbers, so don't guess it.
+  Inline, because the GitHub release gets only the section, without the link definitions at the end.
+  `bin/check-changelog` enforces it for the entries under Unreleased, in CI and in `bin/release`. Released sections are
+  headed `## [0.2.0] - 2026-10-01`. `bin/release` keeps the link definitions at the end, which compare each version with
+  the one before. The file is in the Hex package and a Guides tab on HexDocs, so each published version includes its
+  changelog.
 - **Milestones:** one per planned release, named after its tag (`v0.2.0`), with the issues and pull requests meant to
   ship in it. Issues without a milestone are the backlog, and a patch release needs no milestone. Before a release,
   close what's left in the milestone or move it to the next one.
-- **Hotfix:** a normal fix on `main`, then `bin/release 0.2.1`.
+- **Hotfix:** a normal pull request to `main`, then `bin/release 0.2.1`.
 - **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix with its changelog entry under a new
-  `## [Unreleased]`, push the branch, then `bin/release 0.1.1` on it. A `v0.N` branch keeps its own changelog and is
-  never merged anywhere; `main` may note the backport in the current section. `v0.1.0` still has the old changelog
-  format, so a `v0.1` branch first cherry-picks the commit "Follow Keep a Changelog 1.1.0".
+  `## [Unreleased]`, push the branch, then `bin/release 0.1.1` on it. The entry keeps the link to the pull request that
+  made the fix on `main`. A `v0.N` branch keeps its own changelog and is never merged anywhere; `main` may note the
+  backport in the current section. `v0.1.0` still has the old changelog format, so a `v0.1` branch first cherry-picks
+  the commit "Follow Keep a Changelog 1.1.0".
 - **Bad release:** `mix hex.retire fil 0.2.0 security --message "..."` warns users on `mix deps.get`, and the changelog
   heading becomes `## [0.2.0] - 2026-10-01 [YANKED]`. A version can't be replaced, so the fix is the next patch
   version.

@@ -59,6 +59,7 @@ esac
 say "Unreleased changes"
 # Not `grep -q`: it exits at the first match, and with `pipefail` the SIGPIPE of awk would fail the pipeline.
 unreleased | grep '^- ' > /dev/null || die "CHANGELOG.md has no entries under Unreleased"
+bin/check-changelog
 unreleased
 
 version=${1:-}

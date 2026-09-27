@@ -35,6 +35,7 @@ jobs:
       - run: mix format --check-formatted
       - run: mix credo
       - run: mix docs --warnings-as-errors
+      - run: bin/check-changelog
 
   test:
     name: Test (Elixir ${{ matrix.elixir }}, OTP ${{ matrix.otp }})
