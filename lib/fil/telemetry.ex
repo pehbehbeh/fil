@@ -51,8 +51,8 @@ defmodule Fil.Telemetry do
   `:bytes` counts the caller's content, before plugins change it:
 
     * a read: the size of the content it returns
-    * a write: the `:size` option, the size of iodata, or what was read from a stream without `:size` (0 if a plugin
-      answered without reading it)
+    * a write: the `:size` option, the size of iodata or of a stream whose size `Fil.write/4` found, or what was read
+      from any other stream (0 if a plugin answered without reading it)
 
   A read from `Fil.stream/3` has no `:bytes`, its stream events count them. Nor do copies, renames and the other
   operations.

@@ -77,6 +77,18 @@ defmodule Fil.TelemetryTest do
                Enum.map(stops(), fn {measurements, metadata} -> {metadata.op, measurements[:bytes]} end)
     end
 
+    @tag :tmp_dir
+    test "bytes are the size a write found for a stream", %{disk: disk, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "a.txt")
+      File.write!(path, "content")
+
+      assert {:ok, _} = Fil.write(disk, "a.txt", File.stream!(path, 2))
+      assert {:ok, _} = Fil.write(disk, "b.txt", Fil.stream!(disk, "a.txt"))
+
+      assert [{:write, 7}, {:read, nil}, {:write, 7}] =
+               Enum.map(stops(), fn {measurements, metadata} -> {metadata.op, measurements[:bytes]} end)
+    end
+
     test "content that isn't iodata raises before any event, whatever the plugins do", %{disk: disk} do
       answered =
         Fil.attach(disk, :answer, fn op, _next, _opts -> Op.put_result(op, {:ok, Fil.ref(op.disk, op.path)}) end)

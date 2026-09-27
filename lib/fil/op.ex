@@ -424,7 +424,7 @@ defmodule Fil.Op do
 
   defp call_adapter(%__MODULE__{disk: %Disk{adapter: {module, state}}} = op), do: call_adapter(op, module, state)
 
-  # A stream reaches the adapter as non-empty binaries, checked against the `:size` the caller declared.
+  # A stream reaches the adapter as non-empty binaries, checked against its `:size`, if it has one.
   defp call_adapter(%__MODULE__{name: :write, content: content} = op, module, state) do
     module.write(state, op.path, adapter_content(content, op.options[:size]), op.options)
   end

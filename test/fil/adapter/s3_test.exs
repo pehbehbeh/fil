@@ -347,6 +347,76 @@ defmodule Fil.Adapter.S3Test do
       assert header(request, "x-amz-content-sha256") == sha256("Hello, World")
     end
 
+    @tag :tmp_dir
+    test "a file stream is sent as it's read, with the file's size", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "a.txt")
+      File.write!(path, "Hello, World")
+      stub([response(200), response(200)])
+
+      assert {:ok, _} = Fil.write(disk(), "a.txt", File.stream!(path, 5))
+      assert {:ok, _} = Fil.write(disk(), "b.txt", File.stream!(path, 5, read_offset: 7))
+
+      assert [whole, offset] = requests()
+      assert {whole.assigns.body, header(whole, "content-length")} == {"Hello, World", "12"}
+      assert {offset.assigns.body, header(offset, "content-length")} == {"World", "5"}
+
+      for request <- [whole, offset], do: assert(header(request, "x-amz-content-sha256") == "UNSIGNED-PAYLOAD")
+    end
+
+    test "a stream from Fil.stream/3 is sent as it's read, with the size its adapter found" do
+      :ok = Fil.Adapter.Memory.checkout()
+      source = Fil.disk(adapter: Fil.Adapter.Memory)
+      {:ok, _} = Fil.write(source, "a.txt", "Hello, World")
+      stub([response(200)])
+
+      assert {:ok, _} = Fil.write(disk(), "a.txt", Fil.stream!(source, "a.txt"))
+
+      request = request!()
+      assert {request.assigns.body, header(request, "content-length")} == {"Hello, World", "12"}
+      assert header(request, "x-amz-content-sha256") == "UNSIGNED-PAYLOAD"
+    end
+
+    @tag :tmp_dir
+    test "a file stream of lines, or with :compressed, has no size", %{tmp_dir: tmp_dir} do
+      lines = Path.join(tmp_dir, "lines.txt")
+      File.write!(lines, "one\ntwo\n")
+      compressed = Path.join(tmp_dir, "lines.txt.gz")
+      File.write!(compressed, :zlib.gzip("one\ntwo\n"))
+      stub([response(200), response(200)])
+
+      assert {:ok, _} = Fil.write(disk(), "lines.txt", File.stream!(lines))
+      assert {:ok, _} = Fil.write(disk(), "gunzipped.txt", File.stream!(compressed, 4, [:compressed]))
+
+      # Collected and sent as one binary, signed with its SHA-256.
+      assert [_lines, _gunzipped] = requests = requests()
+
+      for request <- requests do
+        assert request.assigns.body == "one\ntwo\n"
+        assert header(request, "x-amz-content-sha256") == sha256("one\ntwo\n")
+      end
+    end
+
+    @tag :tmp_dir
+    test "a file that changes size while it's sent is a conflict", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "a.txt")
+
+      for change <- [&File.write!(&1, "more", [:append]), &File.write!(&1, "short")] do
+        File.write!(path, "content")
+        stub([])
+
+        changing =
+          Fil.attach(disk(), :change, fn op, next, _opts ->
+            change.(path)
+            next.(op)
+          end)
+
+        assert {:error, %Fil.ConflictError{op: :write, path: "a.txt", reason: :size_changed}} =
+                 Fil.write(changing, "a.txt", File.stream!(path, 2))
+
+        assert requests() == []
+      end
+    end
+
     test "a small stream with a checksum is sent as one PutObject" do
       stub([response(200)])
 
@@ -1398,8 +1468,10 @@ defmodule Fil.Adapter.S3Test do
 
       stub([response(200, initiate_xml("UP")), response(500), response(503, error_xml("SlowDown")), response(204)])
 
+      # Without its size, so the stream goes up in parts.
       assert {:ok, stream} = Fil.stream(source, "a.bin")
-      assert {:error, %Fil.UnavailableError{} = error} = Fil.write(parts_disk(), "a.bin", stream)
+      unsized = Stream.map(stream, & &1)
+      assert {:error, %Fil.UnavailableError{} = error} = Fil.write(parts_disk(), "a.bin", unsized)
 
       assert [
                {[:fil, :op, :stop], _, %{op: :read, streaming: true}},
