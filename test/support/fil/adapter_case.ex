@@ -41,6 +41,48 @@ defmodule Fil.AdapterCase do
   #{NimbleOptions.docs(@schema)}
   """
 
+  @doc "Splits `content` into a stream of `size`-byte chunks, the way a file or an upload arrives."
+  @spec chunked(binary(), pos_integer()) :: Enumerable.t()
+  def chunked(content, size) do
+    Stream.unfold(content, fn
+      "" -> nil
+      rest when byte_size(rest) <= size -> {rest, ""}
+      rest -> {binary_part(rest, 0, size), binary_part(rest, size, byte_size(rest) - size)}
+    end)
+  end
+
+  @doc "Compresses a stream with gzip, a transform that keeps state from one chunk to the next and adds a trailer."
+  @spec gzip(Enumerable.t()) :: Enumerable.t()
+  def gzip(chunks) do
+    Stream.transform(
+      chunks,
+      fn ->
+        z = :zlib.open()
+        :ok = :zlib.deflateInit(z, :default, :deflated, 31, 8, :default)
+        z
+      end,
+      fn chunk, z -> {[:zlib.deflate(z, chunk)], z} end,
+      fn z -> {[:zlib.deflate(z, [], :finish)], z} end,
+      &:zlib.close/1
+    )
+  end
+
+  @doc "Decompresses what `gzip/1` compressed."
+  @spec gunzip(Enumerable.t()) :: Enumerable.t()
+  def gunzip(chunks) do
+    Stream.transform(
+      chunks,
+      fn ->
+        z = :zlib.open()
+        :ok = :zlib.inflateInit(z, 31)
+        z
+      end,
+      fn chunk, z -> {[:zlib.inflate(z, chunk)], z} end,
+      fn z -> {[], z} end,
+      &:zlib.close/1
+    )
+  end
+
   @doc "Builds the disk under test."
   @callback fil_disk(map()) :: Fil.Disk.t()
 
@@ -63,6 +105,8 @@ defmodule Fil.AdapterCase do
       use ExUnit.Case, unquote(case_opts)
 
       alias Fil.Adapter.Local
+
+      import Fil.AdapterCase, only: [chunked: 2, gzip: 1, gunzip: 1]
 
       unquote_splicing(moduletags)
 
@@ -156,6 +200,210 @@ defmodule Fil.AdapterCase do
         # A real directory (Local) or a prefix with no object of its own (S3, Memory).
         assert {:error, error} = Fil.read(disk, "tree")
         assert match?(%Fil.InvalidRequestError{}, error) or match?(%Fil.NotFoundError{}, error)
+      end
+
+      ## ----------------------------------------------------------------
+      ## Streaming
+      ## ----------------------------------------------------------------
+
+      test "writes a stream, with or without its size", %{disk: disk} do
+        content = :crypto.strong_rand_bytes(300_000)
+        stream = chunked(content, 10_000)
+
+        assert {:ok, ref} = Fil.write(disk, "streamed.bin", stream)
+        assert ref.path == "streamed.bin"
+        assert Fil.read(disk, "streamed.bin") == {:ok, content}
+
+        assert {:ok, _} = Fil.write(disk, "sized.bin", stream, size: byte_size(content))
+        assert Fil.read(disk, "sized.bin") == {:ok, content}
+        assert {:ok, %Fil.Stat{size: 300_000}} = Fil.stat(disk, "sized.bin")
+      end
+
+      test "streams a file in chunks, as often as it's read", %{disk: disk} do
+        content = :crypto.strong_rand_bytes(1_000_000)
+        assert {:ok, _} = Fil.write(disk, "big.bin", content)
+
+        assert {:ok, stream} = Fil.stream(disk, "big.bin")
+        chunks = Enum.to_list(stream)
+
+        assert length(chunks) > 1
+        assert Enum.all?(chunks, &(is_binary(&1) and &1 != ""))
+        assert IO.iodata_to_binary(chunks) == content
+
+        assert [first] = Enum.take(stream, 1)
+        assert String.starts_with?(content, first)
+        assert Enum.join(stream) == content
+
+        assert disk
+               |> Fil.stream!("big.bin")
+               |> Enum.join() == content
+      end
+
+      test "a stream goes straight into a write", %{disk: disk, other_disk: other_disk} do
+        content = :crypto.strong_rand_bytes(200_000)
+        assert {:ok, _} = Fil.write(disk, "source.bin", content)
+
+        assert {:ok, stream} = Fil.stream(disk, "source.bin")
+        assert {:ok, _} = Fil.write(disk, "copy.bin", stream)
+        assert {:ok, _} = Fil.write(other_disk, "copy.bin", stream)
+
+        assert Fil.read(disk, "copy.bin") == {:ok, content}
+        assert Fil.read(other_disk, "copy.bin") == {:ok, content}
+      end
+
+      test "writes and streams empty content", %{disk: disk} do
+        empty = Stream.map([], & &1)
+
+        assert {:ok, _} = Fil.write(disk, "empty.txt", empty)
+        assert {:ok, _} = Fil.write(disk, "empty-sized.txt", empty, size: 0)
+        assert {:ok, _} = Fil.write(disk, "empty-chunks.txt", Stream.map(["", [], ""], & &1))
+
+        for path <- ["empty.txt", "empty-sized.txt", "empty-chunks.txt"] do
+          assert Fil.read(disk, path) == {:ok, ""}
+          assert {:ok, stream} = Fil.stream(disk, path)
+          assert Enum.to_list(stream) == []
+        end
+      end
+
+      test "streaming a missing file or a directory fails right away", %{disk: disk} do
+        assert {:error, %Fil.NotFoundError{op: :read, path: "nope.txt"} = error} = Fil.stream(disk, "nope.txt")
+        assert error.disk == disk
+        assert_raise Fil.NotFoundError, fn -> Fil.stream!(disk, "nope.txt") end
+
+        assert {:ok, _} = Fil.write(disk, "tree/leaf.txt", "leaf")
+        assert {:error, error} = Fil.stream(disk, "tree")
+        assert match?(%Fil.InvalidRequestError{}, error) or match?(%Fil.NotFoundError{}, error)
+      end
+
+      test "a file removed before its stream is read raises with the context", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "gone.txt", "soon")
+        assert {:ok, stream} = Fil.stream(disk, "gone.txt")
+        assert {:ok, _} = Fil.rm(disk, "gone.txt")
+
+        error = assert_raise Fil.NotFoundError, fn -> Enum.to_list(stream) end
+        assert {error.op, error.path, error.disk} == {:read, "gone.txt", disk}
+      end
+
+      test "a stream that raises writes nothing", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "kept.txt", "original")
+
+        failing =
+          Stream.map(1..5, fn
+            4 -> raise "the upload broke off"
+            _other -> String.duplicate("x", 10_000)
+          end)
+
+        for opts <- [[], [size: 50_000], [if_exists: :error], [if_exists: :error, size: 50_000]] do
+          assert_raise RuntimeError, "the upload broke off", fn -> Fil.write(disk, "kept.txt", failing, opts) end
+          assert_raise RuntimeError, "the upload broke off", fn -> Fil.write(disk, "new.txt", failing, opts) end
+        end
+
+        assert Fil.read(disk, "kept.txt") == {:ok, "original"}
+        refute Fil.exists?(disk, "new.txt")
+        assert {:ok, [kept]} = Fil.ls(disk)
+        assert kept.path == "kept.txt"
+      end
+
+      test "a stream of another size than :size raises and writes nothing", %{disk: disk} do
+        stream = chunked("hello", 2)
+
+        assert_raise ArgumentError, "the content has 5 bytes, but the :size option is 6", fn ->
+          Fil.write(disk, "sized.txt", stream, size: 6)
+        end
+
+        assert_raise ArgumentError, "the content has more than 4 bytes, but the :size option is 4", fn ->
+          Fil.write(disk, "sized.txt", stream, size: 4)
+        end
+
+        refute Fil.exists?(disk, "sized.txt")
+      end
+
+      test "if_exists: :error applies to streams", %{disk: disk} do
+        first = chunked("first", 2)
+        second = chunked("second", 2)
+
+        assert {:ok, _} = Fil.write(disk, "once.txt", first, if_exists: :error)
+        assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "once.txt", second, if_exists: :error)
+        assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "once.txt", second, if_exists: :error, size: 6)
+        assert Fil.read(disk, "once.txt") == {:ok, "first"}
+      end
+
+      test "plugins transform a stream chunk by chunk", %{disk: disk} do
+        test = self()
+
+        shouting =
+          Fil.attach(disk, :shout, fn op, next, _opts ->
+            op
+            |> Fil.Op.update_content(
+              chunk: fn chunk ->
+                send(test, {:chunk, chunk})
+                String.upcase(chunk)
+              end
+            )
+            |> next.()
+            |> Fil.Op.update_result(chunk: &String.downcase/1)
+          end)
+
+        # The transform drops `:size`, and a size that no longer holds wouldn't matter.
+        assert {:ok, _} = Fil.write(shouting, "shout.txt", chunked("hello world", 4), size: 11)
+        assert_received {:chunk, "hell"}
+        assert_received {:chunk, "o wo"}
+        assert_received {:chunk, "rld"}
+
+        assert Fil.read(disk, "shout.txt") == {:ok, "HELLO WORLD"}
+        assert Fil.read(shouting, "shout.txt") == {:ok, "hello world"}
+
+        assert shouting
+               |> Fil.stream!("shout.txt")
+               |> Enum.join() == "hello world"
+      end
+
+      test "plugins keep state across the chunks of a stream", %{disk: disk} do
+        compressing =
+          Fil.attach(disk, :gzip, fn op, next, _opts ->
+            op
+            |> Fil.Op.update_content(binary: &:zlib.gzip/1, stream: &gzip/1)
+            |> next.()
+            |> Fil.Op.update_result(binary: &:zlib.gunzip/1, stream: &gunzip/1)
+          end)
+
+        content = String.duplicate("all work and no play makes Jack a dull boy\n", 5_000)
+        stream = chunked(content, 1_000)
+
+        assert {:ok, _} = Fil.write(compressing, "jack.txt.gz", stream)
+        assert {:ok, compressed} = Fil.read(disk, "jack.txt.gz")
+        assert byte_size(compressed) < byte_size(content)
+        assert :zlib.gunzip(compressed) == content
+
+        assert Fil.read(compressing, "jack.txt.gz") == {:ok, content}
+
+        assert compressing
+               |> Fil.stream!("jack.txt.gz")
+               |> Enum.join() == content
+
+        assert {:ok, _} = Fil.write(compressing, "whole.txt.gz", content)
+
+        assert compressing
+               |> Fil.stream!("whole.txt.gz")
+               |> Enum.join() == content
+      end
+
+      test "stores and verifies checksums of streams", %{disk: disk} do
+        content = :crypto.strong_rand_bytes(100_000)
+        stream = chunked(content, 10_000)
+
+        checksum =
+          :sha256
+          |> :crypto.hash(content)
+          |> Base.encode64()
+
+        assert {:ok, _} = Fil.write(disk, "checked.bin", stream, checksum: :sha256)
+        assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}}} = Fil.stat(disk, "checked.bin", checksum: :sha256)
+        assert Fil.read(disk, "checked.bin", verify_checksum: true) == {:ok, content}
+
+        assert disk
+               |> Fil.stream!("checked.bin", verify_checksum: true)
+               |> Enum.join() == content
       end
 
       ## ----------------------------------------------------------------
