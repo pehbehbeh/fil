@@ -433,6 +433,24 @@ defmodule Fil.AdapterCase do
         end
       end
 
+      test "size: :unknown writes a file stream as it's read", %{disk: disk, tmp_dir: tmp_dir} do
+        path = Path.join(tmp_dir, "log.txt")
+        File.write!(path, "first\n")
+
+        # A log that's appended to after `Fil.write/4` looked at it, before the adapter reads it.
+        appending =
+          Fil.attach(disk, :append, fn op, next, _opts ->
+            File.write!(path, "second\n", [:append])
+            next.(op)
+          end)
+
+        assert {:ok, _} = Fil.write(appending, "log.txt", File.stream!(path, 2), size: :unknown)
+        assert Fil.read(disk, "log.txt") == {:ok, "first\nsecond\n"}
+
+        assert {:ok, _} = Fil.write(disk, "iodata.txt", "content", size: :unknown)
+        assert Fil.read(disk, "iodata.txt") == {:ok, "content"}
+      end
+
       test "if_exists: :error applies to streams", %{disk: disk} do
         first = chunked("first", 2)
         second = chunked("second", 2)

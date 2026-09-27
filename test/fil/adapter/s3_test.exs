@@ -1483,8 +1483,7 @@ defmodule Fil.Adapter.S3Test do
 
       # Without its size, so the stream goes up in parts.
       assert {:ok, stream} = Fil.stream(source, "a.bin")
-      unsized = Stream.map(stream, & &1)
-      assert {:error, %Fil.UnavailableError{} = error} = Fil.write(parts_disk(), "a.bin", unsized)
+      assert {:error, %Fil.UnavailableError{} = error} = Fil.write(parts_disk(), "a.bin", stream, size: :unknown)
 
       assert [
                {[:fil, :op, :stop], _, %{op: :read, streaming: true}},

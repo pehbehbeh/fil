@@ -11,7 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `Fil.write/4` finds the size of a `File.Stream` of bytes and of a stream from `Fil.stream/3` itself, so S3 sends
   them as they're read, in one request, without `size:`. When the file changes size while it's written, the write
-  returns `Fil.ConflictError` and writes nothing.
+  returns `Fil.ConflictError` and writes nothing. `size: :unknown` turns this off, for a file that grows while it's
+  written (a log) or whose stat size may be wrong (`/sys`, network and FUSE file systems).
   ([#15](https://github.com/pehbehbeh/fil/pull/15))
 - `Fil.Plugin.Thumbnails` writes smaller copies of images when they're written, sized per variant, and deletes, copies
   and renames them with the image. They go under `thumbnails/`, or wherever a `:variant_path` function puts them, such

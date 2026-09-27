@@ -85,7 +85,7 @@ defmodule Fil do
 
   @size_option [
     size: [
-      type: :non_neg_integer,
+      type: {:or, [:non_neg_integer, {:in, [:unknown]}]},
       doc: """
       The size of the content in bytes. S3 sends a stream of known size as it's read, in one request, and uploads one
       without a size in parts. Content of another size raises `ArgumentError` and writes nothing, whatever the plugins
@@ -95,6 +95,10 @@ defmodule Fil do
       changes them (`:compressed`, `:trim_bom`, an encoding) has the size of its file, minus its `:read_offset`, and a
       stream from `stream/3` the size its adapter found. When such a stream turns out to have another size, because
       the file changed while it was read, the write returns `Fil.ConflictError` and writes nothing.
+
+      `size: :unknown` writes the stream as it's read, without a size (S3 uploads it in parts). Use it for a file that
+      grows while it's written, such as a log that's still appended to, which is then written as far as it was read,
+      and for files whose stat size may be wrong, such as those under `/sys` or on a network or FUSE file system.
       """
     ]
   ]
@@ -1006,20 +1010,27 @@ defmodule Fil do
   # events. A stream is checked against `:size` while it's read (`Fil.Support.Content.sized/3`). Without `:size`, a
   # stream whose size is known before it's read gets it (`Fil.Support.Content.known_size/1`), so S3 can send it in one
   # request, and one that turns out to have another size is a conflict instead of a bad argument: the file changed.
-  # Returns the content, the options and the size, if it's known.
+  # Returns the content, the options and the size, if it's known. `size: :unknown` only turns off finding the size, so
+  # it's dropped here, and plugins and adapters never see it.
   defp check_content!(content, opts) do
-    size = opts[:size]
+    case Keyword.pop(opts, :size) do
+      {:unknown, without_size} -> check_content!(content, without_size, :unknown)
+      {size, _opts} -> check_content!(content, opts, size)
+    end
+  end
 
+  defp check_content!(content, opts, size) do
     cond do
       Content.iodata?(content) -> {content, opts, check_iodata_size!(content, size)}
-      size != nil -> {Content.sized(content, size), opts, size}
+      is_integer(size) -> {Content.sized(content, size), opts, size}
+      size == :unknown -> {content, opts, nil}
       true -> check_known_size(content, opts)
     end
   end
 
   defp check_iodata_size!(content, size) do
     case iodata_length!(content) do
-      length when size in [nil, length] -> length
+      length when size in [nil, :unknown, length] -> length
       length -> raise ArgumentError, "the content has #{length} bytes, but the :size option is #{size}"
     end
   end

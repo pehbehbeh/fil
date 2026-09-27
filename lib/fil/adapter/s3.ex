@@ -116,12 +116,12 @@ defmodule Fil.Adapter.S3 do
     * `Fil.stream/3`: HeadObject, then GetObject each time the stream is read. The download runs in a process of its
       own and goes only as fast as the stream is read. `verify_checksum: true` computes the checksum while streaming.
     * `Fil.write/4`: PutObject for content in memory, and for a stream of known size (`size:`, a `File.Stream`, a stream
-      from `Fil.stream/3`), which is sent as it's read. A stream without a size or with `checksum:`, and anything over
-      5 GiB, goes up in parts instead (see [Uploads in parts](#module-uploads-in-parts)). `if_exists: :error` sends
-      `If-None-Match: *`. `checksum:` (`:sha256`, `:sha1` or `:crc32`) sends the checksum of the content in
-      `x-amz-checksum-*`, S3 rejects the upload if what it received doesn't match, and stores the checksum with the
-      object. Writing to `report.txt/x` when `report.txt` is an object writes a second object and leaves the first
-      alone.
+      from `Fil.stream/3`), which is sent as it's read. A stream without a size (or with `size: :unknown`) or with
+      `checksum:`, and anything over 5 GiB, goes up in parts instead (see [Uploads in parts](#module-uploads-in-parts)).
+      `if_exists: :error` sends `If-None-Match: *`. `checksum:` (`:sha256`, `:sha1` or `:crc32`) sends the checksum of
+      the content in `x-amz-checksum-*`, S3 rejects the upload if what it received doesn't match, and stores the
+      checksum with the object. Writing to `report.txt/x` when `report.txt` is an object writes a second object and
+      leaves the first alone.
     * `Fil.rm/3`: DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error).
       Removing a directory succeeds and removes nothing.
     * `Fil.stat/3`: HeadObject, then a prefix probe if there's no object, so `Fil.dir?/1` works. `:etag` and
@@ -138,9 +138,10 @@ defmodule Fil.Adapter.S3 do
 
   ## Uploads in parts
 
-  A stream without a size, a stream with `checksum:`, and content over 5 GiB (the largest PutObject) are read one part
-  at a time, `:part_size` bytes each, so an upload keeps about one part and one chunk in memory. Content that ends
-  within the first part goes out as one PutObject once it has ended. Anything longer is a multipart upload:
+  A stream without a size (or with `size: :unknown`), a stream with `checksum:`, and content over 5 GiB (the largest
+  PutObject) are read one part at a time, `:part_size` bytes each, so an upload keeps about one part and one chunk in
+  memory. Content that ends within the first part goes out as one PutObject once it has ended. Anything longer is a
+  multipart upload:
 
     * CreateMultipartUpload once the second part begins, with the content type and the checksum algorithm
     * UploadPart for each part once more content has arrived after it, signed with its SHA-256, which S3 checks.
