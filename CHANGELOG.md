@@ -38,7 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - `Fil.Plug` streams uploads into `Fil.write/4`, with the `content-length` as `size:`, and sends downloads as a chunked
-  response, so neither is held in memory whole.
+  response, so neither has to fit in memory.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - A copy or a move across disks streams the file instead of reading it into memory, with the source's size, so S3
   streams it too (unless a plugin on the source changes the content).

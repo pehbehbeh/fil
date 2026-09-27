@@ -21,7 +21,7 @@ The Hex package is `fil`.
   config skip `attach/2`.
 - Options come only from `attach`; there are no registered or global options. Callbacks
   match on `op.name` and change content only through the `Fil.Op` helpers (`update_content/2`, `update_result/2`),
-  so they work on whole content and streams alike. `Fil.stream/3` runs as a `:read` with `op.streaming: true`, so a
+  so they work on iodata and streams alike. `Fil.stream/3` runs as a `:read` with `op.streaming: true`, so a
   plugin that transforms reads covers it without knowing. Every operation goes through `Fil.Op.run/1`. Plugin docs
   live in `guides/plugins.md` only, not in the README. A new plugin goes into the list of shipped plugins at the top of
   that guide, by hand.

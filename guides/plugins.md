@@ -121,7 +121,8 @@ def call(%Fil.Op{name: :read} = op, next, opts) do
 end
 ```
 
-The answer can be whole content on a read from `Fil.stream/3` too. The caller then gets it as a stream of one chunk.
+The answer can be content in memory on a read from `Fil.stream/3` too. The caller then gets it as a stream of one
+chunk.
 
 ## Errors
 
@@ -144,7 +145,7 @@ own errors. A callback that returns something other than a `Fil.Op`, leaves the 
 `{:error, _}` raises `ArgumentError`, because that's a bug in the plugin.
 
 A content transform can fail with one of `Fil`'s errors too, such as `Fil.ChecksumMismatchError` from a check that
-finds the content tampered with. On a read of whole content, a transform passed to `Fil.Op.update_result/2` that
+finds the content tampered with. On a read of content in memory, a transform passed to `Fil.Op.update_result/2` that
 raises one turns the read into `{:error, error}`, with the operation, the path and the disk filled in. On a stream, the
 error is raised to whoever reads it (see [Streams](#streams)). On a write, one raised while the content is read (by a
 transform, or by a stream from `Fil.stream/3`) is the write's result. Any other exception propagates as it is.
@@ -152,8 +153,8 @@ transform, or by a stream from `Fil.stream/3`) is the write's result. Any other 
 ## Content
 
 Change the content of a write with `Fil.Op.update_content/2` and the content of a read with `Fil.Op.update_result/2`,
-instead of setting `op.content` or `op.result` directly. Content is whole (iodata) or a stream, and these functions
-handle both:
+instead of setting `op.content` or `op.result` directly. Content is in memory (iodata) or a stream, and these
+functions handle both:
 
 ```elixir
 def call(%Fil.Op{name: :write} = op, next, _opts) do
@@ -163,9 +164,10 @@ def call(%Fil.Op{name: :write} = op, next, _opts) do
 end
 ```
 
-`binary:` gets the whole content, `chunk:` one chunk of a stream, and `stream:` the whole stream. A plugin with only
-`binary:` still works on streams: `Fil` collects the stream into memory first, which costs memory for large files.
-`Fil.Op.materialize/1` does the same for plugins that need the whole content for something else, such as a signature.
+`binary:` gets all of the content as one binary, `chunk:` one chunk of a stream, and `stream:` the stream. A plugin
+with only `binary:` still works on streams: `Fil` collects the stream into memory first, which costs memory for large
+files. `Fil.Op.materialize/1` does the same for plugins that need all of the content for something else, such as a
+signature.
 
 A write is a stream when the caller passes one to `Fil.write/4`, and a read is one when it comes from `Fil.stream/3`
 (`op.streaming` is `true` then). Both are still `:write` and `:read` operations, so a plugin that transforms content
@@ -189,8 +191,8 @@ A stream is an enumerable of binaries. What a plugin can rely on:
     the stream is read, not in the callback
   * a stream from `Fil.stream/3` can be read more than once, and the functions then run again from the start. State
     for one pass goes into the start function of `Stream.transform/5`, not into the callback
-  * errors are `Fil`'s error structs, such as `Fil.ChecksumMismatchError` for content that fails a check. On whole
-    content, a transform that raises one turns the read into `{:error, error}`. On a stream, it's raised to whoever
+  * errors are `Fil`'s error structs, such as `Fil.ChecksumMismatchError` for content that fails a check. On content
+    in memory, a transform that raises one turns the read into `{:error, error}`. On a stream, it's raised to whoever
     reads the stream, with the operation, the path and the disk filled in. A write that raises leaves nothing behind
 
 `chunk:` suits transforms that treat every chunk on its own. A transform that keeps state from one chunk to the next,
@@ -220,8 +222,8 @@ defp gzip(chunks) do
 end
 ```
 
-`gunzip/1` is the same with `inflateInit/2` and `inflate/2`. Whole content goes to `stream:` as a stream of one chunk
-when there's no `binary:`, so one function can cover both.
+`gunzip/1` is the same with `inflateInit/2` and `inflate/2`. Content in memory goes to `stream:` as a stream of one
+chunk when there's no `binary:`, so one function can cover both.
 
 A transform can change the size of the content, so `Fil.Op.update_content/2` drops the `:size` option of the write.
 On S3, a stream without a size is collected into memory before it's sent. A plugin that knows the new size declares

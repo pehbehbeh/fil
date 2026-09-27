@@ -107,7 +107,7 @@ defmodule Fil.Adapter do
   @doc """
   Checks that a file can be read and returns a stream of its content.
 
-  Optional. Without it, `Fil.stream/3` calls `c:read/3` and streams the whole content as one chunk.
+  Optional. Without it, `Fil.stream/3` calls `c:read/3` and streams the file as one chunk.
 
   Returns `{:ok, stream, size}` when the check found the size of the file, `{:ok, stream}` otherwise. `Fil` passes the
   size on when it copies the file to another disk, so storage that needs the size before the content (S3) can stream

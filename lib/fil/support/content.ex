@@ -3,27 +3,27 @@ defmodule Fil.Support.Content do
 
   alias Fil.Support.Sized
 
-  # Content is whole (iodata) or a stream (any other enumerable of iodata). These helpers turn a stream into what
+  # Content is iodata or a stream (any other enumerable of iodata). These helpers turn a stream into what
   # adapters, plugins and callers get: non-empty binaries, in order.
 
-  @doc "Whether `content` is whole iodata rather than a stream. A list is iodata, even though it's enumerable too."
-  @spec whole?(term()) :: boolean()
-  def whole?(content), do: is_binary(content) or is_list(content)
+  @doc "Whether `content` is iodata rather than a stream. A list is iodata, even though it's enumerable too."
+  @spec iodata?(term()) :: boolean()
+  def iodata?(content), do: is_binary(content) or is_list(content)
 
   @doc "Raises unless `content` can be written: iodata or an enumerable."
   @spec validate!(term()) :: :ok
   def validate!(content) do
-    if whole?(content) or Enumerable.impl_for(content) != nil do
+    if iodata?(content) or Enumerable.impl_for(content) != nil do
       :ok
     else
       raise ArgumentError, "expected the content to be iodata or an enumerable of iodata, got: #{inspect(content)}"
     end
   end
 
-  @doc "The chunks of a stream as non-empty binaries. Whole content becomes a list of at most one binary."
+  @doc "The chunks of a stream as non-empty binaries. Iodata becomes a list of at most one binary."
   @spec chunks(iodata() | Enumerable.t()) :: Enumerable.t()
   def chunks(content) do
-    if whole?(content) do
+    if iodata?(content) do
       content
       |> IO.iodata_to_binary()
       |> List.wrap()
@@ -38,7 +38,7 @@ defmodule Fil.Support.Content do
   @doc "Collects content into one binary."
   @spec to_binary(iodata() | Enumerable.t()) :: binary()
   def to_binary(content) do
-    if whole?(content) do
+    if iodata?(content) do
       IO.iodata_to_binary(content)
     else
       content

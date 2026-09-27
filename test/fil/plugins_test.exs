@@ -272,7 +272,7 @@ defmodule Fil.PluginsTest do
   end
 
   describe "Fil.Op content" do
-    test "update_content and update_result transform whole content", %{disk: disk} do
+    test "update_content and update_result transform iodata", %{disk: disk} do
       disk =
         Fil.attach(disk, :rot, fn op, next, _opts ->
           op
@@ -369,7 +369,7 @@ defmodule Fil.PluginsTest do
 
       {:ok, _} = Fil.write(checking, "a.txt", "content")
 
-      # Whole content: returned as an error, with the context filled in.
+      # Iodata: returned as an error, with the context filled in.
       assert {:error, %Fil.ChecksumMismatchError{op: :read, path: "a.txt", reason: :tampered} = error} =
                Fil.read(checking, "a.txt")
 
@@ -402,7 +402,7 @@ defmodule Fil.PluginsTest do
       assert_raise RuntimeError, "a bug", fn -> Fil.read(failing, "a.txt") end
     end
 
-    test "update_content passes whole content to a stream transform as one chunk", %{disk: disk} do
+    test "update_content passes iodata to a stream transform as one chunk", %{disk: disk} do
       op = %Op{disk: disk, name: :write, path: "a.txt", content: ["ab", "cd"], options: [size: 4]}
 
       streamed = Op.update_content(op, stream: &Stream.map(&1, fn chunk -> [chunk, "!"] end))
@@ -430,7 +430,7 @@ defmodule Fil.PluginsTest do
       assert_received {:pulled, "ab"}
     end
 
-    test "chunk: gets no call for empty content, whole or streamed", %{disk: disk} do
+    test "chunk: gets no call for empty content, iodata or a stream", %{disk: disk} do
       marking = &[&1, "!"]
 
       for content <- ["", [], Stream.map([""], & &1)] do

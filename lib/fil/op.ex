@@ -135,18 +135,18 @@ defmodule Fil.Op do
   @doc """
   Transforms the content of a `:write`. Other operations are returned unchanged.
 
-  The content is whole (a binary or iodata) or a stream. Pass `binary:` to transform whole content, and `chunk:` or
-  `stream:` to transform a stream without collecting it:
+  The content is iodata or a stream. Pass `binary:` to transform iodata, and `chunk:` or `stream:` to transform a
+  stream without collecting it:
 
       Fil.Op.update_content(op, binary: &:zlib.gzip/1, stream: &MyApp.Gzip.stream/1)
 
-    * `binary:` gets the whole content as a binary and returns iodata. A stream is collected into memory first when
+    * `binary:` gets all of the content as one binary and returns iodata. A stream is collected into memory first when
       there's no `chunk:` or `stream:`
     * `chunk:` gets one chunk of a stream as a binary and returns iodata, once per chunk, when the adapter reads it.
-      Without `binary:`, whole content is passed to it as a single chunk, and empty content not at all
+      Without `binary:`, iodata is passed to it as a single chunk, and empty iodata not at all
     * `stream:` gets the stream (an enumerable of binaries) and returns an enumerable of iodata, for transforms that
-      keep state from one chunk to the next or add something at the end. Without `binary:`, whole content is passed to
-      it as a stream of one chunk (none if it's empty), and the result is collected again
+      keep state from one chunk to the next or add something at the end. Without `binary:`, iodata is passed to it as a
+      stream of one chunk (none if it's empty), and the result is collected again
 
   A stream prefers `stream:` over `chunk:`. The [Plugins guide](plugins.md#streams) describes what a chunk is.
   A transform drops the `:size` option of the write, because the size can change. A plugin that knows the new size
@@ -156,7 +156,7 @@ defmodule Fil.Op do
   def update_content(%__MODULE__{name: :write, content: content} = op, funs) do
     funs = validate_transform!(funs)
 
-    content = if Content.whole?(content), do: transform_whole(content, funs), else: transform_stream(content, funs)
+    content = if Content.iodata?(content), do: transform_iodata(content, funs), else: transform_stream(content, funs)
 
     drop_size(%{op | content: content})
   end
@@ -173,15 +173,15 @@ defmodule Fil.Op do
   stream, and the transforms run when the caller reads it; a stream with only `binary:` is collected then too.
 
   A transform that raises one of `Fil`'s errors, such as `Fil.ChecksumMismatchError` for content that fails a check,
-  turns a read of whole content into that error. On a stream, the error is raised when the caller reads it, with the
-  operation, the path and the disk filled in.
+  turns a read that returns a binary into that error. On a stream, the error is raised when the caller reads it, with
+  the operation, the path and the disk filled in.
   """
   @spec update_result(t(), transform()) :: t()
   def update_result(%__MODULE__{name: :read, result: {:ok, content}} = op, funs) do
     funs = validate_transform!(funs)
 
-    if Content.whole?(content) do
-      %{op | result: transform_whole_result(content, funs)}
+    if Content.iodata?(content) do
+      %{op | result: transform_iodata_result(content, funs)}
     else
       %{op | result: {:ok, transform_result_stream(content, funs)}}
     end
@@ -194,10 +194,10 @@ defmodule Fil.Op do
 
   # A transform that fails with one of `Fil`'s errors (a decryption that finds the content tampered with, say) turns
   # the read into that error. A stream raises it instead, when it's read.
-  defp transform_whole_result(content, funs) do
+  defp transform_iodata_result(content, funs) do
     binary =
       content
-      |> transform_whole(funs)
+      |> transform_iodata(funs)
       |> IO.iodata_to_binary()
 
     {:ok, binary}
@@ -206,10 +206,10 @@ defmodule Fil.Op do
   end
 
   @doc """
-  Makes the content of a `:write` whole, for plugins that need all of it at once.
+  Collects the content of a `:write` into one binary, for plugins that need all of it at once.
 
-  Whole content is flattened into a binary. A stream is collected into memory, so use this only when a plugin can't
-  work chunk by chunk.
+  Iodata is flattened into a binary. A stream is collected into memory, so use this only when a plugin can't work
+  chunk by chunk.
 
       iex> op = %Fil.Op{disk: nil, name: :write, path: "a.txt", content: ["a", ["b"]]}
       iex> Fil.Op.materialize(op).content
@@ -223,7 +223,7 @@ defmodule Fil.Op do
 
   def materialize(%__MODULE__{} = op), do: op
 
-  defp transform_whole(content, funs) do
+  defp transform_iodata(content, funs) do
     binary = IO.iodata_to_binary(content)
 
     case funs do
@@ -262,7 +262,7 @@ defmodule Fil.Op do
     end
   end
 
-  # A read stream stays lazy, so a transform that needs the whole content collects it when the caller reads.
+  # A read stream stays lazy, so a transform that needs all of the content collects it when the caller reads.
   defp transform_result_stream(stream, funs) do
     case funs do
       %{stream: _fun} -> transform_stream(stream, funs)
@@ -348,7 +348,7 @@ defmodule Fil.Op do
   # Errors a plugin's transform raises while the caller reads a stream get the caller's context too, the same as the
   # adapter's (see `to_result/3`).
   defp put_stream_context({:ok, content}, %__MODULE__{name: :read, streaming: true} = caller) do
-    if Content.whole?(content), do: {:ok, content}, else: {:ok, Content.put_context(content, context(caller))}
+    if Content.iodata?(content), do: {:ok, content}, else: {:ok, Content.put_context(content, context(caller))}
   end
 
   defp put_stream_context(result, _caller), do: result
@@ -404,7 +404,7 @@ defmodule Fil.Op do
 
   # A stream reaches the adapter as non-empty binaries, checked against the `:size` the caller declared.
   defp call_adapter(%__MODULE__{name: :write, content: content} = op, module, state) do
-    content = if Content.whole?(content), do: content, else: Content.sized(content, op.options[:size])
+    content = if Content.iodata?(content), do: content, else: Content.sized(content, op.options[:size])
 
     module.write(state, op.path, content, op.options)
   end

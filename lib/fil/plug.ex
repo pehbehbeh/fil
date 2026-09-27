@@ -112,7 +112,7 @@ if Code.ensure_loaded?(Plug) do
 
       * `GET` and `HEAD` on a URL signed for `:get` return the file, with its stored content type or one guessed from
         the extension, and the `content-disposition` the URL was signed with (`disposition:`). The file is streamed
-        as a chunked response, so it's never read into memory whole
+        as a chunked response, so it never has to fit in memory
       * `PUT` on a URL signed for `:put` writes the request body, with the request's `content-type`, the same as a
         presigned PUT on S3. The body is streamed into `Fil.write/4` as it's read, with the `content-length` as
         `size:`. Plugins attached to the disk run as for any other write

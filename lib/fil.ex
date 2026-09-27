@@ -313,7 +313,7 @@ defmodule Fil do
   def stream(ref, opts) when is_list(opts) do
     opts = validate!(opts, @read_schema)
 
-    # A plugin may answer with whole content, and the caller still gets a stream.
+    # A plugin may answer with iodata, and the caller still gets a stream.
     with {:ok, content} <- run(ref, :read, opts, streaming: true), do: {:ok, Content.chunks(content)}
   end
 
@@ -474,7 +474,7 @@ defmodule Fil do
   Writes a file, creating missing parent directories.
 
   `content` is iodata, or a stream of it (see `t:content/0`). A stream is written as it's read, without holding the
-  whole content in memory, and a file is only there once the stream has ended. If reading the stream raises, nothing
+  content in memory at once, and a file is only there once the stream has ended. If reading the stream raises, nothing
   is written: one of `Fil`'s errors (from a stream of `stream/3`, say) comes back as `{:error, error}`, and any other
   exception propagates. Pass the size with `:size` if you know it, so S3 can stream too.
 
@@ -992,13 +992,13 @@ defmodule Fil do
   end
 
   # The caller's content is checked against `:size` before plugins see it, so a plugin that collects or transforms a
-  # stream doesn't hide a wrong size. Whole content is checked right away, a stream while it's read
+  # stream doesn't hide a wrong size. Iodata is checked right away, a stream while it's read
   # (`Fil.Support.Content.sized/2`).
   defp check_size!(content, nil), do: content
 
   defp check_size!(content, size) do
     cond do
-      not Content.whole?(content) ->
+      not Content.iodata?(content) ->
         Content.sized(content, size)
 
       IO.iodata_length(content) != size ->

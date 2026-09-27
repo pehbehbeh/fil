@@ -92,7 +92,7 @@ defmodule FilTest do
       end
     end
 
-    test "size: of whole content is checked before anything is written", %{disk: disk} do
+    test "size: of iodata is checked before anything is written", %{disk: disk} do
       assert_raise ArgumentError, "the content has 5 bytes, but the :size option is 6", fn ->
         Fil.write(disk, "a.txt", ["he", "llo"], size: 6)
       end
@@ -118,7 +118,7 @@ defmodule FilTest do
       assert {:error, %Fil.NotFoundError{op: :read, path: "nope.txt"}} = Fil.stream(disk, "nope.txt")
     end
 
-    test "a plugin that answers with whole content still gives a stream", %{disk: disk} do
+    test "a plugin that answers with iodata still gives a stream", %{disk: disk} do
       cached =
         Fil.attach(disk, :cache, fn
           %Fil.Op{name: :read} = op, _next, _opts -> Fil.Op.put_result(op, {:ok, ["cac", "hed"]})

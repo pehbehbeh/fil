@@ -395,10 +395,10 @@ defmodule Fil.AdapterCase do
                |> Fil.stream!("jack.txt.gz")
                |> Enum.join() == content
 
-        assert {:ok, _} = Fil.write(compressing, "whole.txt.gz", content)
+        assert {:ok, _} = Fil.write(compressing, "iodata.txt.gz", content)
 
         assert compressing
-               |> Fil.stream!("whole.txt.gz")
+               |> Fil.stream!("iodata.txt.gz")
                |> Enum.join() == content
       end
 

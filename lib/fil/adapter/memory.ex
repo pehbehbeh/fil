@@ -174,7 +174,7 @@ defmodule Fil.Adapter.Memory do
     end
   end
 
-  # The store holds the whole content anyway, so a stream is collected before it's stored.
+  # The store keeps content in memory anyway, so a stream is collected before it's stored.
   @impl Fil.Adapter
   def write(state, path, content, opts) do
     content = Content.to_binary(content)

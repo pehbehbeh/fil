@@ -30,14 +30,14 @@ defmodule Fil.Adapter.Local do
     * `Fil.read/3`: `File.read/1`. Reading a directory is a `Fil.InvalidRequestError`. The filesystem stores no
       checksums, so `verify_checksum: true` is ignored.
     * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read.
-    * `Fil.write/4`: the content, whole or streamed, goes to a temporary file named `.fil-` and a unique suffix in the
-      destination directory, which `File.rename/2` then moves into place, so readers never see a partial file. A failed
-      write leaves nothing behind, and removes the directories it created. A writer that's killed before it's done (a
-      request process that the server stops when the client disconnects, for example) leaves its `.fil-` file and
-      those directories behind. `if_exists: :error` hard-links
-      the temporary file to the destination instead, which fails if it exists (on a filesystem without hard links, it
-      creates the destination with `O_EXCL` first). `checksum:` is ignored. Writing over a directory, or to
-      `report.txt/x` when `report.txt` is a file, is a `Fil.InvalidRequestError`.
+    * `Fil.write/4`: the content, in memory or a stream, goes to a temporary file named `.fil-` and a unique suffix in
+      the destination directory, which `File.rename/2` then moves into place, so readers never see a partial file. A
+      failed write leaves nothing behind, and removes the directories it created. A writer that's killed before it's
+      done (a request process that the server stops when the client disconnects, for example) leaves its `.fil-` file
+      and those directories behind. `if_exists: :error` hard-links the temporary file to the destination instead,
+      which fails if it exists (on a filesystem without hard links, it creates the destination with `O_EXCL` first).
+      `checksum:` is ignored. Writing over a directory, or to `report.txt/x` when `report.txt` is a file, is a
+      `Fil.InvalidRequestError`.
     * `Fil.rm/3`: `File.rm/1`, with a missing file mapped to success. Removing a directory is a
       `Fil.InvalidRequestError`.
     * `Fil.stat/3`: `File.stat/2`. `:etag` is a weak `"size-mtime"` tag: good enough to notice a change, but it can't

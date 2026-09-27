@@ -332,7 +332,7 @@ defmodule Fil.Adapter.S3Test do
       assert header(request, "authorization") =~ "x-amz-content-sha256"
     end
 
-    test "a stream without a size is collected and sent whole" do
+    test "a stream without a size is collected and sent as one binary" do
       stub([response(200)])
 
       assert {:ok, _} = Fil.write(disk(), "a.txt", Stream.map(["Hello", ", World"], & &1))

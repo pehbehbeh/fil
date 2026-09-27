@@ -84,8 +84,8 @@ defmodule Fil.Adapter.S3 do
   Streamed uploads need an HTTP/1 connection pool, which is what Req uses unless `:req_options` asks for HTTP/2 (for
   example with `connect_options: [protocols: [:http2]]` or a `:finch` pool for HTTP/2). On HTTP/2, Finch reads a request
   body in the pool's process instead of the caller's, and a stream that only the caller's process can read fails or
-  stalls there: a `Fil.Plug` upload, or a stream from another S3 disk in a copy across disks. Whole content and streams
-  that any process can read, such as a `File.Stream`, are fine.
+  stalls there: a `Fil.Plug` upload, or a stream from another S3 disk in a copy across disks. Content in memory and
+  streams that any process can read, such as a `File.Stream`, are fine.
 
   ## Options
 
@@ -229,15 +229,15 @@ defmodule Fil.Adapter.S3 do
 
   # Decides how the content goes out in one PutObject. A stream of known size without a checksum is sent as it's read,
   # with its `content-length`, and signed with `UNSIGNED-PAYLOAD` (Req does that for a streamed body). Anything else is
-  # sent whole: a stream without a size is collected first, because a PutObject needs its length up front, and so is
-  # one with a checksum, whose header goes out before the content. Multipart uploads for streams of unknown size belong
-  # here.
+  # sent as one binary: a stream without a size is collected first, because a PutObject needs its length up front, and
+  # so is one with a checksum, whose header goes out before the content. Multipart uploads for streams of unknown size
+  # belong here.
   defp upload_body(content, opts) do
-    case {Content.whole?(content), opts[:size], opts[:checksum]} do
+    case {Content.iodata?(content), opts[:size], opts[:checksum]} do
       {false, size, nil} when is_integer(size) ->
         {content, [{"content-length", Integer.to_string(size)}]}
 
-      _whole_or_unknown_size ->
+      _iodata_or_unknown_size ->
         body = Content.to_binary(content)
         {body, checksum_header(opts, body)}
     end
