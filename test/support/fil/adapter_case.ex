@@ -466,6 +466,25 @@ defmodule Fil.AdapterCase do
         assert get_url != put_url
       end
 
+      test "signs a content disposition into download URLs", %{disk: disk} do
+        assert {:ok, plain} = Fil.signed_url(disk, "cv.pdf")
+        assert {:ok, inline} = Fil.signed_url(disk, "cv.pdf", disposition: :inline)
+        assert {:ok, attachment} = Fil.signed_url(disk, "cv.pdf", disposition: :attachment)
+        assert {:ok, renamed} = Fil.signed_url(disk, "cv.pdf", disposition: {:attachment, "Lebenslauf.pdf"})
+
+        # S3 names the parameter `response-content-disposition`, `Fil.Plugin.URL` just `disposition`.
+        query_values = fn url -> Map.values(URI.decode_query(URI.parse(url).query)) end
+
+        assert "inline" in query_values.(inline)
+        assert ~s(attachment; filename="cv.pdf") in query_values.(attachment)
+        assert ~s(attachment; filename="Lebenslauf.pdf") in query_values.(renamed)
+        refute Enum.any?(query_values.(plain), &String.contains?(&1, "attachment"))
+
+        assert_raise ArgumentError, ~r/disposition/, fn ->
+          Fil.signed_url(disk, "cv.pdf", method: :put, disposition: :attachment)
+        end
+      end
+
       test "signed URLs expire after 7 days at most", %{disk: disk} do
         assert {:ok, _} = Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60)
 

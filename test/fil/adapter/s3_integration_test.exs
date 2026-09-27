@@ -72,6 +72,17 @@ defmodule Fil.Adapter.S3IntegrationTest do
       assert {:ok, %{status: 200, body: "World"}} = get(url)
     end
 
+    test "returns a URL that downloads with the signed disposition", %{disk: disk} do
+      Fil.write!(disk, "7f3a.pdf", "PDF")
+
+      assert {:ok, url} = Fil.signed_url(disk, "7f3a.pdf", disposition: {:attachment, "Rechnung März.pdf"})
+      assert {:ok, %{status: 200, body: "PDF"} = response} = get(url)
+
+      assert Req.Response.get_header(response, "content-disposition") == [
+               ~s(attachment; filename="Rechnung M_rz.pdf"; filename*=UTF-8''Rechnung%20M%C3%A4rz.pdf)
+             ]
+    end
+
     test "presigns an upload", %{disk: disk} do
       assert {:ok, url} = Fil.signed_url(disk, "uploaded.txt", method: :put, expires_in: 60)
       assert {:ok, %{status: status}} = put(url, "Uploaded")

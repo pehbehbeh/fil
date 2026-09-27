@@ -96,7 +96,7 @@ defmodule Fil.Adapter.S3 do
   | `rename/4` | CopyObject, then DeleteObject |
   | `rm_rf/3` | ListObjectsV2, then one DeleteObject per key |
   | `url/2` | the object URL, without a signature (works for public objects only) |
-  | `signed_url/3` | a presigned GET or PUT URL |
+  | `signed_url/3` | a presigned GET or PUT URL (`response-content-disposition` for `disposition:`) |
 
   ## Errors
 
@@ -293,11 +293,11 @@ defmodule Fil.Adapter.S3 do
 
   @impl Fil.Adapter
   def signed_url(state, path, opts) do
-    # `Fil` has validated `:method` and `:expires_in` (at most 7 days, the limit of S3).
+    # `Fil` has validated `:method` and `:expires_in` (at most 7 days, the limit of S3) and built `:disposition`.
     if is_nil(state.access_key_id) or is_nil(state.secret_access_key) do
       {:error, %Fil.UnsupportedError{reason: :missing_credentials}}
     else
-      {:ok, presign(state, key(state, path), Keyword.get(opts, :method, :get), Keyword.get(opts, :expires_in, 900))}
+      {:ok, presign(state, key(state, path), opts)}
     end
   end
 
@@ -418,9 +418,17 @@ defmodule Fil.Adapter.S3 do
   end
 
   # `Req.Utils.aws_sigv4_url/1` is private Req API. Req isn't pinned for it: if a release drops it, presigning crashes.
-  # It has no option for a session token, but it signs any extra query parameters, so the token goes in that way.
-  defp presign(state, key, method, expires_in) do
-    query = if state.session_token, do: [{"X-Amz-Security-Token", state.session_token}], else: []
+  # It has no option for a session token, but it signs any extra query parameters, so the token goes in that way, and so
+  # does the `response-content-disposition` S3 answers the download with.
+  defp presign(state, key, opts) do
+    query =
+      Enum.reject(
+        [
+          {"X-Amz-Security-Token", state.session_token},
+          {"response-content-disposition", Keyword.get(opts, :disposition)}
+        ],
+        &is_nil(elem(&1, 1))
+      )
 
     [
       access_key_id: state.access_key_id,
@@ -428,9 +436,9 @@ defmodule Fil.Adapter.S3 do
       region: state.region,
       service: :s3,
       datetime: DateTime.utc_now(),
-      method: method,
+      method: Keyword.get(opts, :method, :get),
       url: object_url(state, key, []),
-      expires: expires_in,
+      expires: Keyword.get(opts, :expires_in, 900),
       query: query
     ]
     |> Req.Utils.aws_sigv4_url()

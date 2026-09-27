@@ -594,6 +594,33 @@ defmodule Fil.Adapter.S3Test do
       assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :missing_credentials}} =
                Fil.signed_url(disk, "cv.pdf")
     end
+
+    test "signs the disposition as response-content-disposition" do
+      assert {:ok, plain} = Fil.signed_url(disk(), "cv.pdf")
+      assert {:ok, inline} = Fil.signed_url(disk(), "cv.pdf", disposition: :inline)
+      assert {:ok, attachment} = Fil.signed_url(disk(), "cv.pdf", disposition: :attachment)
+
+      refute Map.has_key?(URI.decode_query(URI.parse(plain).query), "response-content-disposition")
+      assert URI.decode_query(URI.parse(inline).query)["response-content-disposition"] == "inline"
+
+      # Encoded the way SigV4 canonicalizes it (`%20`, not `+`), so the URL S3 receives matches the signed query.
+      assert URI.parse(attachment).query =~
+               "&response-content-disposition=attachment%3B%20filename%3D%22cv.pdf%22&"
+
+      assert [plain, inline, attachment]
+             |> Enum.map(&signature/1)
+             |> Enum.uniq()
+             |> length() == 3
+
+      assert requests() == []
+    end
+
+    test "encodes a filename that isn't ASCII" do
+      assert {:ok, url} = Fil.signed_url(disk(), "7f3a.pdf", disposition: {:attachment, ~s(Rechnung "März".pdf)})
+
+      assert URI.decode_query(URI.parse(url).query)["response-content-disposition"] ==
+               ~s(attachment; filename="Rechnung _M_rz_.pdf"; filename*=UTF-8''Rechnung%20%22M%C3%A4rz%22.pdf)
+    end
   end
 
   ## ------------------------------------------------------------------

@@ -106,6 +106,28 @@ defmodule Fil.PlugTest do
         assert conn.resp_body == "the URL has expired"
       end
 
+      test "GET and HEAD send the signed disposition", %{disk: disk} do
+        {:ok, _} = Fil.write(disk, "7f3a.pdf", "pdf")
+        {:ok, plain} = Fil.signed_url(disk, "7f3a.pdf")
+        {:ok, url} = Fil.signed_url(disk, "7f3a.pdf", disposition: {:attachment, "Rechnung März.pdf"})
+        header = ~s(attachment; filename="Rechnung M_rz.pdf"; filename*=UTF-8''Rechnung%20M%C3%A4rz.pdf)
+
+        assert get_resp_header(request(:get, url, disk), "content-disposition") == [header]
+        assert get_resp_header(request(:head, url, disk), "content-disposition") == [header]
+        assert get_resp_header(request(:get, plain, disk), "content-disposition") == []
+      end
+
+      test "a changed disposition is rejected", %{disk: disk} do
+        {:ok, _} = Fil.write(disk, "a.txt", "a")
+        {:ok, plain} = Fil.signed_url(disk, "a.txt")
+        {:ok, url} = Fil.signed_url(disk, "a.txt", disposition: :inline)
+
+        assert request(:get, String.replace(url, "disposition=inline", "disposition=attachment"), disk).status == 403
+        assert request(:get, String.replace(plain, "&signature", "&disposition=inline&signature"), disk).status == 403
+        assert request(:get, String.replace(url, "disposition=inline&", ""), disk).status == 403
+        assert request(:get, String.replace(url, "disposition=inline", "disposition[]=inline"), disk).status == 403
+      end
+
       test "a missing file is a 404", %{disk: disk} do
         {:ok, url} = Fil.signed_url(disk, "nope.txt")
 
@@ -326,6 +348,23 @@ defmodule Fil.PlugTest do
 
       assert public_request(:get, "/storage/../secret.txt", disk).status == 404
       assert public_request(:get, "/storage/%2E%2E/secret.txt", disk).status == 404
+    end
+
+    test "sets a disposition only from a valid signature", %{memory: disk} do
+      {:ok, _} = Fil.write(disk, "avatars/1.png", "png")
+      {:ok, url} = Fil.signed_url(disk, "avatars/1.png", disposition: :attachment)
+      %URI{path: path, query: query} = URI.parse(url)
+
+      signed = public_request(:get, path <> "?" <> query, disk)
+      assert get_resp_header(signed, "content-disposition") == [~s(attachment; filename="1.png")]
+
+      unsigned = public_request(:get, path <> "?disposition=attachment", disk)
+      assert unsigned.status == 200
+      assert get_resp_header(unsigned, "content-disposition") == []
+
+      tampered = public_request(:get, path <> "?" <> String.replace(query, "attachment", "inline"), disk)
+      assert tampered.status == 200
+      assert get_resp_header(tampered, "content-disposition") == []
     end
 
     test "uploads still need a signed URL", %{tmp_dir: tmp_dir, memory: signing} do

@@ -116,6 +116,15 @@ defmodule Fil do
                          type: {:in, 1..(7 * 24 * 60 * 60)},
                          default: 900,
                          doc: "How long the URL stays valid, in seconds. At most 7 days (`604800`), the cap of S3."
+                       ],
+                       disposition: [
+                         type: {:or, [{:in, [:inline, :attachment]}, {:tuple, [{:in, [:attachment]}, :string]}]},
+                         doc: """
+                         The `content-disposition` of the download, for `method: :get` only. `:inline` lets the browser
+                         show the file, `:attachment` saves it under the file's name, and `{:attachment, filename}`
+                         under another name. Names that aren't plain ASCII work too. Without it, the download has the
+                         disposition stored with the file, if any.
+                         """
                        ]
                      )
 
@@ -638,6 +647,9 @@ defmodule Fil do
       Fil.signed_url(s3, "cv.pdf", expires_in: 300)
       #=> {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/cv.pdf?X-Amz-Algorithm=..."}
 
+      Fil.signed_url(s3, "uploads/7f3a.pdf", disposition: {:attachment, "Invoice 2026-09.pdf"})
+      #=> {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/uploads/7f3a.pdf?...&response-content-disposition=..."}
+
   S3 signs its own URLs. Local and memory disks can't, so they need `Fil.Plugin.URL` with a `:secret`, and `Fil.Plug`
   serves the URLs from your application:
 
@@ -667,7 +679,7 @@ defmodule Fil do
   def signed_url(ref, opts) when is_list(opts) do
     opts = validate!(opts, @signed_url_schema)
 
-    run(ref, :signed_url, opts)
+    run(ref, :signed_url, put_disposition(opts, ref))
   end
 
   @doc "Builds a signed URL. See `signed_url/1`."
@@ -858,6 +870,22 @@ defmodule Fil do
     case NimbleOptions.validate(opts, schema) do
       {:ok, validated} -> validated
       {:error, error} -> raise ArgumentError, Exception.message(error)
+    end
+  end
+
+  # Adapters get `:disposition` as the header value, built here so it's the same on every disk.
+  defp put_disposition(opts, ref) do
+    case {opts[:disposition], opts[:method]} do
+      {nil, _method} ->
+        opts
+
+      {_disposition, :put} ->
+        raise ArgumentError, "the :disposition option only applies to downloads (method: :get)"
+
+      {disposition, :get} ->
+        basename = if match?(%Ref{}, ref), do: Path.basename(ref.path), else: ""
+
+        Keyword.put(opts, :disposition, Fil.Support.ContentDisposition.header(disposition, basename))
     end
   end
 

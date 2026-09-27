@@ -40,9 +40,10 @@ defmodule Fil.Plugin.URL do
   passes the file through: useful when the bucket shouldn't be reachable from outside, but every download and upload
   runs through your application, and files are read into memory whole.
 
-  A signed URL is `:base_url`, the path, and two query parameters: `expires` (Unix seconds) and `signature`, an
-  HMAC-SHA256 over the method, the URL path and the expiry. `expires_in:` is capped at 7 days, as on S3, so a URL that
-  works on one disk works on every disk.
+  A signed URL is `:base_url`, the path, and the query parameters `expires` (Unix seconds), `disposition` (the
+  `content-disposition` header value, only with `disposition:`) and `signature`, an HMAC-SHA256 over the method, the URL
+  path, the expiry and the disposition. `expires_in:` is capped at 7 days, as on S3, so a URL that works on one disk
+  works on every disk.
 
   ## Options
 
@@ -82,9 +83,13 @@ defmodule Fil.Plugin.URL do
     expires = System.os_time(:second) + Keyword.get(opts, :expires_in, 900)
     base_url = String.trim_trailing(base_url, "/")
     url_path = (URI.parse(base_url).path || "") <> "/" <> URL.encode_path(path)
-    signature = signature(secret, method, url_path, expires)
+    disposition = Keyword.get(opts, :disposition)
+    signature = signature(secret, method, url_path, expires, disposition)
 
-    base_url <> "/" <> URL.encode_path(path) <> URL.encode_query([{"expires", expires}, {"signature", signature}])
+    query =
+      Enum.reject([{"expires", expires}, {"disposition", disposition}, {"signature", signature}], &is_nil(elem(&1, 1)))
+
+    base_url <> "/" <> URL.encode_path(path) <> URL.encode_query(query)
   end
 
   @doc false
@@ -93,7 +98,8 @@ defmodule Fil.Plugin.URL do
   def verify(secret, method, request_path, params) do
     with {:ok, expires} <- expires(params),
          {:ok, signature} when is_binary(signature) <- Map.fetch(params, "signature"),
-         true <- :crypto.hash_equals(signature(secret, method, request_path, expires), signature) do
+         disposition when is_binary(disposition) or is_nil(disposition) <- params["disposition"],
+         true <- :crypto.hash_equals(signature(secret, method, request_path, expires, disposition), signature) do
       if expires >= System.os_time(:second), do: :ok, else: {:error, :expired}
     else
       _invalid -> {:error, :invalid_signature}
@@ -148,8 +154,9 @@ defmodule Fil.Plugin.URL do
 
   defp expires(_params), do: :error
 
-  defp signature(secret, method, url_path, expires) do
-    payload = Enum.join([String.upcase(Atom.to_string(method)), url_path, expires], "\n")
+  # URLs without a disposition sign the same payload as before it existed, so they stay valid.
+  defp signature(secret, method, url_path, expires, disposition) do
+    payload = Enum.join([String.upcase(Atom.to_string(method)), url_path, expires] ++ List.wrap(disposition), "\n")
 
     :hmac
     |> :crypto.mac(:sha256, secret, payload)
