@@ -8,10 +8,8 @@ defmodule Fil.Support.Telemetry do
   alias Fil.Op
   alias Fil.Support.Content
 
-  @typedoc """
-  The start time and the metadata of a stream span, and whether it has ended, or `nil` for a stream without events.
-  """
-  @type stream_span :: {integer(), map(), :atomics.atomics_ref()} | nil
+  @typedoc "The start time and the metadata of a stream span, or `nil` for a stream without events."
+  @type stream_span :: {integer(), map()} | nil
 
   @doc """
   Runs `fun` in an `[:fil, :op]` span for `op`, the operation as the caller made it. `fun` gets the op to run, whose
@@ -106,47 +104,34 @@ defmodule Fil.Support.Telemetry do
       metadata
     )
 
-    {start, metadata, :atomics.new(1, [])}
+    {start, metadata}
   end
 
   @doc "Emits `[:fil, :stream, :stop]` once the stream has ended, was halted, or its consumer failed."
   @spec stream_stop(stream_span(), non_neg_integer(), boolean()) :: :ok
   def stream_stop(nil, _bytes, _halted), do: :ok
 
-  def stream_stop({start, metadata, ended}, bytes, halted) do
-    if ended?(ended) do
-      :ok
-    else
-      stop = System.monotonic_time()
+  def stream_stop({start, metadata}, bytes, halted) do
+    stop = System.monotonic_time()
 
-      :telemetry.execute(
-        [:fil, :stream, :stop],
-        %{duration: stop - start, monotonic_time: stop, bytes: bytes},
-        Map.put(metadata, :halted, halted)
-      )
-    end
+    :telemetry.execute(
+      [:fil, :stream, :stop],
+      %{duration: stop - start, monotonic_time: stop, bytes: bytes},
+      Map.put(metadata, :halted, halted)
+    )
   end
 
   @doc "Emits `[:fil, :stream, :exception]` when the stream itself raised, threw or exited."
   @spec stream_exception(stream_span(), :error | :exit | :throw, term(), Exception.stacktrace()) :: :ok
   def stream_exception(nil, _kind, _reason, _stacktrace), do: :ok
 
-  def stream_exception({start, metadata, ended}, kind, reason, stacktrace) do
-    if ended?(ended) do
-      :ok
-    else
-      stop = System.monotonic_time()
+  def stream_exception({start, metadata}, kind, reason, stacktrace) do
+    stop = System.monotonic_time()
 
-      :telemetry.execute(
-        [:fil, :stream, :exception],
-        %{duration: stop - start, monotonic_time: stop},
-        Map.merge(metadata, %{kind: kind, reason: reason, stacktrace: stacktrace})
-      )
-    end
+    :telemetry.execute(
+      [:fil, :stream, :exception],
+      %{duration: stop - start, monotonic_time: stop},
+      Map.merge(metadata, %{kind: kind, reason: reason, stacktrace: stacktrace})
+    )
   end
-
-  # A span ends once. Before Elixir 1.18, `Stream.transform/5` halts the stream it transforms once more when its last
-  # function raises, although that stream has already ended, so a stream that ended short of the `:size` of a write
-  # would otherwise end twice. Marks the span as ended, and returns whether it had already.
-  defp ended?(ended), do: :atomics.exchange(ended, 1, 1) == 1
 end
