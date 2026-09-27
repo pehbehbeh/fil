@@ -114,3 +114,17 @@ jobs:
       - name: SeaweedFS logs
         if: failure()
         run: docker compose logs seaweedfs
+
+  # The one check the ruleset on `main` requires, so the ruleset doesn't change with the Elixir matrix. `always()`
+  # keeps it running when a job it needs fails, because GitHub counts a skipped required check as passed.
+  ci:
+    name: CI passed
+    if: always()
+    needs: [checks, test, integration]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail if a job failed, was cancelled or was skipped
+        if: >-
+          contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') ||
+          contains(needs.*.result, 'skipped')
+        run: exit 1

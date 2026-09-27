@@ -86,6 +86,12 @@ runs `mix test` on every supported Elixir minor version, each with the newest OT
 1.16). The integration suite runs once, on the latest Elixir, against SeaweedFS started from `compose.yml`. When
 `elixir:` in `mix.exs` changes, update the matrix.
 
+The last job, `CI passed`, fails if any other job failed, was cancelled or was skipped. It's the only check the ruleset
+on `main` requires, so the ruleset stays the same when the matrix changes. A new job goes into its `needs:`.
+
+Pull requests are merged with a merge commit (squash and rebase merging are off), so the commits of a branch stay as
+they are and `git log --first-parent main` shows one line per pull request.
+
 ## Releasing
 
 Development is trunk-based: `main` is the only long-lived branch, a release is a commit plus a tag on it, and `v0.N`
