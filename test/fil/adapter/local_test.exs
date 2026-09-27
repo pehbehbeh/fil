@@ -76,6 +76,62 @@ defmodule Fil.Adapter.LocalTest do
       assert leftovers == []
     end
 
+    test "hide the temporary file of a streamed write from listings", %{disk: disk, tmp_dir: tmp_dir} do
+      test = self()
+
+      stream =
+        Stream.map([:first, :second], fn
+          :first ->
+            "first"
+
+          :second ->
+            send(test, {:writing, self()})
+
+            receive do
+              :go -> "second"
+            end
+        end)
+
+      task = Task.async(fn -> Fil.write(disk, "inbox/a.txt", stream) end)
+      assert_receive {:writing, writer}
+
+      inbox = Path.join(tmp_dir, "primary/inbox")
+      assert [".fil-" <> _suffix] = File.ls!(inbox)
+      assert Fil.ls(disk, "inbox") == {:ok, []}
+      assert Fil.ls(disk, ".", recursive: true) == {:ok, []}
+
+      send(writer, :go)
+      assert {:ok, _} = Task.await(task)
+      assert {:ok, [written]} = Fil.ls(disk, "inbox")
+      assert written.path == "inbox/a.txt"
+      assert File.ls!(inbox) == ["a.txt"]
+    end
+
+    test "that fail remove the directories they created, and only those", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "kept/x.txt", "x")
+      failing = Stream.map([1, 2], fn _chunk -> raise "the upload broke off" end)
+
+      assert_raise RuntimeError, fn -> Fil.write(disk, "kept/new/deeper/a.txt", failing) end
+      assert_raise RuntimeError, fn -> Fil.write(disk, "fresh/a.txt", failing, if_exists: :error) end
+
+      root = Path.join(tmp_dir, "primary")
+      assert File.ls!(root) == ["kept"]
+
+      assert root
+             |> Path.join("kept")
+             |> File.ls!() == ["x.txt"]
+    end
+
+    test "under a file create no directories", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "file.txt", "content")
+
+      assert {:error, %Fil.InvalidRequestError{reason: :enotdir}} = Fil.write(disk, "file.txt/deeper/child.txt", "x")
+
+      assert tmp_dir
+             |> Path.join("primary")
+             |> File.ls!() == ["file.txt"]
+    end
+
     test "are atomic: readers never see a partial file", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "atomic.txt", "first content")
       assert {:ok, _} = Fil.write(disk, "atomic.txt", "second")

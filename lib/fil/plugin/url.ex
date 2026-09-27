@@ -37,8 +37,8 @@ defmodule Fil.Plugin.URL do
 
   On an S3 disk, `:base_url` replaces the bucket URL in `Fil.url/2`, for a CDN in front of the bucket. Without a
   `:secret`, S3 still presigns `Fil.signed_url/3` itself. With one, signed URLs go to your application, which then
-  passes the file through: useful when the bucket shouldn't be reachable from outside, but every download and upload
-  runs through your application, and files are read into memory whole.
+  streams the file through: useful when the bucket shouldn't be reachable from outside, but every download and upload
+  runs through your application.
 
   A signed URL is `:base_url`, the path, and the query parameters `expires` (Unix seconds), `disposition` (the
   `content-disposition` header value, only with `disposition:`), those of `query:`, and `signature`: an HMAC-SHA256 over

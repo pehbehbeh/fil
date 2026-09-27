@@ -29,20 +29,27 @@ defmodule Fil.Adapter.Local do
 
     * `Fil.read/3`: `File.read/1`. Reading a directory is a `Fil.InvalidRequestError`. The filesystem stores no
       checksums, so `verify_checksum: true` is ignored.
-    * `Fil.write/4`: the content goes to a temporary file in the destination directory, which `File.rename/2` then moves
-      into place, so readers never see a partial file. `if_exists: :error` opens the destination with `:exclusive`
-      (`O_EXCL`) instead. `checksum:` is ignored. Writing over a directory, or to `report.txt/x` when `report.txt` is a
-      file, is a `Fil.InvalidRequestError`.
+    * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read.
+    * `Fil.write/4`: the content, in memory or a stream, goes to a temporary file named `.fil-` and a unique suffix in
+      the destination directory, which `File.rename/2` then moves into place, so readers never see a partial file. A
+      failed write leaves nothing behind, and removes the directories it created. A writer that's killed before it's
+      done (a request process that the server stops when the client disconnects, for example) leaves its `.fil-` file
+      and those directories behind. `if_exists: :error` hard-links the temporary file to the destination instead,
+      which fails if it exists (on a filesystem without hard links, it creates the destination with `O_EXCL` first).
+      `checksum:` is ignored. Writing over a directory, or to `report.txt/x` when `report.txt` is a file, is a
+      `Fil.InvalidRequestError`.
     * `Fil.rm/3`: `File.rm/1`, with a missing file mapped to success. Removing a directory is a
       `Fil.InvalidRequestError`.
     * `Fil.stat/3`: `File.stat/2`. `:etag` is a weak `"size-mtime"` tag: good enough to notice a change, but it can't
       prove there was none. `:content_type` is `nil`, because the filesystem doesn't store one (`Fil.Plug` guesses it
       from the extension). `checksum:` reads the whole file to compute the checksum.
-    * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too. A path that isn't a
-      directory lists nothing, the same as a missing one.
+    * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too, temporary `.fil-`
+      files of writes aren't. The disk reserves that prefix, so a file of your own whose name starts with `.fil-` is
+      skipped as well. A path that isn't a directory lists nothing, the same as a missing one.
     * `Fil.cp/4`: `File.cp/2`. Copying a directory is a `Fil.InvalidRequestError`.
     * `Fil.rename/4`: `File.rename/2`.
-    * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed.
+    * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Files whose name starts with `.fil-` are removed
+      too, but not counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
       `Fil.Plug` serves them.
 
@@ -70,6 +77,13 @@ defmodule Fil.Adapter.Local do
   alias Fil.Stat
   alias Fil.Support.Checksum
 
+  # The size of the chunks `Fil.stream/3` reads.
+  @chunk_size 65_536
+
+  # Writes go to a file with this prefix and a unique suffix, next to the destination. It's short, so a destination
+  # name that fits the filesystem's limit still leaves room, and listings skip it.
+  @tmp_prefix ".fil-"
+
   defstruct [:root]
 
   @type t :: %__MODULE__{root: String.t()}
@@ -87,6 +101,9 @@ defmodule Fil.Adapter.Local do
 
   @impl Fil.Adapter
   def read(state, path, _opts), do: to_error(read_file(state, path))
+
+  @impl Fil.Adapter
+  def stream(state, path, _opts), do: to_error(stream_file(state, path))
 
   @impl Fil.Adapter
   def write(state, path, content, opts), do: to_error(write_file(state, path, content, opts))
@@ -123,14 +140,104 @@ defmodule Fil.Adapter.Local do
     with {:ok, full} <- full_path(state, path), do: missing(File.read(full))
   end
 
+  # The file is opened once to check it, and again each time the stream is read, by the process that reads it (a raw
+  # file belongs to the process that opened it).
+  defp stream_file(state, path) do
+    with {:ok, full} <- full_path(state, path),
+         {:ok, io} <- open_read(full) do
+      {:ok, size} = :file.position(io, :eof)
+      :ok = :file.close(io)
+
+      {:ok, Stream.resource(fn -> open_read!(full) end, &read_chunk/1, &:file.close/1), size}
+    end
+  end
+
+  defp open_read(full), do: missing(:file.open(full, [:read, :raw, :binary]))
+
+  defp open_read!(full) do
+    case open_read(full) do
+      {:ok, io} -> io
+      {:error, reason} -> raise to_struct(reason)
+    end
+  end
+
+  defp read_chunk(io) do
+    case :file.read(io, @chunk_size) do
+      {:ok, chunk} -> {[chunk], io}
+      :eof -> {:halt, io}
+      {:error, reason} -> raise to_struct(reason)
+    end
+  end
+
+  # The content goes to a temporary file next to the destination, which then takes its place in one step. Whatever
+  # happens in between (an error, or a stream that raises), the temporary file is removed, and so are the directories
+  # this write created, so the disk is left as it was.
   defp write_file(state, path, content, opts) do
     with {:ok, full} <- full_path(state, path),
-         :ok <- ensure_parent(full) do
+         {:ok, created} <- make_parents(full),
+         {:ok, tmp, io, created} <- open_tmp(full, created) do
+      write_into(full, {tmp, io}, created, content, opts)
+    else
+      {:error, reason, created} ->
+        remove_dirs(created)
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Another write that created a directory this one found, and then failed, removes it again. If that happens before
+  # the temporary file is opened, the directories are created once more, and then belong to this write. The open fails
+  # with `:enoent` then, or with `:einval` on macOS when the directory is removed during the open.
+  defp open_tmp(full, created) do
+    tmp = tmp_path(full)
+
+    case open_exclusive(tmp) do
+      {:ok, io} -> {:ok, tmp, io, created}
+      {:error, reason} when reason in [:enoent, :einval] -> reopen_tmp(full, tmp, created)
+      {:error, reason} -> {:error, reason, created}
+    end
+  end
+
+  defp reopen_tmp(full, tmp, created) do
+    with {:ok, recreated} <- make_parents(full),
+         {:ok, io} <- open_exclusive(tmp) do
+      {:ok, tmp, io, created ++ recreated}
+    else
+      {:error, reason, recreated} -> {:error, reason, created ++ recreated}
+      {:error, reason} -> {:error, reason, created}
+    end
+  end
+
+  defp open_exclusive(tmp), do: :file.open(tmp, [:write, :exclusive, :raw, :binary])
+
+  defp write_into(full, {tmp, io}, created, content, opts) do
+    result =
+      try do
+        place(tmp, io, full, content, opts)
+      catch
+        kind, reason ->
+          discard(tmp, created)
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+
+    if result == :ok, do: File.rm(tmp), else: discard(tmp, created)
+    result
+  end
+
+  defp place(tmp, io, full, content, opts) do
+    with :ok <- write_tmp(io, content) do
       case Keyword.get(opts, :if_exists, :overwrite) do
-        :overwrite -> atomic_write(full, content)
-        :error -> exclusive_write(full, content)
+        :overwrite -> File.rename(tmp, full)
+        :error -> create(tmp, full)
       end
     end
+  end
+
+  defp discard(tmp, created) do
+    _ = File.rm(tmp)
+    remove_dirs(created)
   end
 
   defp rm_file(state, path) do
@@ -213,7 +320,50 @@ defmodule Fil.Adapter.Local do
     end
   end
 
-  # A parent that's a file is `:enotdir` on macOS and `:eexist` on Linux.
+  # Creates the missing parents of a file one by one, top down, and returns the ones it created, deepest first, so a
+  # failed write can remove them again. A directory another process created meanwhile isn't counted.
+  defp make_parents(full) do
+    full
+    |> Path.dirname()
+    |> missing_dirs([])
+    |> Enum.reduce_while({:ok, []}, &make_dir/2)
+  end
+
+  defp make_dir(dir, {:ok, created}) do
+    case File.mkdir(dir) do
+      :ok -> {:cont, {:ok, [dir | created]}}
+      {:error, :eexist} -> existing_dir(dir, created, :retry)
+      {:error, reason} -> {:halt, {:error, reason, created}}
+    end
+  end
+
+  # A parent that's a file is `:enotdir`. A directory that another write removed between the `mkdir` and this check is
+  # created again, once.
+  defp existing_dir(dir, created, retry) do
+    cond do
+      File.dir?(dir) -> {:cont, {:ok, created}}
+      File.exists?(dir) or retry == :no_retry -> {:halt, {:error, :enotdir, created}}
+      File.mkdir(dir) == :ok -> {:cont, {:ok, [dir | created]}}
+      true -> existing_dir(dir, created, :no_retry)
+    end
+  end
+
+  defp missing_dirs(dir, missing) do
+    parent = Path.dirname(dir)
+
+    if File.dir?(dir) or parent == dir, do: missing, else: missing_dirs(parent, [dir | missing])
+  end
+
+  # Removes empty directories, deepest first, and stops at the first one that isn't empty, because another write put
+  # something into it meanwhile.
+  defp remove_dirs(dirs) do
+    Enum.reduce_while(dirs, :ok, fn dir, :ok ->
+      if :file.del_dir(dir) == :ok, do: {:cont, :ok}, else: {:halt, :ok}
+    end)
+  end
+
+  # Creates the parents of a copy's or a move's destination. A parent that's a file is `:enotdir` on macOS and
+  # `:eexist` on Linux, so both become `:enotdir`.
   defp ensure_parent(full) do
     parent = Path.dirname(full)
 
@@ -238,29 +388,48 @@ defmodule Fil.Adapter.Local do
   ## Writing
   ## ------------------------------------------------------------------
 
-  defp atomic_write(full, content) do
-    tmp = full <> ".fil-" <> unique()
+  defp write_tmp(io, content) do
+    chunks = if is_binary(content) or is_list(content), do: [content], else: content
 
-    with :ok <- File.write(tmp, content),
-         :ok <- File.rename(tmp, full) do
-      :ok
-    else
-      {:error, reason} ->
-        _ = File.rm(tmp)
-        {:error, reason}
+    result =
+      try do
+        write_chunks(io, chunks)
+      catch
+        kind, reason ->
+          _ = :file.close(io)
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+
+    closed = :file.close(io)
+    if result == :ok, do: closed, else: result
+  end
+
+  defp write_chunks(io, chunks) do
+    Enum.reduce_while(chunks, :ok, fn chunk, :ok ->
+      case :file.write(io, chunk) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  # A hard link to the finished temporary file creates the destination only if it doesn't exist yet, in one step, so an
+  # exclusive write never shows a partial file either. Filesystems without hard links (some network shares) claim the
+  # name with `O_EXCL` instead and then move the content in, so the file is empty until the move.
+  defp create(tmp, full) do
+    case :file.make_link(tmp, full) do
+      :ok -> :ok
+      {:error, :eexist} -> {:error, directory_or(full, :eexist)}
+      {:error, reason} when reason in [:enotsup, :eperm] -> claim(tmp, full)
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp exclusive_write(full, content) do
-    case :file.open(full, [:write, :exclusive, :binary, :raw]) do
+  defp claim(tmp, full) do
+    case :file.open(full, [:write, :exclusive, :raw]) do
       {:ok, io} ->
-        result = :file.write(io, content)
-        _ = :file.close(io)
-
-        case result do
-          :ok -> :ok
-          {:error, reason} -> {:error, reason}
-        end
+        :ok = :file.close(io)
+        File.rename(tmp, full)
 
       {:error, :eexist} ->
         {:error, directory_or(full, :eexist)}
@@ -268,6 +437,12 @@ defmodule Fil.Adapter.Local do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp tmp_path(full) do
+    full
+    |> Path.dirname()
+    |> Path.join(@tmp_prefix <> unique())
   end
 
   defp unique do
@@ -301,10 +476,16 @@ defmodule Fil.Adapter.Local do
   end
 
   # A missing or unreadable directory lists nothing, the same as a prefix nobody wrote to on an object store.
+  # Temporary files of writes aren't files of the disk yet, so they're left out of listings and counts.
   defp names(full) do
     case File.ls(full) do
-      {:ok, names} -> Enum.sort(names)
-      {:error, _reason} -> []
+      {:ok, names} ->
+        names
+        |> Enum.reject(&String.starts_with?(&1, @tmp_prefix))
+        |> Enum.sort()
+
+      {:error, _reason} ->
+        []
     end
   end
 

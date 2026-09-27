@@ -22,7 +22,7 @@ defmodule Fil.PluginsTest do
 
   def upcase(op, next, _opts) do
     op
-    |> Op.update_content(binary: &String.upcase/1)
+    |> Op.update_content(iodata: &String.upcase/1)
     |> next.()
   end
 
@@ -272,13 +272,21 @@ defmodule Fil.PluginsTest do
   end
 
   describe "Fil.Op content" do
-    test "update_content and update_result transform whole content", %{disk: disk} do
+    test "update_content and update_result transform iodata", %{disk: disk} do
       disk =
-        Fil.attach(disk, :rot, fn op, next, _opts ->
-          op
-          |> Op.update_content(binary: &:zlib.gzip/1)
-          |> next.()
-          |> Op.update_result(binary: &:zlib.gunzip/1)
+        Fil.attach(disk, :rot, fn
+          %Op{name: :write} = op, next, _opts ->
+            op
+            |> Op.update_content(iodata: &:zlib.gzip/1)
+            |> next.()
+
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.update_result(iodata: &:zlib.gunzip/1)
+
+          op, next, _opts ->
+            next.(op)
         end)
 
       assert {:ok, _} = Fil.write(disk, "a.txt", ["Hello", [", ", "World"]])
@@ -289,28 +297,245 @@ defmodule Fil.PluginsTest do
              |> Fil.read("a.txt") == {:ok, :zlib.gzip("Hello, World")}
     end
 
-    test "chunk: alone gets the content as a single chunk", %{disk: disk} do
+    test "stream: alone gets content in memory as a stream of one chunk", %{disk: disk} do
+      test = self()
+
       disk =
         Fil.attach(disk, :upcase, fn op, next, _opts ->
           op
-          |> Op.update_content(chunk: &String.upcase/1)
+          |> Op.update_content(
+            stream:
+              &Stream.map(&1, fn chunk ->
+                send(test, {:chunk, chunk})
+                String.upcase(chunk)
+              end)
+          )
           |> next.()
         end)
 
       assert {:ok, _} = Fil.write(disk, "a.txt", ["ab", "c"])
+      assert_received {:chunk, "abc"}
       assert Fil.read(disk, "a.txt") == {:ok, "ABC"}
+    end
+
+    test "update_content transforms a stream lazily and drops its size", %{disk: disk} do
+      test = self()
+
+      stream =
+        Stream.map(["ab", "", "cd"], fn chunk ->
+          send(test, {:pulled, chunk})
+          chunk
+        end)
+
+      op = %Op{disk: disk, name: :write, path: "a.txt", content: stream, options: [size: 4, content_type: "x"]}
+
+      chunked = Op.update_content(op, stream: &Stream.map(&1, fn chunk -> String.upcase(chunk) end))
+      refute_received {:pulled, _chunk}
+      assert chunked.options == [content_type: "x"]
+      assert Enum.to_list(chunked.content) == ["AB", "CD"]
+
+      streamed = Op.update_content(op, iodata: &String.reverse/1, stream: &Stream.map(&1, fn c -> [c, "."] end))
+
+      assert streamed.content
+             |> Enum.to_list()
+             |> IO.iodata_to_binary() == "ab.cd."
+
+      collected = Op.update_content(op, iodata: &String.reverse/1)
+      assert collected.content == "dcba"
+      assert collected.options == [content_type: "x"]
+
+      # The content stays the same, and so does its size.
+      materialized = Op.materialize(op)
+      assert materialized.content == "abcd"
+      assert materialized.options == [size: 4, content_type: "x"]
+    end
+
+    test "a stream of another size than :size raises, whatever the plugins do with it", %{disk: disk} do
+      stream = Stream.map(["he", "llo"], & &1)
+
+      updates = [materialized: &Op.materialize/1, streamed: &Op.update_content(&1, stream: fn chunks -> chunks end)]
+
+      for {name, update} <- updates do
+        plugged =
+          Fil.attach(disk, name, fn op, next, _opts ->
+            op
+            |> update.()
+            |> next.()
+          end)
+
+        path = "#{name}.txt"
+
+        assert_raise ArgumentError, "the content has 5 bytes, but the :size option is 6", fn ->
+          Fil.write(plugged, path, stream, size: 6)
+        end
+
+        refute Fil.exists?(plugged, path)
+        assert {:ok, _} = Fil.write(plugged, path, stream, size: 5)
+      end
+    end
+
+    test "a Fil error a read transform raises is the read's error", %{disk: disk, tmp_dir: tmp_dir} do
+      tampered = fn _content -> raise %Fil.ChecksumMismatchError{reason: :tampered} end
+
+      checking =
+        Fil.attach(disk, :check, fn
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.update_result(iodata: tampered, stream: &Stream.map(&1, tampered))
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      {:ok, _} = Fil.write(checking, "a.txt", "content")
+
+      # Iodata: returned as an error, with the context filled in.
+      assert {:error, %Fil.ChecksumMismatchError{op: :read, path: "a.txt", reason: :tampered} = error} =
+               Fil.read(checking, "a.txt")
+
+      assert error.disk == checking
+
+      # A stream: raised when it's read, with the context filled in.
+      assert {:ok, stream} = Fil.stream(checking, "a.txt")
+      error = assert_raise Fil.ChecksumMismatchError, fn -> Enum.to_list(stream) end
+      assert {error.op, error.path, error.disk} == {:read, "a.txt", checking}
+
+      # A copy across disks streams, and returns the source's error.
+      other = Fil.disk(adapter: Local, root: Path.join(tmp_dir, "other"))
+
+      assert {:error, %Fil.ChecksumMismatchError{op: :cp, path: "a.txt", reason: :tampered}} =
+               Fil.cp(checking, "a.txt", Fil.ref(other, "a.txt"))
+
+      refute Fil.exists?(other, "a.txt")
+    end
+
+    test "a Fil error a plugin raises in its callback propagates, on a write as on a read", %{disk: disk} do
+      denying =
+        Fil.attach(disk, :deny, fn _op, _next, _opts -> raise %Fil.AccessDeniedError{reason: :read_only} end)
+
+      assert_raise Fil.AccessDeniedError, fn -> Fil.write(denying, "a.txt", "content") end
+      assert_raise Fil.AccessDeniedError, fn -> Fil.write(denying, "a.txt", Stream.map(["content"], & &1)) end
+      assert_raise Fil.AccessDeniedError, fn -> Fil.read(denying, "a.txt") end
+    end
+
+    test "a Fil error a write transform raises is the write's result", %{disk: disk} do
+      rejected = fn _content -> raise %Fil.InvalidRequestError{reason: :rejected} end
+
+      rejecting =
+        Fil.attach(disk, :reject, fn
+          %Op{name: :write} = op, next, _opts ->
+            op
+            |> Op.update_content(iodata: rejected, stream: rejected)
+            |> next.()
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      materializing =
+        Fil.attach(disk, :materialize, fn
+          %Op{name: :write} = op, next, _opts ->
+            op
+            |> Op.materialize()
+            |> next.()
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      assert {:error, %Fil.InvalidRequestError{op: :write, path: "a.txt", reason: :rejected}} =
+               Fil.write(rejecting, "a.txt", "content")
+
+      failing = Stream.map([1], fn _chunk -> raise %Fil.UnavailableError{reason: :timeout} end)
+
+      assert {:error, %Fil.UnavailableError{op: :write, path: "a.txt", reason: :timeout}} =
+               Fil.write(materializing, "a.txt", failing)
+
+      refute Fil.exists?(disk, "a.txt")
+    end
+
+    test "other exceptions in a read transform propagate", %{disk: disk} do
+      failing =
+        Fil.attach(disk, :fail, fn
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.update_result(iodata: fn _content -> raise "a bug" end)
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      {:ok, _} = Fil.write(failing, "a.txt", "content")
+
+      assert_raise RuntimeError, "a bug", fn -> Fil.read(failing, "a.txt") end
+    end
+
+    test "update_content passes iodata to a stream transform as one chunk", %{disk: disk} do
+      op = %Op{disk: disk, name: :write, path: "a.txt", content: ["ab", "cd"], options: [size: 4]}
+
+      streamed = Op.update_content(op, stream: &Stream.map(&1, fn chunk -> [chunk, "!"] end))
+      assert IO.iodata_to_binary(streamed.content) == "abcd!"
+      assert streamed.options == []
+    end
+
+    test "update_result transforms a streamed read when it's read", %{disk: disk} do
+      test = self()
+
+      stream =
+        Stream.map(["ab", "cd"], fn chunk ->
+          send(test, {:pulled, chunk})
+          chunk
+        end)
+
+      op = %Op{disk: disk, name: :read, path: "a.txt", streaming: true, result: {:ok, stream}}
+
+      assert {:ok, chunked} = Op.update_result(op, stream: &Stream.map(&1, fn chunk -> String.upcase(chunk) end)).result
+      assert {:ok, collected} = Op.update_result(op, iodata: &String.reverse/1).result
+      refute_received {:pulled, _chunk}
+
+      assert Enum.to_list(chunked) == ["AB", "CD"]
+      assert Enum.to_list(collected) == ["dcba"]
+      assert_received {:pulled, "ab"}
+    end
+
+    test "stream: gets no chunks for empty content, in memory or a stream", %{disk: disk} do
+      marking = &Stream.map(&1, fn chunk -> [chunk, "!"] end)
+
+      for content <- ["", [], Stream.map([""], & &1)] do
+        op = %Op{disk: disk, name: :write, path: "a.txt", content: content}
+        written = Op.update_content(op, stream: marking)
+        assert Fil.Support.Content.to_binary(written.content) == ""
+
+        read = %Op{disk: disk, name: :read, path: "a.txt", streaming: true, result: {:ok, content}}
+        assert {:ok, result} = Op.update_result(read, stream: marking).result
+        assert Fil.Support.Content.to_binary(result) == ""
+      end
+    end
+
+    test "binary: and chunk: from 0.1 are unknown transforms", %{disk: disk} do
+      op = %Op{disk: disk, name: :write, path: "a.txt", content: "abc"}
+
+      assert_raise ArgumentError, "unknown transforms [:binary], expected :iodata or :stream", fn ->
+        Op.update_content(op, binary: &String.upcase/1)
+      end
+
+      assert_raise ArgumentError, "unknown transforms [:chunk], expected :iodata or :stream", fn ->
+        Op.update_content(op, chunk: &String.upcase/1)
+      end
     end
 
     test "other operations are left alone, but the transforms are still checked", %{disk: disk} do
       op = %Op{disk: disk, name: :stat, path: "a.txt"}
 
-      assert Op.update_content(op, binary: &String.upcase/1) == op
-      assert Op.update_result(op, binary: &String.upcase/1) == op
+      assert Op.update_content(op, iodata: &String.upcase/1) == op
+      assert Op.update_result(op, iodata: &String.upcase/1) == op
       assert Op.materialize(op) == op
 
-      assert_raise ArgumentError, ~r/at least one of/, fn -> Op.update_content(op, []) end
-      assert_raise ArgumentError, ~r/unknown transforms \[:stream\]/, fn -> Op.update_content(op, stream: & &1) end
-      assert_raise ArgumentError, ~r/1-arity function/, fn -> Op.update_result(op, binary: :nope) end
+      assert_raise ArgumentError, ~r/at least one of :iodata or :stream/, fn -> Op.update_content(op, []) end
+      assert_raise ArgumentError, ~r/unknown transforms \[:lines\]/, fn -> Op.update_content(op, lines: & &1) end
+      assert_raise ArgumentError, ~r/1-arity function/, fn -> Op.update_result(op, iodata: :nope) end
     end
 
     test "the transforms are checked before the content", %{disk: disk} do

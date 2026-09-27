@@ -315,6 +315,195 @@ defmodule Fil.Adapter.S3Test do
     end
   end
 
+  describe "streamed writes" do
+    test "a stream with a size is sent as it's read" do
+      stub([response(200)])
+
+      stream = Stream.map(["Hello", ", ", "World"], & &1)
+
+      assert {:ok, _} = Fil.write(disk(), "a.txt", stream, size: 12, content_type: "text/plain")
+
+      request = request!()
+
+      assert request.assigns.body == "Hello, World"
+      assert header(request, "content-length") == "12"
+      assert header(request, "content-type") == "text/plain"
+      assert header(request, "x-amz-content-sha256") == "UNSIGNED-PAYLOAD"
+      assert header(request, "authorization") =~ "x-amz-content-sha256"
+    end
+
+    test "a stream without a size is collected and sent as one binary" do
+      stub([response(200)])
+
+      assert {:ok, _} = Fil.write(disk(), "a.txt", Stream.map(["Hello", ", World"], & &1))
+
+      request = request!()
+
+      assert request.assigns.body == "Hello, World"
+      assert header(request, "x-amz-content-sha256") == sha256("Hello, World")
+    end
+
+    test "a stream with a checksum is collected, so the checksum goes first" do
+      stub([response(200)])
+
+      assert {:ok, _} = Fil.write(disk(), "a.txt", Stream.map(["He", "llo"], & &1), size: 5, checksum: :crc32)
+
+      request = request!()
+
+      assert header(request, "x-amz-checksum-crc32") == "99GJgg=="
+      assert header(request, "x-amz-content-sha256") == sha256("Hello")
+    end
+
+    test "if_exists: :error still sends If-None-Match: *" do
+      stub([response(412, error_xml("PreconditionFailed"))])
+
+      assert {:error, %Fil.AlreadyExistsError{}} =
+               Fil.write(disk(), "a.txt", Stream.map(["x"], & &1), size: 1, if_exists: :error)
+
+      assert header(request!(), "if-none-match") == "*"
+    end
+  end
+
+  describe "copies from another disk" do
+    setup do
+      Fil.Adapter.Memory.checkout()
+      {:ok, memory: Fil.disk(adapter: Fil.Adapter.Memory)}
+    end
+
+    test "stream with the source's size", %{memory: memory} do
+      stub([response(200)])
+      {:ok, source} = Fil.write(memory, "a.txt", "Hello, World")
+
+      assert {:ok, _} = Fil.cp(source, Fil.ref(disk(), "b.txt"))
+
+      request = request!()
+
+      assert request.assigns.body == "Hello, World"
+      assert header(request, "content-length") == "12"
+      assert header(request, "x-amz-content-sha256") == "UNSIGNED-PAYLOAD"
+    end
+
+    test "are collected when a plugin on the source changes the content", %{memory: memory} do
+      stub([response(200)])
+      {:ok, _} = Fil.write(memory, "a.txt", "Hello")
+
+      shouting =
+        Fil.attach(memory, :shout, fn
+          %Fil.Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Fil.Op.update_result(stream: &Stream.map(&1, fn chunk -> String.upcase(chunk) end))
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      assert {:ok, _} = Fil.cp(shouting, "a.txt", Fil.ref(disk(), "b.txt"))
+
+      request = request!()
+
+      assert request.assigns.body == "HELLO"
+      assert header(request, "x-amz-content-sha256") == sha256("HELLO")
+    end
+  end
+
+  describe "stream/2" do
+    test "checks with HeadObject and downloads with GetObject when the stream is read" do
+      stub([response(200), response(200, ["Hel", "lo"])])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt")
+      assert [%{method: "HEAD", request_path: "/a.txt"}] = requests()
+
+      assert Enum.to_list(stream) == ["Hel", "lo"]
+      assert [%{method: "GET", request_path: "/a.txt"} = get] = requests()
+      assert header(get, "x-amz-checksum-mode") == nil
+    end
+
+    test "downloads again each time the stream is read" do
+      stub([response(200), response(200, "one"), response(200, "two")])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt")
+      assert Enum.join(stream) == "one"
+      assert Enum.join(stream) == "two"
+    end
+
+    test "stops the download when the stream is halted" do
+      test = self()
+
+      Req.Test.verify!(__MODULE__)
+      Req.Test.expect(__MODULE__, &send_resp(&1, 200, ""))
+
+      Req.Test.expect(__MODULE__, fn conn ->
+        send(test, {:download, self()})
+        reply(conn, response(200, ["a", "b", "c"]))
+      end)
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt")
+      assert Enum.take(stream, 1) == ["a"]
+
+      assert_received {:download, download}
+      monitor = Process.monitor(download)
+      assert_receive {:DOWN, ^monitor, :process, ^download, _reason}
+      refute_received _leftover
+    end
+
+    test "a missing object is asked again with GetObject, for the error code" do
+      stub([response(404), response(404, error_xml("NoSuchBucket"))])
+
+      assert {:error, %Fil.ConfigurationError{op: :read, reason: "NoSuchBucket"}} = Fil.stream(disk(), "a.txt")
+      assert Enum.map(requests(), & &1.method) == ["HEAD", "GET"]
+
+      stub([response(404), response(404, error_xml("NoSuchKey"))])
+      assert {:error, %Fil.NotFoundError{reason: "NoSuchKey"}} = Fil.stream(disk(), "a.txt")
+    end
+
+    test "another HeadObject failure is returned right away" do
+      stub([response(403)])
+
+      assert {:error, %Fil.AccessDeniedError{reason: {:http_status, 403}}} = Fil.stream(disk(), "a.txt")
+    end
+
+    test "a failed download raises with the context" do
+      disk = disk()
+      stub([response(200), response(503, error_xml("SlowDown"))])
+
+      assert {:ok, stream} = Fil.stream(disk, "a.txt")
+
+      error = assert_raise Fil.UnavailableError, fn -> Enum.to_list(stream) end
+      assert {error.op, error.path, error.disk, error.reason} == {:read, "a.txt", disk, "SlowDown"}
+    end
+
+    test "a lost connection raises" do
+      stub([response(200), {:error, :closed}])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt")
+      assert_raise Fil.UnavailableError, ~r/:closed/, fn -> Enum.to_list(stream) end
+    end
+
+    test "verify_checksum: true checks the download against the stored checksum" do
+      checksum = [{"x-amz-checksum-crc32", "99GJgg=="}]
+
+      stub([response(200, "", checksum), response(200, ["Hel", "lo"], checksum)])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", verify_checksum: true)
+      assert Enum.join(stream) == "Hello"
+      assert Enum.map(requests(), &header(&1, "x-amz-checksum-mode")) == ["ENABLED", "ENABLED"]
+
+      stub([response(200, "", checksum), response(200, ["Hel", "lø"], checksum)])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", verify_checksum: true)
+
+      assert_raise Fil.ChecksumMismatchError, ~r/could not read "a.txt"/, fn -> Enum.to_list(stream) end
+    end
+
+    test "verify_checksum: true reads objects without a checksum unchecked" do
+      stub([response(200), response(200, "Hellø")])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", verify_checksum: true)
+      assert Enum.join(stream) == "Hellø"
+    end
+  end
+
   describe "rm/1" do
     test "is idempotent" do
       stub([response(204), response(404)])
@@ -964,6 +1153,19 @@ defmodule Fil.Adapter.S3Test do
   end
 
   defp reply(conn, {:error, reason}), do: Req.Test.transport_error(conn, reason)
+
+  # A list body is sent in chunks, so a download gets them one by one.
+  defp reply(conn, %{status: status, body: chunks, headers: headers}) when is_list(chunks) do
+    conn =
+      conn
+      |> merge_resp_headers(headers)
+      |> send_chunked(status)
+
+    Enum.reduce(chunks, conn, fn chunk, conn ->
+      {:ok, conn} = chunk(conn, chunk)
+      conn
+    end)
+  end
 
   defp reply(conn, %{status: status, body: body, headers: headers}) do
     conn

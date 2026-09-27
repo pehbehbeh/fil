@@ -10,7 +10,9 @@ defmodule Fil.Op do
       `:signed_url`
     * `:path`: the normalized path, relative to the disk root
     * `:dest`: the destination path of a `:cp` or `:rename` on the same disk, `nil` otherwise
-    * `:content`: the content of a `:write`, `nil` otherwise. Change it with `update_content/2`
+    * `:content`: the content of a `:write`, `nil` otherwise: iodata, or a stream of it. Change it with
+      `update_content/2`
+    * `:streaming`: `true` for a `:read` from `Fil.stream/3`, whose result is a stream instead of a binary
     * `:options`: the validated options of the call
     * `:result`: `nil` on the way in, then `{:ok, value}` or `{:error, exception}` with the same value the `Fil`
       function returns. Change a read result with `update_result/2`
@@ -19,9 +21,14 @@ defmodule Fil.Op do
 
   alias Fil.Disk
   alias Fil.Ref
+  alias Fil.Support.Content
+  alias Fil.Support.Sized
+
+  # Tags a `Fil` error raised while a write's content is read, on its way to `run_chain/2`.
+  @content_error {__MODULE__, :content_error}
 
   @enforce_keys [:disk, :name, :path]
-  defstruct [:disk, :name, :path, :dest, :content, :result, options: [], private: %{}]
+  defstruct [:disk, :name, :path, :dest, :content, :result, streaming: false, options: [], private: %{}]
 
   @type name :: :read | :write | :stat | :ls | :rm | :rm_rf | :cp | :rename | :url | :signed_url
 
@@ -30,13 +37,14 @@ defmodule Fil.Op do
           name: name(),
           path: Path.t(),
           dest: Path.t() | nil,
-          content: iodata() | nil,
+          content: iodata() | Enumerable.t() | nil,
+          streaming: boolean(),
           options: keyword(),
           result: {:ok, term()} | {:error, Exception.t()} | nil,
           private: map()
         }
 
-  @type transform :: [binary: (binary() -> iodata()), chunk: (binary() -> iodata())]
+  @type transform :: [iodata: (binary() -> iodata()), stream: (Enumerable.t() -> Enumerable.t())]
 
   ## ------------------------------------------------------------------
   ## Options, results and private data
@@ -126,17 +134,30 @@ defmodule Fil.Op do
   @doc """
   Transforms the content of a `:write`. Other operations are returned unchanged.
 
-  Pass `binary:` to transform the whole content at once and `chunk:` to transform it piece by piece:
+  The content is iodata or a stream, and each has its transform:
 
-      Fil.Op.update_content(op, binary: &:zlib.gzip/1)
+      Fil.Op.update_content(op, iodata: &:zlib.gzip/1, stream: &MyApp.Gzip.stream/1)
 
-  Content is always whole for now, so `binary:` runs and gets a binary (iodata is flattened first). Without `binary:`,
-  the content is passed to `chunk:` as a single chunk. Once streaming lands, `chunk:` runs on each chunk of a stream,
-  and a stream is collected first if there's only `binary:`.
+    * `iodata:` gets all of the content as one binary and returns iodata. Without `stream:`, it gets a stream too:
+      `Fil` collects the stream into memory first
+    * `stream:` gets the stream, an enumerable of binaries, and returns an enumerable of iodata. A transform of each
+      chunk on its own is `&Stream.map(&1, fun)`. Without `iodata:`, it gets content in memory too, as a stream of one
+      chunk (none if it's empty), and the result is collected again
+
+  The [Plugins guide](plugins.md#streams) describes what a chunk is. A transform drops the `:size` option of the
+  write, because the size can change. A plugin that knows the new size declares it again with
+  `put_option(op, :size, size)`.
   """
   @spec update_content(t(), transform()) :: t()
   def update_content(%__MODULE__{name: :write, content: content} = op, funs) do
-    %{op | content: transform!(content, funs)}
+    funs = validate_transform!(funs)
+
+    content =
+      reading_content(fn ->
+        if Content.iodata?(content), do: transform_iodata(content, funs), else: transform_stream(content, funs)
+      end)
+
+    drop_size(%{op | content: content})
   end
 
   def update_content(%__MODULE__{} = op, funs) do
@@ -147,16 +168,22 @@ defmodule Fil.Op do
   @doc """
   Transforms the content returned by a successful `:read`. Other operations and errors are returned unchanged.
 
-  Takes the same `binary:` and `chunk:` functions as `update_content/2`.
+  Takes the same `iodata:` and `stream:` functions as `update_content/2`. The result of `Fil.stream/3` is a stream, and
+  the transforms run when the caller reads it. With only `iodata:`, the stream is collected then too.
+
+  A transform that raises one of `Fil`'s errors, such as `Fil.ChecksumMismatchError` for content that fails a check,
+  turns a read that returns a binary into that error. On a stream, the error is raised when the caller reads it, with
+  the operation, the path and the disk filled in.
   """
   @spec update_result(t(), transform()) :: t()
   def update_result(%__MODULE__{name: :read, result: {:ok, content}} = op, funs) do
-    binary =
-      content
-      |> transform!(funs)
-      |> IO.iodata_to_binary()
+    funs = validate_transform!(funs)
 
-    %{op | result: {:ok, binary}}
+    if Content.iodata?(content) do
+      %{op | result: transform_iodata_result(content, funs)}
+    else
+      %{op | result: {:ok, transform_result_stream(content, funs)}}
+    end
   end
 
   def update_result(%__MODULE__{} = op, funs) do
@@ -164,11 +191,24 @@ defmodule Fil.Op do
     op
   end
 
-  @doc """
-  Makes the content of a `:write` whole, for plugins that need all of it at once.
+  # A transform that fails with one of `Fil`'s errors (a decryption that finds the content tampered with, say) turns
+  # the read into that error. A stream raises it instead, when it's read.
+  defp transform_iodata_result(content, funs) do
+    binary =
+      content
+      |> transform_iodata(funs)
+      |> IO.iodata_to_binary()
 
-  Content is always whole for now, so this only flattens iodata into a binary. Once streaming lands, it collects a
-  stream into memory, so use it only when a plugin can't work chunk by chunk.
+    {:ok, binary}
+  rescue
+    error -> transform_error(error, __STACKTRACE__)
+  end
+
+  @doc """
+  Collects the content of a `:write` into one binary, for plugins that need all of it at once.
+
+  Iodata is flattened into a binary. A stream is collected into memory, so use this only when a plugin can't work
+  chunk by chunk.
 
       iex> op = %Fil.Op{disk: nil, name: :write, path: "a.txt", content: ["a", ["b"]]}
       iex> Fil.Op.materialize(op).content
@@ -177,25 +217,88 @@ defmodule Fil.Op do
   """
   @spec materialize(t()) :: t()
   def materialize(%__MODULE__{name: :write, content: content} = op) do
-    %{op | content: IO.iodata_to_binary(content)}
+    %{op | content: reading_content(fn -> Content.to_binary(content) end)}
   end
 
   def materialize(%__MODULE__{} = op), do: op
 
-  defp transform!(content, funs) do
-    fun =
-      case validate_transform!(funs) do
-        %{binary: fun} -> fun
-        %{chunk: fun} -> fun
-      end
+  defp transform_iodata(content, funs) do
+    binary = IO.iodata_to_binary(content)
 
-    content
-    |> IO.iodata_to_binary()
-    |> fun.()
+    case funs do
+      %{iodata: fun} ->
+        fun.(binary)
+
+      %{stream: fun} ->
+        binary
+        |> Content.chunks()
+        |> fun.()
+        |> Enum.to_list()
+    end
   end
 
+  defp transform_stream(stream, funs) do
+    chunks = Content.chunks(stream)
+
+    case funs do
+      %{stream: fun} ->
+        fun.(chunks)
+
+      %{iodata: fun} ->
+        chunks
+        |> Enum.into(<<>>)
+        |> fun.()
+    end
+  end
+
+  # A read stream stays lazy, so a transform that needs all of the content collects it when the caller reads.
+  defp transform_result_stream(stream, funs) do
+    case funs do
+      %{stream: _fun} -> transform_stream(stream, funs)
+      %{iodata: fun} -> Stream.flat_map([stream], &[collect(&1, fun)])
+    end
+  end
+
+  defp collect(stream, fun) do
+    stream
+    |> Content.to_binary()
+    |> fun.()
+    |> IO.iodata_to_binary()
+  end
+
+  # Reads a write's content (collecting it, or transforming content in memory), turning `Fil`'s errors into the write's
+  # result (see `run_chain/2`).
+  defp reading_content(fun) do
+    fun.()
+  rescue
+    error -> content_error(error, __STACKTRACE__)
+  end
+
+  # The content as the adapter reads it, with the same treatment of `Fil`'s errors.
+  defp read_content(stream) do
+    fn acc, fun -> reduce_content(&Enumerable.reduce(stream, &1, fun), acc) end
+  end
+
+  defp reduce_content(continuation, acc) do
+    case continuation.(acc) do
+      {:suspended, acc, continuation} -> {:suspended, acc, &reduce_content(continuation, &1)}
+      result -> result
+    end
+  rescue
+    error -> content_error(error, __STACKTRACE__)
+  end
+
+  defp content_error(%{op: _, path: _, disk: _} = error, _stacktrace), do: throw({@content_error, error})
+  defp content_error(error, stacktrace), do: reraise(error, stacktrace)
+
+  # `Fil`'s errors are the exceptions with an operation, a path and a disk. Anything else is a bug in the transform.
+  defp transform_error(%{op: _, path: _, disk: _} = error, _stacktrace), do: {:error, error}
+  defp transform_error(error, stacktrace), do: reraise(error, stacktrace)
+
+  defp drop_size(%__MODULE__{options: options} = op), do: %{op | options: Keyword.delete(options, :size)}
+
   defp validate_transform!(funs) when is_list(funs) do
-    case Keyword.split(funs, [:binary, :chunk]) do
+    case Keyword.split(funs, [:iodata, :stream]) do
       {[_ | _] = valid, []} ->
         Enum.each(valid, fn
           {_key, fun} when is_function(fun, 1) ->
@@ -208,10 +311,11 @@ defmodule Fil.Op do
         Map.new(valid)
 
       {[], []} ->
-        raise ArgumentError, "expected at least one of :binary or :chunk"
+        raise ArgumentError, "expected at least one of :iodata or :stream"
 
       {_valid, unknown} ->
-        raise ArgumentError, "unknown transforms #{inspect(Keyword.keys(unknown))}, expected :binary or :chunk"
+        raise ArgumentError,
+              "unknown transforms #{inspect(Keyword.keys(unknown))}, expected :iodata or :stream"
     end
   end
 
@@ -237,8 +341,32 @@ defmodule Fil.Op do
         end
       end)
 
-    chain.(caller).result
+    caller
+    |> run_chain(chain)
+    |> put_stream_context(caller)
   end
+
+  # A `Fil` error raised while a write's content is read (by a stream from `Fil.stream/3`, or by a plugin's transform)
+  # is the write's result. It's thrown past the plugins and the adapter from where the content is read
+  # (`reading_content/1` and `read_content/1`), so an error a plugin raises in its callback propagates, the same as on
+  # a read. An error from a source stream keeps the source's context, one without context gets the write's.
+  defp run_chain(%__MODULE__{name: :write} = caller, chain) do
+    chain.(caller).result
+  catch
+    :throw, {@content_error, error} -> {:error, put_context(error, caller)}
+  end
+
+  defp run_chain(caller, chain), do: chain.(caller).result
+
+  # Errors a plugin's transform raises while the caller reads a stream get the caller's context too, the same as the
+  # adapter's (see `to_result/3`).
+  defp put_stream_context({:ok, content}, %__MODULE__{name: :read, streaming: true} = caller) do
+    if Content.iodata?(content), do: {:ok, content}, else: {:ok, Content.put_context(content, context(caller))}
+  end
+
+  defp put_stream_context(result, _caller), do: result
+
+  defp context(%__MODULE__{name: name, path: path, disk: disk}), do: [op: name, path: path, disk: disk]
 
   defp call_plugin({module, function}, op, next, opts), do: apply(module, function, [op, next, opts])
   defp call_plugin(fun, op, next, opts), do: fun.(op, next, opts)
@@ -287,8 +415,18 @@ defmodule Fil.Op do
 
   defp call_adapter(%__MODULE__{disk: %Disk{adapter: {module, state}}} = op), do: call_adapter(op, module, state)
 
-  defp call_adapter(%__MODULE__{name: :write} = op, module, state) do
-    module.write(state, op.path, op.content, op.options)
+  # A stream reaches the adapter as non-empty binaries, checked against the `:size` the caller declared.
+  defp call_adapter(%__MODULE__{name: :write, content: content} = op, module, state) do
+    module.write(state, op.path, adapter_content(content, op.options[:size]), op.options)
+  end
+
+  # `stream/3` is optional. Without it, the adapter reads the whole file and the stream is that one chunk.
+  defp call_adapter(%__MODULE__{name: :read, streaming: true} = op, module, state) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :stream, 3) do
+      module.stream(state, op.path, op.options)
+    else
+      with {:ok, content} <- module.read(state, op.path, op.options), do: {:ok, [content], byte_size(content)}
+    end
   end
 
   defp call_adapter(%__MODULE__{name: name} = op, module, state) when name in [:cp, :rename] do
@@ -307,6 +445,16 @@ defmodule Fil.Op do
   # read, stat, ls, rm and rm_rf all take (state, path, opts).
   defp call_adapter(%__MODULE__{name: name} = op, module, state), do: apply(module, name, [state, op.path, op.options])
 
+  defp adapter_content(content, size) do
+    if Content.iodata?(content) do
+      content
+    else
+      content
+      |> Content.sized(size)
+      |> read_content()
+    end
+  end
+
   # Adapters return a bare `:ok` for mutations. The result is the ref the operation acted on.
   defp to_result(:ok, %__MODULE__{name: name, dest: dest} = op, _caller) when name in [:cp, :rename] do
     {:ok, %Ref{disk: op.disk, path: dest}}
@@ -316,6 +464,20 @@ defmodule Fil.Op do
 
   defp to_result({:ok, listed}, %__MODULE__{name: :ls, disk: disk}, _caller) when is_list(listed) do
     {:ok, Enum.map(listed, fn {path, stat} -> %Ref{disk: disk, path: path, stat: stat} end)}
+  end
+
+  # Errors raised while the caller reads the stream get the same context as returned ones. A size the adapter found
+  # stays with its stream (`Fil.Support.Sized`).
+  defp to_result({:ok, stream, size}, %__MODULE__{name: :read, streaming: true} = op, caller) when is_integer(size) do
+    to_result({:ok, %Sized{stream: stream, size: size}}, op, caller)
+  end
+
+  defp to_result({:ok, stream, nil}, %__MODULE__{name: :read, streaming: true} = op, caller) do
+    to_result({:ok, stream}, op, caller)
+  end
+
+  defp to_result({:ok, stream}, %__MODULE__{name: :read, streaming: true}, caller) do
+    {:ok, Content.put_context(stream, context(caller))}
   end
 
   defp to_result({:ok, value}, _op, _caller), do: {:ok, value}

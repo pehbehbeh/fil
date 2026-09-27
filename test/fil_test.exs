@@ -85,6 +85,125 @@ defmodule FilTest do
         Fil.write(disk, "a.txt", "content", if_exists: :skip)
       end
     end
+
+    test "content is iodata or an enumerable", %{disk: disk} do
+      assert_raise ArgumentError, ~r/expected the content to be iodata or an enumerable of iodata, got: :nope/, fn ->
+        Fil.write(disk, "a.txt", :nope)
+      end
+    end
+
+    test "size: of iodata is checked before anything is written", %{disk: disk} do
+      assert_raise ArgumentError, "the content has 5 bytes, but the :size option is 6", fn ->
+        Fil.write(disk, "a.txt", ["he", "llo"], size: 6)
+      end
+    end
+
+    test "size: is only an option of writes", %{disk: disk} do
+      assert_raise ArgumentError, ~r/unknown options \[:size\]/, fn -> Fil.cp(disk, "a.txt", "b.txt", size: 1) end
+    end
+  end
+
+  describe "stream/2" do
+    setup do
+      Fil.Adapter.Memory.checkout()
+      {:ok, disk: Fil.disk(adapter: Fil.Adapter.Memory)}
+    end
+
+    test "streams the whole file as one chunk on an adapter without stream/3" do
+      disk = Fil.disk(adapter: __MODULE__.WholeAdapter)
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+
+      assert {:ok, stream} = Fil.stream(disk, "a.txt")
+      assert Enum.to_list(stream) == ["content"]
+      assert {:error, %Fil.NotFoundError{op: :read, path: "nope.txt"}} = Fil.stream(disk, "nope.txt")
+    end
+
+    test "a plugin that answers with iodata still gives a stream", %{disk: disk} do
+      cached =
+        Fil.attach(disk, :cache, fn
+          %Fil.Op{name: :read} = op, _next, _opts -> Fil.Op.put_result(op, {:ok, ["cac", "hed"]})
+          op, next, _opts -> next.(op)
+        end)
+
+      assert Fil.stream(cached, "a.txt") == {:ok, ["cached"]}
+      assert Fil.read(cached, "a.txt") == {:ok, ["cac", "hed"]}
+    end
+
+    test "an error of the destination isn't reported as one of the source", %{disk: disk} do
+      other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+
+      rejecting =
+        Fil.attach(other, :reject, fn op, next, _opts ->
+          op
+          |> Fil.Op.update_content(
+            stream: &Stream.map(&1, fn _chunk -> raise %Fil.InvalidRequestError{reason: :rejected} end)
+          )
+          |> next.()
+        end)
+
+      source = Fil.stream!(disk, "a.txt")
+
+      assert {:error, %Fil.InvalidRequestError{op: :write, path: "b.txt", reason: :rejected} = error} =
+               Fil.write(rejecting, "b.txt", source)
+
+      assert error.disk == rejecting
+
+      # The same as any other error of the destination of a copy: the operation is the copy, the path the destination.
+      assert {:error, %Fil.InvalidRequestError{op: :cp, path: "b.txt", reason: :rejected} = error} =
+               Fil.cp(disk, "a.txt", Fil.ref(rejecting, "b.txt"))
+
+      assert error.disk == rejecting
+      refute Fil.exists?(other, "b.txt")
+    end
+
+    test "a write returns an error its source stream raises", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+      source = Fil.stream!(disk, "a.txt")
+      {:ok, _} = Fil.rm(disk, "a.txt")
+
+      assert {:error, %Fil.NotFoundError{op: :read, path: "a.txt"} = error} = Fil.write(disk, "b.txt", source)
+      assert error.disk == disk
+      refute Fil.exists?(disk, "b.txt")
+    end
+
+    test "a source that changes size while it's copied fails the copy with a conflict", %{disk: disk} do
+      other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+
+      # The file grows after the check, before the copy reads it.
+      growing =
+        Fil.attach(disk, :grow, fn op, next, _opts ->
+          op = next.(op)
+          if op.streaming, do: Fil.write!(op.disk, op.path, "more content")
+          op
+        end)
+
+      assert {:error, %Fil.ConflictError{op: :cp, path: "a.txt", reason: :size_changed} = error} =
+               Fil.cp(growing, "a.txt", Fil.ref(other, "a.txt"))
+
+      assert error.disk == growing
+      refute Fil.exists?(other, "a.txt")
+    end
+
+    test "a copy across disks returns an error the source raises while it's streamed", %{disk: disk} do
+      other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+
+      # The file goes away after the check, before the copy reads it.
+      vanishing =
+        Fil.attach(disk, :vanish, fn op, next, _opts ->
+          op = next.(op)
+          if op.streaming, do: Fil.rm!(op.disk, op.path)
+          op
+        end)
+
+      assert {:error, %Fil.NotFoundError{op: :cp, path: "a.txt"} = error} =
+               Fil.cp(vanishing, "a.txt", Fil.ref(other, "a.txt"))
+
+      assert error.disk == vanishing
+      refute Fil.exists?(other, "a.txt")
+    end
   end
 
   describe "dispatch" do
@@ -95,6 +214,33 @@ defmodule FilTest do
         Fil.read(disk, "a.txt")
       end
     end
+  end
+
+  # The Memory adapter without `stream/3`.
+  defmodule WholeAdapter do
+    @moduledoc false
+    @behaviour Fil.Adapter
+
+    alias Fil.Adapter.Memory
+
+    @impl Fil.Adapter
+    defdelegate init(opts), to: Memory
+    @impl Fil.Adapter
+    defdelegate read(state, path, opts), to: Memory
+    @impl Fil.Adapter
+    defdelegate write(state, path, content, opts), to: Memory
+    @impl Fil.Adapter
+    defdelegate rm(state, path, opts), to: Memory
+    @impl Fil.Adapter
+    defdelegate stat(state, path, opts), to: Memory
+    @impl Fil.Adapter
+    defdelegate ls(state, path, opts), to: Memory
+    @impl Fil.Adapter
+    defdelegate cp(state, src, dest, opts), to: Memory
+    @impl Fil.Adapter
+    defdelegate rename(state, src, dest, opts), to: Memory
+    @impl Fil.Adapter
+    defdelegate rm_rf(state, prefix, opts), to: Memory
   end
 
   defmodule BrokenAdapter do

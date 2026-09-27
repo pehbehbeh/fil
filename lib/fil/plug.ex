@@ -39,7 +39,8 @@ if Code.ensure_loaded?(Plug) do
                 default: 100 * 1024 * 1024,
                 doc: """
                 The largest upload in bytes, 100 MiB by default. A larger `PUT` gets a `413`, and nothing is written.
-                Uploads are read into memory whole before they're written, so keep it at what your server can hold.
+                Uploads are streamed into the disk, so the limit is about storage, not memory (except on S3 without a
+                `content-length`, see `Fil.write/4`).
                 """
               ]
             )
@@ -110,16 +111,18 @@ if Code.ensure_loaded?(Plug) do
     ## Responses
 
       * `GET` and `HEAD` on a URL signed for `:get` return the file, with its stored content type or one guessed from
-        the extension, and the `content-disposition` the URL was signed with (`disposition:`)
+        the extension, and the `content-disposition` the URL was signed with (`disposition:`). The file is streamed
+        as a chunked response, so it never has to fit in memory
       * `PUT` on a URL signed for `:put` writes the request body, with the request's `content-type`, the same as a
-        presigned PUT on S3. Plugins attached to the disk run as for any other write
+        presigned PUT on S3. The body is streamed into `Fil.write/4` as it's read, with the `content-length` as
+        `size:`. Plugins attached to the disk run as for any other write
       * a request that doesn't match its signature, or comes after the URL expired, gets a `403`
       * an upload larger than `:max_body_size` gets a `413`, and one whose body something else already read (see
         [Mounting](#module-mounting)) a `400`. Neither writes anything
       * a missing file gets a `404`, and so does a file the storage denies access to, so a client can't tell which
         files exist
-      * a failed write gets a `409` if the file already exists, `507` if the storage is full and `503` if it's
-        unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
+      * a failed write gets a `409` if the file already exists or changed meanwhile, `507` if the storage is full and
+        `503` if it's unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
     """
 
     @behaviour Plug
@@ -127,6 +130,9 @@ if Code.ensure_loaded?(Plug) do
     import Plug.Conn
 
     require Logger
+
+    # The most an upload is read at a time.
+    @read_length 1_048_576
 
     @impl Plug
     def init(opts) do
@@ -198,20 +204,25 @@ if Code.ensure_loaded?(Plug) do
     defp method(%{method: "PUT"}), do: {:ok, :put}
     defp method(_conn), do: {:error, :method_not_allowed}
 
+    # The file is streamed to the client (`Fil.stream/3`), so its size doesn't matter. The response is chunked, because
+    # plugins can change the content, and then the stored size isn't the size sent. An error while streaming comes
+    # after the status line, so it raises and the client gets a truncated response.
     defp serve(conn, :get, disk, path, headers, _max_body_size) do
       with {:ok, stat} <- Fil.stat(disk, path),
            :regular <- stat.type,
-           {:ok, content} <- Fil.read(disk, path) do
+           {:ok, content} <- Fil.stream(disk, path) do
         conn
         |> put_resp_content_type(stat.content_type || MIME.from_path(path), nil)
         |> merge_resp_headers(headers)
-        |> send_resp(200, if(conn.method == "HEAD", do: "", else: content))
+        |> send_content(content)
       else
         :directory -> send_error(conn, 404, "not found")
         {:error, error} -> send_fil_error(conn, error)
       end
     end
 
+    # The request body is streamed into `Fil.write/4` as it's read, with the `content-length` as `size:`. A body that
+    # breaks a rule while it's read stops the write with a throw, before the stream ends, so nothing is written.
     defp serve(conn, :put, disk, path, _headers, max_body_size) do
       opts =
         conn
@@ -219,30 +230,118 @@ if Code.ensure_loaded?(Plug) do
         |> Enum.take(1)
         |> Enum.map(&{:content_type, &1})
 
-      with :ok <- check_declared_size(conn, max_body_size),
-           {:ok, body, conn} <- read_whole_body(conn, max_body_size, 0, []),
-           {:ok, body, conn} <- check_complete(conn, body) do
-        write(conn, disk, path, body, opts)
+      length = content_length(conn)
+
+      # A declared size over the limit is refused before anything is read, and a body `Plug.Parsers` already read is
+      # noticed on the first read, before the write starts.
+      with :ok <- check_declared_size(length, max_body_size),
+           {:ok, first, conn} <- read_chunk(conn, 0, length, max_body_size) do
+        opts = if length, do: [{:size, length} | opts], else: opts
+
+        upload(conn, disk, path, first, opts, {length, max_body_size})
       else
-        {:error, :too_large} ->
-          too_large(conn, max_body_size)
-
-        {:error, :too_large, conn} ->
-          too_large(conn, max_body_size)
-
-        {:error, :body, conn} ->
-          send_error(conn, 400, "the request body could not be read")
-
-        {:error, :already_read, conn} ->
-          send_error(conn, 400, "the request body was already read, probably by Plug.Parsers")
+        {:error, reason} -> body_error(conn, reason, max_body_size)
+        {:error, reason, conn} -> body_error(conn, reason, max_body_size)
       end
     end
 
-    defp write(conn, disk, path, body, opts) do
-      case Fil.write(disk, path, body, opts) do
+    defp send_content(%{method: "HEAD"} = conn, _content), do: send_resp(conn, 200, "")
+
+    defp send_content(conn, content) do
+      Enum.reduce_while(content, send_chunked(conn, 200), fn chunk, conn ->
+        case chunk(conn, chunk) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _closed} -> {:halt, conn}
+        end
+      end)
+    end
+
+    # The stream reads the body with the latest conn, which it keeps in the process dictionary, because `read_body/2`
+    # returns a new one each time and the response has to go out on the last.
+    defp upload(conn, disk, path, first, opts, limits) do
+      key = {__MODULE__, make_ref()}
+      Process.put(key, conn)
+
+      result =
+        try do
+          Fil.write(disk, path, body_stream(key, first, limits), opts)
+        catch
+          :throw, {^key, reason} -> {:body_error, reason}
+        end
+
+      conn = Process.delete(key)
+
+      case result do
         {:ok, _ref} -> send_resp(conn, 200, "")
         {:error, error} -> send_fil_error(conn, error)
+        {:body_error, reason} -> body_error(conn, reason, elem(limits, 1))
       end
+    end
+
+    defp body_stream(key, first, limits) do
+      Stream.resource(fn -> first end, &next_body_chunk(&1, key, limits), fn _state -> :ok end)
+    end
+
+    defp next_body_chunk({:emit, chunk, :more, size}, _key, _limits), do: {[chunk], {:read, size}}
+    defp next_body_chunk({:emit, chunk, :ok, _size}, _key, _limits), do: {[chunk], :done}
+    defp next_body_chunk(:done, _key, _limits), do: {:halt, :done}
+
+    defp next_body_chunk({:read, size}, key, limits) do
+      case read_stored(key, size, limits) do
+        {:ok, next} -> next_body_chunk(next, key, limits)
+        {:error, reason} -> throw({key, reason})
+      end
+    end
+
+    # Reads with the conn kept under `key`, and keeps the new one there.
+    defp read_stored(key, size, {length, max_body_size}) do
+      key
+      |> Process.get()
+      |> read_chunk(size, length, max_body_size)
+      |> store_conn(key)
+    end
+
+    defp store_conn({tag, value, conn}, key) do
+      Process.put(key, conn)
+      {tag, value}
+    end
+
+    # Reads the next piece of the body and checks it against the limit and the declared size.
+    defp read_chunk(conn, size, length, max_body_size) do
+      case read_body(conn, length: @read_length) do
+        {status, chunk, conn} ->
+          size = size + byte_size(chunk)
+
+          case check_body(status, size, length, max_body_size) do
+            :ok -> {:ok, {:emit, chunk, status, size}, conn}
+            {:error, reason} -> {:error, reason, conn}
+          end
+
+        {:error, _reason} ->
+          {:error, :body, conn}
+      end
+    end
+
+    # A body shorter than its `content-length` was read by something else before the plug: `Plug.Parsers` reads the
+    # body of the content types it parses but leaves the headers alone.
+    defp check_body(_status, size, _length, max_body_size) when size > max_body_size, do: {:error, :too_large}
+
+    defp check_body(_status, size, length, _max_body_size) when is_integer(length) and size > length,
+      do: {:error, :body}
+
+    defp check_body(:ok, size, length, _max_body_size) when is_integer(length) and size < length,
+      do: {:error, :already_read}
+
+    defp check_body(_status, _size, _length, _max_body_size), do: :ok
+
+    defp body_error(conn, :too_large, max_body_size) do
+      send_error(conn, 413, "the request body is larger than #{max_body_size} bytes")
+    end
+
+    defp body_error(conn, :body, _max_body_size), do: send_error(conn, 400, "the request body could not be read")
+
+    defp body_error(conn, :already_read, _max_body_size) do
+      send_error(conn, 400, "the request body was already read, probably by Plug.Parsers")
     end
 
     # A denied file is a 404 too, so a client can't tell which files exist.
@@ -251,6 +350,7 @@ if Code.ensure_loaded?(Plug) do
          do: send_error(conn, 404, "not found")
 
     defp send_fil_error(conn, %Fil.AlreadyExistsError{}), do: send_error(conn, 409, "the file already exists")
+    defp send_fil_error(conn, %Fil.ConflictError{}), do: send_error(conn, 409, "the file changed, try again")
     defp send_fil_error(conn, %Fil.StorageFullError{}), do: send_error(conn, 507, "no space left")
     defp send_fil_error(conn, %Fil.UnavailableError{}), do: send_error(conn, 503, "the storage is unavailable")
     # The message contains the path, the disk and what the storage reported, so it goes to the log and the client
@@ -260,43 +360,10 @@ if Code.ensure_loaded?(Plug) do
       send_error(conn, 500, "internal server error")
     end
 
-    defp too_large(conn, max_body_size),
-      do: send_error(conn, 413, "the request body is larger than #{max_body_size} bytes")
+    defp check_declared_size(length, max_body_size) when is_integer(length) and length > max_body_size,
+      do: {:error, :too_large}
 
-    # A `content-length` over the limit is refused before anything is read.
-    defp check_declared_size(conn, max_body_size) do
-      case content_length(conn) do
-        length when is_integer(length) and length > max_body_size -> {:error, :too_large}
-        _fits_or_unknown -> :ok
-      end
-    end
-
-    # The limit is checked again while reading, for uploads without a `content-length` and clients that send more than
-    # they declared. Uploads are still read whole into memory until `Fil.write` takes a stream.
-    defp read_whole_body(conn, max_body_size, size, acc) do
-      case read_body(conn) do
-        {status, chunk, conn} when status in [:ok, :more] and size + byte_size(chunk) > max_body_size ->
-          {:error, :too_large, conn}
-
-        {:ok, chunk, conn} ->
-          {:ok, IO.iodata_to_binary([acc, chunk]), conn}
-
-        {:more, chunk, conn} ->
-          read_whole_body(conn, max_body_size, size + byte_size(chunk), [acc, chunk])
-
-        {:error, _reason} ->
-          {:error, :body, conn}
-      end
-    end
-
-    # `Plug.Parsers` reads the body of the content types it parses but leaves the headers alone, so a body shorter than
-    # its `content-length` was read by something else before the plug.
-    defp check_complete(conn, body) do
-      case content_length(conn) do
-        length when is_integer(length) and length != byte_size(body) -> {:error, :already_read, conn}
-        _complete_or_unknown -> {:ok, body, conn}
-      end
-    end
+    defp check_declared_size(_length, _max_body_size), do: :ok
 
     defp content_length(conn) do
       with [value | _rest] <- get_req_header(conn, "content-length"),

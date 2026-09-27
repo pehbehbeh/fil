@@ -51,6 +51,7 @@ With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes t
   such as setting content types or logging.
 - **Few dependencies.** Req, NimbleOptions and MIME, plus Plug if you serve files. Cloud adapters use Req instead of
   their own SDKs.
+- **Streaming.** Files can be read and written as streams on every disk, so large files don't have to fit in memory.
 - **URLs on every disk.** Public and signed GET and PUT URLs, from S3 itself or from `Fil.Plugin.URL` and `Fil.Plug`.
 - **Safe by default.** Paths can't climb out of the disk root, `if_exists: :error` never replaces a file, and S3
   verifies checksums.
@@ -59,7 +60,7 @@ With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes t
 
 ## Concepts
 
-`Fil` uses the function names of Elixir's `File` module (`read`, `write`, `stat`, `ls`, `cp`, `rename`, `rm`,
+`Fil` uses the function names of Elixir's `File` module (`read`, `write`, `stream`, `stat`, `ls`, `cp`, `rename`, `rm`,
 `rm_rf`), but on every adapter they behave like an object store:
 
 - `write` creates missing parent directories
@@ -199,6 +200,19 @@ Every operation works the same on every disk:
 {:ok, backup} = Fil.cp(report, Fil.ref(local, "backups/q3.pdf"))
 {:ok, _} = Fil.rm(report)
 ```
+
+Large files don't have to fit in memory. `stream` returns a file's content as a stream of chunks, and `write` takes a
+stream as well as a binary, so a file can go from one disk to another, or from a local file to S3, piece by piece:
+
+```elixir
+{:ok, video} = Fil.stream(s3, "videos/intro.mp4")
+{:ok, _} = Fil.write(local, "cache/intro.mp4", video)
+
+{:ok, _} = Fil.write(s3, "backups/db.dump", File.stream!("db.dump", 65_536), size: File.stat!("db.dump").size)
+```
+
+With `size:`, S3 sends the stream as it's read. Without it, S3 collects the stream into memory first (the local and
+memory disks don't need the size).
 
 `url` returns the public URL of a file, and `signed_url` an expiring one, so clients can download or upload a file
 directly instead of going through your application code. S3 serves its URLs itself. For local and in-memory disks,

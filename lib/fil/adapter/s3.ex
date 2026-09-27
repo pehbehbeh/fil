@@ -58,7 +58,7 @@ defmodule Fil.Adapter.S3 do
               Options for every [Req](https://req.hexdocs.pm) request the disk makes, such as `:receive_timeout`,
               `:connect_options` or a shared `:finch` pool. The adapter always sets `:method`, `:url`, `:headers` and
               `:body`, plus `retry: false` (retrying is up to the caller) and `raw: true` (no decompression and no body
-              decoding, so a file reads back exactly as it was written).
+              decoding, so a file reads back exactly as it was written). Streamed uploads need HTTP/1, see above.
               """
             ]
           )
@@ -81,6 +81,12 @@ defmodule Fil.Adapter.S3 do
   Requests are sent and signed (SigV4) by [Req](https://req.hexdocs.pm), configured with `:req_options`. Listings are
   parsed with OTP's `:xmerl_sax_parser`.
 
+  Streamed uploads need an HTTP/1 connection pool, which is what Req uses unless `:req_options` asks for HTTP/2 (for
+  example with `connect_options: [protocols: [:http2]]` or a `:finch` pool for HTTP/2). On HTTP/2, Finch reads a request
+  body in the pool's process instead of the caller's, and a stream that only the caller's process can read fails or
+  stalls there: a `Fil.Plug` upload, or a stream from another S3 disk in a copy across disks. Content in memory and
+  streams that any process can read, such as a `File.Stream`, are fine.
+
   ## Options
 
   #{NimbleOptions.docs(@schema)}
@@ -93,10 +99,15 @@ defmodule Fil.Adapter.S3 do
     * `Fil.read/3`: GetObject. Reading a directory is a `Fil.NotFoundError`. `verify_checksum: true` asks S3 for the
       stored checksum (`x-amz-checksum-mode: ENABLED`) and compares it with the downloaded content. Objects stored with
       another algorithm, or with none, are read without a check.
-    * `Fil.write/4`: PutObject. `if_exists: :error` sends `If-None-Match: *`. `checksum:` (`:sha256`, `:sha1` or
-      `:crc32`) sends the checksum of the content in `x-amz-checksum-*`, S3 rejects the upload if what it received
-      doesn't match, and stores the checksum with the object. Writing to `report.txt/x` when `report.txt` is an object
-      writes a second object and leaves the first alone.
+    * `Fil.stream/3`: HeadObject, then GetObject each time the stream is read. The download runs in a process of its
+      own and goes only as fast as the stream is read. `verify_checksum: true` computes the checksum while streaming.
+    * `Fil.write/4`: PutObject. A stream with `size:` is sent as it's read. A stream without a size, or with
+      `checksum:`, is collected into memory first, because a PutObject needs the length and the checksum before the
+      content; that will change once large streams are sent as multipart uploads. `if_exists: :error` sends
+      `If-None-Match: *`. `checksum:` (`:sha256`, `:sha1` or `:crc32`) sends the checksum of the content in
+      `x-amz-checksum-*`, S3 rejects the upload if what it received doesn't match, and stores the checksum with the
+      object. Writing to `report.txt/x` when `report.txt` is an object writes a second object and leaves the first
+      alone.
     * `Fil.rm/3`: DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error).
       Removing a directory succeeds and removes nothing.
     * `Fil.stat/3`: HeadObject, then a prefix probe if there's no object, so `Fil.dir?/1` works. `:etag` and
@@ -139,6 +150,8 @@ defmodule Fil.Adapter.S3 do
 
   alias Fil.Stat
   alias Fil.Support.Checksum
+  alias Fil.Support.Content
+  alias Fil.Support.Relay
   alias Fil.Support.XML
 
   import Fil.Support.Timestamps
@@ -199,18 +212,159 @@ defmodule Fil.Adapter.S3 do
 
   @impl Fil.Adapter
   def write(state, path, content, opts) do
-    body = IO.iodata_to_binary(content)
+    {body, body_headers} = upload_body(content, opts)
 
     headers =
       opts
       |> content_type_header()
       |> put_if_exists(opts)
-      |> put_checksum(opts, body)
+      |> Kernel.++(body_headers)
 
     case request(state, :put, key(state, path), headers: headers, body: body) do
       {:ok, %{status: status}} when status in [200, 201] -> :ok
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Decides how the content goes out in one PutObject. A stream of known size without a checksum is sent as it's read,
+  # with its `content-length`, and signed with `UNSIGNED-PAYLOAD` (Req does that for a streamed body). Anything else is
+  # sent as one binary: a stream without a size is collected first, because a PutObject needs its length up front, and
+  # so is one with a checksum, whose header goes out before the content. Multipart uploads for streams of unknown size
+  # belong here.
+  defp upload_body(content, opts) do
+    case {Content.iodata?(content), opts[:size], opts[:checksum]} do
+      {false, size, nil} when is_integer(size) ->
+        {content, [{"content-length", Integer.to_string(size)}]}
+
+      _iodata_or_unknown_size ->
+        body = Content.to_binary(content)
+        {body, checksum_header(opts, body)}
+    end
+  end
+
+  # Checks the object with a HeadObject, and downloads it when the stream is read. The download runs in a process of
+  # its own that sends the chunks one at a time (`Fil.Support.Relay`), so it goes no faster than the stream is read.
+  # A HeadObject has no body and so no error code, and a missing bucket is a 404 like a missing key, so a 404 is asked
+  # again with a GetObject to get the same error as `read/3`.
+  @impl Fil.Adapter
+  def stream(state, path, opts) do
+    verify? = Keyword.get(opts, :verify_checksum, false)
+    headers = if verify?, do: [@checksum_mode], else: []
+
+    case request(state, :head, key(state, path), headers: headers) do
+      {:ok, %{status: 200} = response} -> {:ok, download(state, path, response, verify?), content_length(response)}
+      {:ok, %{status: 404}} -> with {:ok, content} <- read(state, path, opts), do: {:ok, [content], byte_size(content)}
+      {:ok, response} -> {:error, error(response)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp download(state, path, response, verify?) do
+    download(state, key(state, path), if(verify?, do: algorithm(response)))
+  end
+
+  defp content_length(%{headers: headers}), do: integer(header(headers, "content-length"))
+
+  # The algorithm of the checksum stored with the object, so the download can compute it as it goes.
+  defp algorithm(%{headers: headers}) do
+    with {algorithm, _checksum} <- Enum.find_value(Checksum.algorithms(), &stored_checksum(headers, &1)) do
+      algorithm
+    end
+  end
+
+  defp download(state, key, algorithm) do
+    Stream.resource(
+      fn -> start_download(state, key, algorithm) end,
+      &next_chunk/1,
+      &stop_download/1
+    )
+  end
+
+  defp start_download(state, key, algorithm) do
+    reader = self()
+    ref = make_ref()
+    # `$callers` lets the download find what the reader was allowed, such as a `Req.Test` stub.
+    callers = [reader | Process.get(:"$callers", [])]
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        Process.put(:"$callers", callers)
+        relay = %Relay{to: reader, ref: ref, monitor: Process.monitor(reader)}
+        headers = if algorithm, do: [@checksum_mode], else: []
+
+        result =
+          case request(state, :get, key, headers: headers, into: relay) do
+            {:ok, %{status: 200, headers: headers}} -> {:ok, headers}
+            {:ok, response} -> {:error, error(response)}
+            {:error, reason} -> {:error, reason}
+          end
+
+        send(reader, {ref, :done, result})
+      end)
+
+    %{pid: pid, monitor: monitor, ref: ref, algorithm: algorithm, checksum: algorithm && Checksum.init(algorithm)}
+  end
+
+  defp next_chunk(%{pid: pid, monitor: monitor, ref: ref} = download) do
+    receive do
+      {^ref, :data, chunk} ->
+        send(pid, {ref, :more})
+        {[chunk], put_chunk(download, chunk)}
+
+      {^ref, :done, result} ->
+        finish_download!(download, result)
+
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        crashed!(reason)
+    end
+  end
+
+  defp put_chunk(%{checksum: nil} = download, _chunk), do: download
+  defp put_chunk(download, chunk), do: %{download | checksum: Checksum.update(download.checksum, chunk)}
+
+  defp finish_download!(download, {:ok, headers}) do
+    verify_download!(download, headers)
+    {:halt, download}
+  end
+
+  defp finish_download!(_download, {:error, error}), do: raise(error)
+
+  # The download process only ends before it's done if it crashed, for example on bad `:req_options`.
+  defp crashed!({%{__exception__: true} = exception, stacktrace}), do: reraise(exception, stacktrace)
+  defp crashed!(reason), do: exit(reason)
+
+  # Compared with the checksum the GetObject returned, which belongs to the content that was downloaded. An object
+  # replaced since the HeadObject may have none for this algorithm, and is then read without a check, like `read/3`.
+  defp verify_download!(%{algorithm: nil}, _headers), do: :ok
+
+  defp verify_download!(%{algorithm: algorithm, checksum: checksum}, headers) do
+    case stored_checksum(headers, algorithm) do
+      {^algorithm, stored} ->
+        if Checksum.final(checksum) != stored, do: raise(%Fil.ChecksumMismatchError{reason: :checksum_mismatch})
+
+      nil ->
+        :ok
+    end
+  end
+
+  # Runs when the stream is done, halted early or raised. Stopping the download closes its connection. A chunk it sent
+  # meanwhile arrives before the `:DOWN` of a new monitor, so it's dropped once that's in.
+  defp stop_download(%{pid: pid, monitor: monitor, ref: ref}) do
+    Process.demonitor(monitor, [:flush])
+    stopped = Process.monitor(pid)
+    Process.exit(pid, :kill)
+
+    receive do
+      {:DOWN, ^stopped, :process, ^pid, _reason} -> flush_download(ref)
+    end
+  end
+
+  defp flush_download(ref) do
+    receive do
+      {^ref, _tag, _value} -> flush_download(ref)
+    after
+      0 -> :ok
     end
   end
 
@@ -356,10 +510,10 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  defp put_checksum(headers, opts, body) do
+  defp checksum_header(opts, body) do
     case Keyword.get(opts, :checksum) do
-      nil -> headers
-      algorithm -> [{checksum_header(algorithm), Checksum.digest(algorithm, body)} | headers]
+      nil -> []
+      algorithm -> [{checksum_header(algorithm), Checksum.digest(algorithm, body)}]
     end
   end
 
@@ -403,6 +557,7 @@ defmodule Fil.Adapter.S3 do
         url: object_url(state, key, params),
         headers: Keyword.get(opts, :headers, []),
         body: Keyword.get(opts, :body),
+        into: Keyword.get(opts, :into),
         aws_sigv4: aws_sigv4(state),
         retry: false,
         raw: true

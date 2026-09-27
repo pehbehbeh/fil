@@ -52,9 +52,11 @@ defmodule Fil.Adapter.Memory do
 
     * `Fil.read/3`: the content from the store. Reading a directory is a `Fil.NotFoundError`. `verify_checksum: true`
       compares the content with the checksum the write stored.
-    * `Fil.write/4`: one `:ets.insert/2`, so writes are atomic. `if_exists: :error` uses `:ets.insert_new/2`, so its
-      check is atomic too. `checksum:` stores the checksum of the content. Writing to `report.txt/x` when `report.txt`
-      is a file writes a second file and leaves the first alone.
+    * `Fil.stream/3`: the content from the store, looked up when the stream is read, in chunks of 64 KiB.
+      `verify_checksum: true` compares it before the first chunk.
+    * `Fil.write/4`: one `:ets.insert/2`, so writes are atomic. A stream is collected first. `if_exists: :error` uses
+      `:ets.insert_new/2`, so its check is atomic too. `checksum:` stores the checksum of the content. Writing to
+      `report.txt/x` when `report.txt` is a file writes a second file and leaves the first alone.
     * `Fil.rm/3`: removing a directory succeeds and removes nothing.
     * `Fil.stat/3`: `:etag` is the MD5 of the content in hex (the ETag S3 returns for a single-part upload), and
       `:content_type` is the `content_type:` the write stored. `checksum:` returns the stored checksum if the write
@@ -79,7 +81,11 @@ defmodule Fil.Adapter.Memory do
 
   alias Fil.Stat
   alias Fil.Support.Checksum
+  alias Fil.Support.Content
   alias Fil.Support.MemoryStores
+
+  # A stream yields the stored binary in pieces of this size. They're sub-binaries, so nothing is copied.
+  @chunk_size 65_536
 
   defstruct [:prefix]
 
@@ -168,9 +174,10 @@ defmodule Fil.Adapter.Memory do
     end
   end
 
+  # The store keeps content in memory anyway, so a stream is collected before it's stored.
   @impl Fil.Adapter
   def write(state, path, content, opts) do
-    content = IO.iodata_to_binary(content)
+    content = Content.to_binary(content)
     entry = {key(state, path), content, Keyword.get(opts, :content_type), now(), checksum(content, opts)}
 
     case Keyword.get(opts, :if_exists, :overwrite) do
@@ -178,6 +185,29 @@ defmodule Fil.Adapter.Memory do
       :error -> if :ets.insert_new(store!(), entry), do: :ok, else: {:error, %Fil.AlreadyExistsError{reason: :eexist}}
     end
   end
+
+  # The file is looked up again when the stream is read, like on the other adapters.
+  @impl Fil.Adapter
+  def stream(state, path, opts) do
+    case :ets.lookup(store!(), key(state, path)) do
+      [{_key, content, _content_type, _mtime, _checksum}] ->
+        {:ok, Stream.flat_map([path], &read_chunks!(state, &1, opts)), byte_size(content)}
+
+      [] ->
+        {:error, %Fil.NotFoundError{reason: :enoent}}
+    end
+  end
+
+  defp read_chunks!(state, path, opts) do
+    case read(state, path, opts) do
+      {:ok, content} -> chunks(content)
+      {:error, error} -> raise error
+    end
+  end
+
+  defp chunks(<<chunk::binary-size(@chunk_size), rest::binary>>), do: [chunk | chunks(rest)]
+  defp chunks(<<>>), do: []
+  defp chunks(rest), do: [rest]
 
   @impl Fil.Adapter
   def rm(state, path, _opts) do
