@@ -731,6 +731,87 @@ defmodule Fil.Adapter.S3Test do
       assert_aborted(requests())
     end
 
+    test "a stream whose size turns out wrong after the first part aborts the upload" do
+      # With `size:`, `Fil` and `Fil.Op` each hold a chunk back until the next one arrives, so part 1 goes out after
+      # seven chunks of 1 MiB.
+      nine_mib = :binary.copy("a", 9 * @mib)
+
+      for {opts, message} <- [
+            {[size: 8 * @mib, checksum: :crc32],
+             "the content has more than 8388608 bytes, but the :size option is 8388608"},
+            {[size: 10 * @mib, checksum: :crc32], "the content has 9437184 bytes, but the :size option is 10485760"},
+            {[size: 6 * 1024 ** 3], "the content has 9437184 bytes, but the :size option is 6442450944"}
+          ] do
+        stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
+
+        assert_raise ArgumentError, message, fn -> Fil.write(parts_disk(), "a.bin", chunked(nine_mib, @mib), opts) end
+
+        requests = requests()
+        assert Enum.map(requests, & &1.method) == ["POST", "PUT", "DELETE"]
+        assert_aborted(requests)
+      end
+    end
+
+    test "only parts are sent again" do
+      stub([response(503, error_xml("SlowDown"))])
+      assert {:error, %Fil.UnavailableError{reason: "SlowDown"}} = Fil.write(parts_disk(), "a.bin", large_stream())
+      assert Enum.map(requests(), & &1.method) == ["POST"]
+
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(500),
+        response(503)
+      ])
+
+      assert {:error, %Fil.UnavailableError{reason: {:http_status, 500}}} =
+               Fil.write(parts_disk(), "a.bin", large_stream())
+
+      assert Enum.map(requests(), & &1.method) == ["POST", "PUT", "PUT", "POST", "DELETE"]
+
+      # A second abort would take the spare response, which is used up by hand afterwards.
+      stub([
+        response(200, initiate_xml("UP")),
+        response(400, error_xml("InvalidArgument")),
+        response(503),
+        response(204)
+      ])
+
+      assert {:error, %Fil.UnknownError{}} = Fil.write(parts_disk(), "a.bin", large_stream())
+      assert Enum.map(requests(), & &1.method) == ["POST", "PUT", "DELETE"]
+
+      assert {:ok, %{status: 204}} = Req.request([url: "https://spare.example.com/"] ++ req_options())
+    end
+
+    test "leaves nothing in the writer's mailbox" do
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(200, completed_xml())
+      ])
+
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", large_stream())
+      assert_empty_mailbox()
+
+      stub([response(200, initiate_xml("UP")), response(400, error_xml("InvalidArgument")), response(204)])
+      assert {:error, _} = Fil.write(parts_disk(), "a.bin", large_stream())
+      assert_empty_mailbox()
+
+      stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
+
+      assert_raise RuntimeError, fn ->
+        Fil.write(parts_disk(), "a.bin", raising_after(@part + 1, fn -> raise "the upload broke off" end))
+      end
+
+      assert_empty_mailbox()
+
+      stub([response(200)])
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked("small", 2))
+      assert_empty_mailbox()
+    end
+
     test "the part size is at least 5 MiB" do
       assert_raise ArgumentError, ~r/invalid value for :part_size option/, fn -> disk(part_size: @part - 1) end
     end
@@ -1496,6 +1577,12 @@ defmodule Fil.Adapter.S3Test do
     |> then(&:binary.copy("a", &1))
     |> chunked(@mib)
     |> Stream.concat(Stream.map([:next], fn _next -> fun.() end))
+  end
+
+  # The stubs message the test each request, so those are taken out first.
+  defp assert_empty_mailbox do
+    _requests = requests()
+    assert {:message_queue_len, 0} = Process.info(self(), :message_queue_len)
   end
 
   defp assert_aborted(requests) do
