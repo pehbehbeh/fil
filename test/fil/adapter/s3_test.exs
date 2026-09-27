@@ -397,6 +397,55 @@ defmodule Fil.Adapter.S3Test do
     end
 
     @tag :tmp_dir
+    test "a file stream a plugin transforms is sent without the file's size", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "a.txt")
+      File.write!(path, "content")
+      stub([response(200)])
+
+      transforming =
+        Fil.attach(disk(), :upcase, fn op, next, _opts ->
+          op
+          |> Fil.Op.update_content(stream: &Stream.map(&1, fn chunk -> String.upcase(chunk) end))
+          |> next.()
+        end)
+
+      assert {:ok, _} = Fil.write(transforming, "a.txt", File.stream!(path, 2))
+
+      # Collected and sent as one binary, signed with its SHA-256.
+      request = request!()
+      assert request.assigns.body == "CONTENT"
+      assert header(request, "x-amz-content-sha256") == sha256("CONTENT")
+    end
+
+    test "a stream from Fil.stream/3 keeps its size through a plugin that leaves it as it is" do
+      :ok = Fil.Adapter.Memory.checkout()
+      source = Fil.disk(adapter: Fil.Adapter.Memory)
+      {:ok, _} = Fil.write(source, "a.txt", "content")
+
+      transform = fn fun ->
+        Fil.attach(source, :transform, fn op, next, _opts ->
+          op
+          |> next.()
+          |> Fil.Op.update_result(stream: fun)
+        end)
+      end
+
+      stub([response(200), response(200)])
+
+      identity = transform.(& &1)
+      assert {:ok, _} = Fil.write(disk(), "same.txt", Fil.stream!(identity, "a.txt"))
+
+      upcased = transform.(&Stream.map(&1, fn chunk -> String.upcase(chunk) end))
+      assert {:ok, _} = Fil.write(disk(), "upcased.txt", Fil.stream!(upcased, "a.txt"))
+
+      assert [same, upcased] = requests()
+      assert {same.assigns.body, header(same, "content-length")} == {"content", "7"}
+      assert header(same, "x-amz-content-sha256") == "UNSIGNED-PAYLOAD"
+      assert upcased.assigns.body == "CONTENT"
+      assert header(upcased, "x-amz-content-sha256") == sha256("CONTENT")
+    end
+
+    @tag :tmp_dir
     test "a stream a plugin put in place of a file stream is sent without the file's size", %{tmp_dir: tmp_dir} do
       path = Path.join(tmp_dir, "a.txt")
       File.write!(path, "content")
