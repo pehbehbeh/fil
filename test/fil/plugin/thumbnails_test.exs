@@ -236,11 +236,15 @@ defmodule Fil.Plugin.ThumbnailsTest do
       refute Fil.exists?(disk, "thumbnails/small/cats/tom.png")
     end
 
-    test "rm_rf deletes the variants under the path", %{disk: disk} do
+    test "rm_rf deletes the variants under the path, or of the file" do
+      disk = disk(variants: [small: [width: 100], webp: [width: 100, format: :webp]])
+      Fil.write!(disk, "cats/tom.png", image(400, 200))
       Fil.write!(disk, "cats/felix.png", image(400, 200))
+      Fil.write!(disk, "dogs/rex.png", image(400, 200))
 
       assert Fil.rm_rf(disk, "cats") == {:ok, 2}
-      assert Fil.ls!(disk, "thumbnails/small") == []
+      assert Fil.rm_rf(disk, "dogs/rex.png") == {:ok, 1}
+      assert Fil.ls!(disk, ".", recursive: true) == []
     end
 
     test "rm and cp of other files leave the variants alone", %{disk: disk} do

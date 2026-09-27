@@ -283,7 +283,9 @@ defmodule Fil.Plugin.Thumbnails do
     opts = validate!(opts)
     op = next.(op)
 
-    if under_prefix?(path, opts[:prefix]), do: op, else: each_variant(op, variants(op.disk, path, opts), &Fil.rm_rf/1)
+    if under_prefix?(path, opts[:prefix]),
+      do: op,
+      else: each_variant(op, variant_trees(op.disk, path, opts), &Fil.rm_rf/1)
   end
 
   def call(%Op{name: :cp, path: path, dest: dest} = op, next, opts) do
@@ -368,13 +370,24 @@ defmodule Fil.Plugin.Thumbnails do
   defp variant_ref(disk, path, name, opts) do
     format = opts[:variants][name][:format]
     extension = if format, do: ".#{format}", else: ""
-    variant_path = Path.join([opts[:prefix], Atom.to_string(name), path])
+    variant_path = variant_path(path, name, opts)
 
     Fil.ref(disk, variant_path <> extension)
   end
 
+  defp variant_path(path, name, opts), do: Path.join([opts[:prefix], Atom.to_string(name), path])
+
   defp variants(disk, path, opts) do
     for {name, _variant} <- opts[:variants], do: variant_ref(disk, path, name, opts)
+  end
+
+  # What `rm_rf` deletes: the directory of each variant at `path`, which has no format's extension, and the variant
+  # itself when `path` is an image.
+  defp variant_trees(disk, path, opts) do
+    directories = for {name, _variant} <- opts[:variants], do: Fil.ref(disk, variant_path(path, name, opts))
+    files = if image?(path, opts), do: variants(disk, path, opts), else: []
+
+    Enum.uniq(directories ++ files)
   end
 
   defp pairs(disk, path, dest, opts) do
