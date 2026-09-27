@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `{:attachment, filename}`), on S3 as `response-content-disposition` and on Local and Memory through `Fil.Plug`.
 - `:public_endpoint` on `Fil.Adapter.S3` builds public and signed URLs for a host other than the one the disk sends its
   requests to, such as `localhost` for a container the application reaches by its service name.
+- `query:` on `Fil.signed_url/3` signs extra query parameters into the URL, e.g. for a page that reads them.
+
+### Changed
+
+- `Fil.Plug` refuses a signed URL with a query parameter that wasn't signed, as S3 does. URLs signed by 0.1 still work.
 
 ### Fixed
 

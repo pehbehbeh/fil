@@ -105,7 +105,7 @@ defmodule Fil.Adapter.S3 do
   | `rename/4` | CopyObject, then DeleteObject |
   | `rm_rf/3` | ListObjectsV2, then one DeleteObject per key |
   | `url/2` | the object URL, without a signature (works for public objects only) |
-  | `signed_url/3` | a presigned GET or PUT URL (`response-content-disposition` for `disposition:`) |
+  | `signed_url/3` | a presigned GET or PUT URL, `response-content-disposition` for `disposition:`, and `query:` |
 
   ## Errors
 
@@ -431,13 +431,14 @@ defmodule Fil.Adapter.S3 do
 
   # `Req.Utils.aws_sigv4_url/1` is private Req API. Req isn't pinned for it: if a release drops it, presigning crashes.
   # It has no option for a session token, but it signs any extra query parameters, so the token goes in that way, and so
-  # does the `response-content-disposition` S3 answers the download with.
+  # do the `response-content-disposition` S3 answers the download with and the caller's `:query`.
   defp presign(state, key, opts) do
     query =
       Enum.reject(
         [
           {"X-Amz-Security-Token", state.session_token},
           {"response-content-disposition", Keyword.get(opts, :disposition)}
+          | Keyword.get(opts, :query, [])
         ],
         &is_nil(elem(&1, 1))
       )

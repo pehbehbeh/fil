@@ -171,8 +171,8 @@ if Code.ensure_loaded?(Plug) do
     defp authorize(_conn, _method, nil, _public?), do: {:error, :signature_required}
 
     defp authorize(conn, method, secret, _public?) do
-      with :ok <- Fil.Plugin.URL.verify(secret, method, conn.request_path, conn.query_params) do
-        # `verify/4` accepts only a string disposition, or none.
+      with :ok <- Fil.Plugin.URL.verify(secret, method, conn.request_path, conn.query_string) do
+        # A verified query has at most one `disposition`, and it's a string.
         case conn.query_params["disposition"] do
           nil -> {:ok, []}
           disposition -> {:ok, [{"content-disposition", disposition}]}

@@ -41,9 +41,9 @@ defmodule Fil.Plugin.URL do
   runs through your application, and files are read into memory whole.
 
   A signed URL is `:base_url`, the path, and the query parameters `expires` (Unix seconds), `disposition` (the
-  `content-disposition` header value, only with `disposition:`) and `signature`, an HMAC-SHA256 over the method, the URL
-  path, the expiry and the disposition. `expires_in:` is capped at 7 days, as on S3, so a URL that works on one disk
-  works on every disk.
+  `content-disposition` header value, only with `disposition:`), those of `query:`, and `signature`: an HMAC-SHA256 over
+  the method, the URL path, the expiry and every other parameter. A request with a parameter that wasn't signed is
+  refused, as on S3. `expires_in:` is capped at 7 days, as on S3, so a URL that works on one disk works on every disk.
 
   ## Options
 
@@ -83,30 +83,36 @@ defmodule Fil.Plugin.URL do
     expires = System.os_time(:second) + Keyword.get(opts, :expires_in, 900)
     base_url = String.trim_trailing(base_url, "/")
     url_path = (URI.parse(base_url).path || "") <> "/" <> URL.encode_path(path)
-    disposition = Keyword.get(opts, :disposition)
-    signature = signature(secret, method, url_path, expires, disposition)
-
-    query =
-      Enum.reject([{"expires", expires}, {"disposition", disposition}, {"signature", signature}], &is_nil(elem(&1, 1)))
+    params = signed_params(opts)
+    signature = signature(secret, method, url_path, expires, params)
+    query = [{"expires", expires} | params] ++ [{"signature", signature}]
 
     base_url <> "/" <> URL.encode_path(path) <> URL.encode_query(query)
   end
 
   @doc false
-  # Verifies a request against a signed URL: the method, the request path as it was received and the query parameters.
-  @spec verify(String.t(), :get | :put, String.t(), map()) :: :ok | {:error, :expired | :invalid_signature}
-  def verify(secret, method, request_path, params) do
-    with {:ok, expires} <- expires(params),
-         {:ok, signature} when is_binary(signature) <- Map.fetch(params, "signature"),
-         disposition when is_binary(disposition) or is_nil(disposition) <- params["disposition"],
-         expected = signature(secret, method, request_path, expires, disposition),
+  # Verifies a request against a signed URL: the method, the request path and the query string as they were received.
+  # The query string is decoded here rather than taken from `conn.query_params`, which keeps only the last of repeated
+  # parameters.
+  @spec verify(String.t(), :get | :put, String.t(), String.t()) :: :ok | {:error, :expired | :invalid_signature}
+  def verify(secret, method, request_path, query_string) do
+    query =
+      query_string
+      |> URI.query_decoder()
+      |> Enum.to_list()
+
+    params = Enum.reject(query, fn {name, _value} -> name in ["expires", "signature"] end)
+
+    with {:ok, expires} <- expires(query),
+         {:ok, signature} <- single(query, "signature"),
+         expected = signature(secret, method, request_path, expires, params),
          true <- :crypto.hash_equals(expected, signature) do
       if expires >= System.os_time(:second), do: :ok, else: {:error, :expired}
     else
       _invalid -> {:error, :invalid_signature}
     end
   rescue
-    # `:crypto.hash_equals/2` raises on binaries of different sizes.
+    # `:crypto.hash_equals/2` raises on binaries of different sizes, `URI.query_decoder/1` on broken percent-encoding.
     ArgumentError -> {:error, :invalid_signature}
   end
 
@@ -146,22 +152,50 @@ defmodule Fil.Plugin.URL do
     end
   end
 
-  defp expires(%{"expires" => expires}) when is_binary(expires) do
-    case Integer.parse(expires) do
-      {expires, ""} -> {:ok, expires}
-      _other -> :error
+  defp expires(query) do
+    with {:ok, expires} <- single(query, "expires"),
+         {expires, ""} <- Integer.parse(expires) do
+      {:ok, expires}
+    else
+      _invalid -> :error
     end
   end
 
-  defp expires(_params), do: :error
+  # The value of a parameter that has to be in the query exactly once.
+  defp single(query, name) do
+    case for({^name, value} <- query, do: value) do
+      [value] -> {:ok, value}
+      _missing_or_repeated -> :error
+    end
+  end
 
-  # URLs without a disposition sign the same payload as before it existed, so they stay valid.
-  defp signature(secret, method, url_path, expires, disposition) do
-    payload = Enum.join([http_method(method), url_path, expires | List.wrap(disposition)], "\n")
+  # The parameters besides `expires` and `signature`, in the order they go into the URL.
+  defp signed_params(opts) do
+    disposition = for disposition <- List.wrap(opts[:disposition]), do: {"disposition", disposition}
+
+    disposition ++ Keyword.get(opts, :query, [])
+  end
+
+  # Without other parameters, the payload is the method, the path and the expiry, as in 0.1, so URLs signed then stay
+  # valid. Other parameters are added as one sorted, percent-encoded line, so their order in the URL doesn't matter
+  # and no value can contain the separator.
+  defp signature(secret, method, url_path, expires, params) do
+    payload = Enum.join([http_method(method), url_path, expires | canonical_query(params)], "\n")
 
     :hmac
     |> :crypto.mac(:sha256, secret, payload)
     |> Base.url_encode64(padding: false)
+  end
+
+  defp canonical_query([]), do: []
+
+  defp canonical_query(params) do
+    line =
+      params
+      |> Enum.sort()
+      |> Enum.map_join("&", fn {name, value} -> URL.encode(name) <> "=" <> URL.encode(value) end)
+
+    [line]
   end
 
   # The method as HTTP sends it, e.g. `"GET"`.

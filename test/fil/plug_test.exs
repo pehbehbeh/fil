@@ -128,6 +128,18 @@ defmodule Fil.PlugTest do
         assert request(:get, String.replace(url, "disposition=inline", "disposition[]=inline"), disk).status == 403
       end
 
+      test "extra query parameters are signed", %{disk: disk} do
+        {:ok, _} = Fil.write(disk, "index.html", "<html>")
+        {:ok, plain} = Fil.signed_url(disk, "index.html")
+        {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42"}])
+
+        assert request(:get, url, disk).status == 200
+        assert request(:get, String.replace(url, "trackingInfo=7-42", "trackingInfo=8-42"), disk).status == 403
+        assert request(:get, String.replace(url, "&signature", "&trackingInfo=7-42&signature"), disk).status == 403
+        assert request(:get, String.replace(plain, "&signature", "&v=2&signature"), disk).status == 403
+        assert request(:get, String.replace(plain, "expires=", "expires=1&expires="), disk).status == 403
+      end
+
       test "a missing file is a 404", %{disk: disk} do
         {:ok, url} = Fil.signed_url(disk, "nope.txt")
 

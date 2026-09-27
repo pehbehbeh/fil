@@ -500,6 +500,23 @@ defmodule Fil.AdapterCase do
         end
       end
 
+      test "signs extra query parameters into URLs", %{disk: disk} do
+        assert {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}])
+        assert {:ok, put_url} = Fil.signed_url(disk, "index.html", method: :put, query: [{"trackingInfo", "7"}])
+
+        assert url
+               |> URI.parse()
+               |> Map.fetch!(:query)
+               |> URI.decode_query()
+               |> Map.get("trackingInfo") == "7-42-a b"
+
+        assert put_url =~ "trackingInfo=7"
+
+        for name <- ["expires", "Signature", "disposition", "X-Amz-Date", "response-content-type"] do
+          assert_raise ArgumentError, ~r/can't set/, fn -> Fil.signed_url(disk, "index.html", query: [{name, "x"}]) end
+        end
+      end
+
       test "signed URLs expire after 7 days at most", %{disk: disk} do
         assert {:ok, _} = Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60)
 

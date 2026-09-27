@@ -83,6 +83,14 @@ defmodule Fil.Adapter.S3IntegrationTest do
              ]
     end
 
+    test "returns a URL with signed query parameters that works", %{disk: disk} do
+      Fil.write!(disk, "index.html", "<html>")
+
+      assert {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}])
+      assert {:ok, %{status: 200, body: "<html>"}} = get(url)
+      assert {:ok, %{status: 403}} = get(String.replace(url, "trackingInfo=7", "trackingInfo=8"))
+    end
+
     test "presigns an upload", %{disk: disk} do
       assert {:ok, url} = Fil.signed_url(disk, "uploaded.txt", method: :put, expires_in: 60)
       assert {:ok, %{status: status}} = put(url, "Uploaded")

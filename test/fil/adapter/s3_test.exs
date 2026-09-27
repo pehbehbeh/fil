@@ -645,6 +645,15 @@ defmodule Fil.Adapter.S3Test do
       assert requests() == []
     end
 
+    test "signs extra query parameters" do
+      assert {:ok, plain} = Fil.signed_url(disk(), "index.html")
+      assert {:ok, tracked} = Fil.signed_url(disk(), "index.html", query: [{"trackingInfo", "7-42-a b"}])
+
+      assert query(tracked)["trackingInfo"] == "7-42-a b"
+      assert URI.parse(tracked).query =~ "&trackingInfo=7-42-a%20b&"
+      refute signature(plain) == signature(tracked)
+    end
+
     test "encodes a filename that isn't ASCII" do
       assert {:ok, url} = Fil.signed_url(disk(), "7f3a.pdf", disposition: {:attachment, ~s(Rechnung "März".pdf)})
 

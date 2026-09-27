@@ -125,6 +125,16 @@ defmodule Fil do
                          under another name. Names that aren't plain ASCII work too. Without it, the download has the
                          disposition stored with the file, if any.
                          """
+                       ],
+                       query: [
+                         type: {:list, {:tuple, [:string, :string]}},
+                         default: [],
+                         doc: """
+                         Extra query parameters, e.g. `[{"trackingInfo", "42"}]`, for a page that reads them from its
+                         own URL. They're signed with the URL, so they can't be changed or added afterwards. Names the
+                         URL uses itself (`expires`, `disposition`, `signature`, and `X-Amz-*` or `response-*` on S3)
+                         raise.
+                         """
                        ]
                      )
 
@@ -679,6 +689,8 @@ defmodule Fil do
   def signed_url(ref, opts) when is_list(opts) do
     opts = validate!(opts, @signed_url_schema)
 
+    check_query!(opts[:query])
+
     run(ref, :signed_url, put_disposition(opts, ref))
   end
 
@@ -871,6 +883,20 @@ defmodule Fil do
       {:ok, validated} -> validated
       {:error, error} -> raise ArgumentError, Exception.message(error)
     end
+  end
+
+  # Parameters that signed URLs already use on some disk. They're rejected on every disk, so a URL that works on one
+  # works on all.
+  defp check_query!(query) do
+    for {name, _value} <- query, reserved_query_param?(String.downcase(name)) do
+      raise ArgumentError, "the :query option can't set #{inspect(name)}, signed URLs use it themselves"
+    end
+
+    :ok
+  end
+
+  defp reserved_query_param?(name) do
+    name in ["expires", "disposition", "signature"] or String.starts_with?(name, ["x-amz-", "response-"])
   end
 
   # Adapters get `:disposition` as the header value, built here so it's the same on every disk.
