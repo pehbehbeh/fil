@@ -170,14 +170,21 @@ sees every read and write.
 A stream is an enumerable of binaries. What a plugin can rely on:
 
   * chunks come in order, and none is empty
-  * their size depends on where the stream comes from (the caller's stream, an upload, the adapter, the network), so a
-    chunk isn't a line, a record or a multiple of a block size. A transform that needs whole lines or blocks buffers
-    them itself
+  * their size depends on where the stream comes from (the caller's stream, an upload, the adapter, the network) and
+    says nothing about the content: a chunk isn't a line, a record or a multiple of a block size. A transform that
+    needs whole lines or blocks buffers them itself
   * a transform returns iodata of any size, including none, so it may change the chunk boundaries. `Fil` drops empty
-    chunks before the adapter or the caller sees them
-  * the functions run lazily: on a write when the adapter reads the content, on a read when the caller reads the
-    stream. A stream from `Fil.stream/3` can be read more than once, and then the functions run again from the start
-  * an exception in a transform propagates to whoever reads the stream, and a write that raises leaves nothing behind
+    chunks before the adapter or the caller sees them. Return output as it's ready, in pieces, rather than holding it
+    back, so memory use doesn't grow with the file
+  * the functions run lazily, in the process that reads the stream: on a write the one that called `Fil.write/4`,
+    on a read whichever process enumerates the stream from `Fil.stream/3`, which may not be the one that called it.
+    A resource that belongs to a process, such as a `:zlib` port, is opened and closed while the stream is read, not
+    in the callback
+  * a stream from `Fil.stream/3` can be read more than once, and the functions then run again from the start. State
+    for one pass goes into the start function of `Stream.transform/5`, not into the callback
+  * errors are `Fil`'s error structs, such as `Fil.ChecksumMismatchError` for content that fails a check. On whole
+    content, a transform that raises one turns the read into `{:error, error}`. On a stream, it's raised to whoever
+    reads the stream, with the operation, the path and the disk filled in. A write that raises leaves nothing behind
 
 `chunk:` suits transforms that treat every chunk on its own. A transform that keeps state from one chunk to the next,
 or adds something after the last one (compression, encryption), takes the whole stream with `stream:` and builds a new
@@ -209,9 +216,9 @@ end
 `gunzip/1` is the same with `inflateInit/2` and `inflate/2`. Whole content goes to `stream:` as a stream of one chunk
 when there's no `binary:`, so one function can cover both.
 
-A transform can change the size of the content, so transforming a stream drops the `:size` option of the write. On
-S3, a stream without a size is collected into memory before it's sent. A plugin that knows the new size can set it
-again with `Fil.Op.put_option/3`.
+A transform can change the size of the content, so `Fil.Op.update_content/2` drops the `:size` option of the write.
+On S3, a stream without a size is collected into memory before it's sent. A plugin that knows the new size declares
+it again with `Fil.Op.put_option(op, :size, size)`.
 
 ## Paths
 

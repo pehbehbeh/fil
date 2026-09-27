@@ -17,8 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `checksum:`, into memory first.
   ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
 - `Fil.Op.update_content/2` and `Fil.Op.update_result/2` transform streams lazily with `chunk:`, and take a `stream:`
-  function for transforms that keep state across chunks. `op.streaming` marks a read from `Fil.stream/3`. The plugins
-  guide describes what a plugin can rely on.
+  function for transforms that keep state across chunks. `op.streaming` marks a read from `Fil.stream/3`. A read
+  transform that raises one of `Fil`'s errors turns the read into that error. The plugins guide describes what a
+  plugin can rely on.
   ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
 - `stream/3` is an optional adapter callback. Adapters without it stream the result of `read/3` as one chunk.
   ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
