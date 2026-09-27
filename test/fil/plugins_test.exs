@@ -274,11 +274,19 @@ defmodule Fil.PluginsTest do
   describe "Fil.Op content" do
     test "update_content and update_result transform iodata", %{disk: disk} do
       disk =
-        Fil.attach(disk, :rot, fn op, next, _opts ->
-          op
-          |> Op.update_content(iodata: &:zlib.gzip/1)
-          |> next.()
-          |> Op.update_result(iodata: &:zlib.gunzip/1)
+        Fil.attach(disk, :rot, fn
+          %Op{name: :write} = op, next, _opts ->
+            op
+            |> Op.update_content(iodata: &:zlib.gzip/1)
+            |> next.()
+
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.update_result(iodata: &:zlib.gunzip/1)
+
+          op, next, _opts ->
+            next.(op)
         end)
 
       assert {:ok, _} = Fil.write(disk, "a.txt", ["Hello", [", ", "World"]])
@@ -361,10 +369,14 @@ defmodule Fil.PluginsTest do
       tampered = fn _content -> raise %Fil.ChecksumMismatchError{reason: :tampered} end
 
       checking =
-        Fil.attach(disk, :check, fn op, next, _opts ->
-          op
-          |> next.()
-          |> Op.update_result(iodata: tampered, stream: &Stream.map(&1, tampered))
+        Fil.attach(disk, :check, fn
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.update_result(iodata: tampered, stream: &Stream.map(&1, tampered))
+
+          op, next, _opts ->
+            next.(op)
         end)
 
       {:ok, _} = Fil.write(checking, "a.txt", "content")
@@ -391,10 +403,14 @@ defmodule Fil.PluginsTest do
 
     test "other exceptions in a read transform propagate", %{disk: disk} do
       failing =
-        Fil.attach(disk, :fail, fn op, next, _opts ->
-          op
-          |> next.()
-          |> Op.update_result(iodata: fn _content -> raise "a bug" end)
+        Fil.attach(disk, :fail, fn
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.update_result(iodata: fn _content -> raise "a bug" end)
+
+          op, next, _opts ->
+            next.(op)
         end)
 
       {:ok, _} = Fil.write(failing, "a.txt", "content")

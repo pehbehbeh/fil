@@ -346,16 +346,24 @@ defmodule Fil.AdapterCase do
         test = self()
 
         shouting =
-          Fil.attach(disk, :shout, fn op, next, _opts ->
-            op
-            |> Fil.Op.update_content(
-              chunk: fn chunk ->
-                send(test, {:chunk, chunk})
-                String.upcase(chunk)
-              end
-            )
-            |> next.()
-            |> Fil.Op.update_result(chunk: &String.downcase/1)
+          Fil.attach(disk, :shout, fn
+            %Fil.Op{name: :write} = op, next, _opts ->
+              op
+              |> Fil.Op.update_content(
+                chunk: fn chunk ->
+                  send(test, {:chunk, chunk})
+                  String.upcase(chunk)
+                end
+              )
+              |> next.()
+
+            %Fil.Op{name: :read} = op, next, _opts ->
+              op
+              |> next.()
+              |> Fil.Op.update_result(chunk: &String.downcase/1)
+
+            op, next, _opts ->
+              next.(op)
           end)
 
         # The transform drops `:size`, and a size that no longer holds wouldn't matter.
@@ -374,11 +382,19 @@ defmodule Fil.AdapterCase do
 
       test "plugins keep state across the chunks of a stream", %{disk: disk} do
         compressing =
-          Fil.attach(disk, :gzip, fn op, next, _opts ->
-            op
-            |> Fil.Op.update_content(iodata: &:zlib.gzip/1, stream: &gzip/1)
-            |> next.()
-            |> Fil.Op.update_result(iodata: &:zlib.gunzip/1, stream: &gunzip/1)
+          Fil.attach(disk, :gzip, fn
+            %Fil.Op{name: :write} = op, next, _opts ->
+              op
+              |> Fil.Op.update_content(iodata: &:zlib.gzip/1, stream: &gzip/1)
+              |> next.()
+
+            %Fil.Op{name: :read} = op, next, _opts ->
+              op
+              |> next.()
+              |> Fil.Op.update_result(iodata: &:zlib.gunzip/1, stream: &gunzip/1)
+
+            op, next, _opts ->
+              next.(op)
           end)
 
         content = String.duplicate("all work and no play makes Jack a dull boy\n", 5_000)

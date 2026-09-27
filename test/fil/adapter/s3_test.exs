@@ -388,10 +388,14 @@ defmodule Fil.Adapter.S3Test do
       {:ok, _} = Fil.write(memory, "a.txt", "Hello")
 
       shouting =
-        Fil.attach(memory, :shout, fn op, next, _opts ->
-          op
-          |> next.()
-          |> Fil.Op.update_result(chunk: &String.upcase/1)
+        Fil.attach(memory, :shout, fn
+          %Fil.Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Fil.Op.update_result(chunk: &String.upcase/1)
+
+          op, next, _opts ->
+            next.(op)
         end)
 
       assert {:ok, _} = Fil.cp(shouting, "a.txt", Fil.ref(disk(), "b.txt"))

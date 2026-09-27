@@ -200,12 +200,19 @@ or adds something after the last one (compression, encryption), takes the whole 
 one with `Stream.transform/5`, whose start function runs each time the stream is read:
 
 ```elixir
-def call(%Fil.Op{} = op, next, _opts) do
+def call(%Fil.Op{name: :write} = op, next, _opts) do
   op
   |> Fil.Op.update_content(iodata: &:zlib.gzip/1, stream: &gzip/1)
   |> next.()
+end
+
+def call(%Fil.Op{name: :read} = op, next, _opts) do
+  op
+  |> next.()
   |> Fil.Op.update_result(iodata: &:zlib.gunzip/1, stream: &gunzip/1)
 end
+
+def call(op, next, _opts), do: next.(op)
 
 defp gzip(chunks) do
   Stream.transform(
