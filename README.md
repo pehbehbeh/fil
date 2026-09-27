@@ -7,6 +7,21 @@
 
 `Fil` is a pluggable file storage abstraction for Elixir.
 
+```elixir
+Mix.install([
+  {:fil, "~> 0.1"}
+])
+
+disk = Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
+
+disk
+|> Fil.write!("hello.txt", "World")
+|> Fil.read!()
+#=> "World"
+```
+
+With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes to S3.
+
 ## Table of Contents
 
 - [Features and goals](#features-and-goals)
