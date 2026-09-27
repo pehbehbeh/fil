@@ -91,6 +91,10 @@ disk = Fil.disk(adapter: Fil.Adapter.Local, root: "priv/storage") |> MyApp.Log.a
 
 `Fil.Plugin.ContentType` is a complete example of a plugin module.
 
+To log or measure the operations of every disk, attach a handler to the events in `Fil.Telemetry` instead of a
+plugin to each disk. `Fil.Telemetry.attach_default_logger/1` logs them. A plugin that emits events of its own uses a
+prefix of its own, because names under `[:fil, ...]` are kept for `Fil`.
+
 ## Order
 
 The first plugin attached is the outermost one. It sees an operation first on the way in and last on the way back:
@@ -251,4 +255,5 @@ before the adapter sees it, so a rewritten path can't escape the disk root eithe
 
 A `Fil.cp/3` or `Fil.rename/3` within one disk is a single `:cp` or `:rename` operation, with the destination in
 `op.dest`. Across two disks, `Fil` streams from the source disk and writes the stream to the destination disk (and
-deletes the source after a rename), so each disk's plugins see ordinary reads, writes and deletes.
+deletes the source after a rename), so each disk's plugins see ordinary reads, writes and deletes. In
+`Fil.Telemetry`, those operations are nested in a `:cp` or `:rename` event.

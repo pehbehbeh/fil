@@ -7,8 +7,9 @@ defmodule Fil.Telemetry do
 
       :telemetry.attach("my-app-fil", [:fil, :op, :stop], &MyApp.Storage.handle_event/4, nil)
 
-  The events are always emitted. Handlers run synchronously in the process that runs the operation, so keep them
-  short.
+  The events are always emitted, and add well under a microsecond to an operation when no handler is attached.
+  Handlers run synchronously in the process that runs the operation, so keep them short. `:telemetry` detaches a
+  handler that raises, so the events suit metrics, logs and traces, but not an audit log that must be complete.
 
   ## Operation events
 
@@ -92,6 +93,68 @@ defmodule Fil.Telemetry do
 
   When a stream goes into `Fil.write/4` and the source fails, the write's `:stop` has the source's error, whose `:op`
   and `:path` name the source.
+
+  ## Metrics
+
+  With [Telemetry.Metrics](https://hexdocs.pm/telemetry_metrics):
+
+      [
+        summary("fil.op.stop.duration", unit: {:native, :millisecond}, tags: [:op, :adapter, :streaming]),
+        sum("fil.op.stop.bytes", tags: [:op, :adapter]),
+        counter("fil.op.errors",
+          event_name: [:fil, :op, :stop],
+          keep: &(&1.error != nil),
+          tags: [:op, :adapter, :error],
+          tag_values: &%{&1 | error: inspect(&1.error.__struct__)}
+        ),
+        counter("fil.op.exception.duration", tags: [:op, :adapter]),
+        summary("fil.stream.stop.duration", unit: {:native, :millisecond}, tags: [:adapter, :halted]),
+        sum("fil.stream.stop.bytes", tags: [:adapter])
+      ]
+
+  Disks have no names. To tell two disks with the same adapter apart, map each disk to a name of your own in
+  `:tag_values`:
+
+      summary("fil.op.stop.duration",
+        unit: {:native, :millisecond},
+        tags: [:op, :disk],
+        tag_values: &%{&1 | disk: MyApp.Storage.name(&1.disk)}
+      )
+
+  Never use `:path` as a tag: there are as many values as there are files.
+
+  ## Logging
+
+  `attach_default_logger/1` logs every operation and every read of a stream, with the duration, the bytes and the
+  error. For logs of your own, attach a handler to the events above.
+
+  ## HTTP requests
+
+  `Fil.Adapter.S3` sends its requests with [Req](https://hexdocs.pm/req) and [Finch](https://hexdocs.pm/finch),
+  which emits `[:finch, :request, ...]` events of its own. Most requests are sent from the process that runs the
+  operation, so they fall inside its span. The download of a stream from `Fil.stream/3` and the requests that create
+  and abort an upload in parts run in processes of their own. Those processes put the process that runs the operation
+  first in `$callers`, so a Finch handler finds it with `hd(Process.get(:"$callers", []))`.
+
+  To tell the requests of one disk from another's, give each disk its own `:finch_private` in `:req_options`, which
+  Finch passes on in its events as `request.private`:
+
+      Fil.disk(adapter: Fil.Adapter.S3, bucket: "uploads", req_options: [finch_private: %{disk: :uploads}])
+
+  `Fil.Plug` has no events of its own. Its calls to `Fil` emit the events above, and `Plug.Telemetry` or the endpoint
+  events of Phoenix time the requests.
+
+  ## Privacy
+
+  `:disk`, and the `:disk` of an error, hold the adapter's state, which may contain credentials. `inspect` leaves it
+  out (see `Fil.Disk`), so logging them is safe, but a handler that exports the raw terms (to a tracing backend, say)
+  exports the credentials too. Paths can be personal data. Content, results and options are never in the events (see
+  above).
+
+  ## Event names
+
+  `[:fil, :op, ...]` and `[:fil, :stream, ...]` are the events `Fil` emits so far. Other names under `[:fil, ...]` are
+  kept for `Fil` and its own plugins, so a plugin of your own emits its events under a prefix of its own.
   """
 
   require Logger

@@ -167,6 +167,10 @@ defmodule Fil.Adapter.S3 do
   lifecycle rule that aborts incomplete multipart uploads (`AbortIncompleteMultipartUpload`, for example after one day).
   It also aborts uploads that are still running after that time.
 
+  For `Fil.Telemetry`, an upload in parts is one `:write`, with no events for the parts. Its requests are Finch events,
+  and the creation and the abort run in a process of their own (see
+  [HTTP requests in `Fil.Telemetry`](Fil.Telemetry.html#module-http-requests)).
+
   ### Checksums
 
   `checksum: :crc32` covers the whole file, however it's uploaded. Each part is sent with its CRC32, and the completion

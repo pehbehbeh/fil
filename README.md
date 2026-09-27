@@ -57,6 +57,8 @@ With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes t
   verifies checksums.
 - **Errors you can act on.** Each error, such as `Fil.NotFoundError` or `Fil.UnavailableError`, says what to do next
   and is the same on every adapter.
+- **Telemetry.** Every operation emits [Telemetry](https://hexdocs.pm/telemetry) events with its duration, bytes and
+  error, for metrics, logs and traces (see `Fil.Telemetry`).
 
 ## Concepts
 
