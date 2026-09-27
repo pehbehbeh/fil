@@ -1,8 +1,9 @@
 defmodule Fil.Adapter.S3Test do
   alias Fil.Adapter.S3
-  alias Plug.Conn
 
   use ExUnit.Case, async: true
+
+  import Plug.Conn
 
   setup {Req.Test, :verify_on_exit!}
 
@@ -56,7 +57,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk(), "a.txt")
 
-      assert Conn.request_url(request!()) == "https://bucket.s3.eu-central-1.amazonaws.com/a.txt"
+      assert request_url(request!()) == "https://bucket.s3.eu-central-1.amazonaws.com/a.txt"
     end
 
     test "path style on request" do
@@ -66,7 +67,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk, "a.txt")
 
-      assert Conn.request_url(request!()) == "https://s3.eu-central-1.amazonaws.com/bucket/a.txt"
+      assert request_url(request!()) == "https://s3.eu-central-1.amazonaws.com/bucket/a.txt"
     end
 
     test "a custom endpoint" do
@@ -76,7 +77,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk, "a.txt")
 
-      assert Conn.request_url(request!()) == "http://localhost:9000/bucket/a.txt"
+      assert request_url(request!()) == "http://localhost:9000/bucket/a.txt"
     end
 
     test "an endpoint with a base path" do
@@ -86,7 +87,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk, "a.txt")
 
-      assert Conn.request_url(request!()) == "https://s3.example.com/storage/bucket/a.txt"
+      assert request_url(request!()) == "https://s3.example.com/storage/bucket/a.txt"
     end
 
     test "encodes each path segment" do
@@ -94,7 +95,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk(), "a b/ünï/#hash.txt")
 
-      assert Conn.request_url(request!()) ==
+      assert request_url(request!()) ==
                "https://bucket.s3.eu-central-1.amazonaws.com/a%20b/%C3%BCn%C3%AF/%23hash.txt"
     end
   end
@@ -341,7 +342,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert ref.path == "copies/a.txt"
       assert request.method == "PUT"
-      assert Conn.request_url(request) == "https://bucket.s3.eu-central-1.amazonaws.com/copies/a.txt"
+      assert request_url(request) == "https://bucket.s3.eu-central-1.amazonaws.com/copies/a.txt"
       assert header(request, "x-amz-copy-source") == "/bucket/a%20b.txt"
     end
 
@@ -363,7 +364,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:error, %Fil.NotFoundError{reason: {:http_status, 404}}} = Fil.cp(disk(), "a.txt", "b.txt")
       assert [%{method: "PUT"}, %{method: "HEAD"} = head] = requests()
-      assert Conn.request_url(head) == "https://bucket.s3.eu-central-1.amazonaws.com/a.txt"
+      assert request_url(head) == "https://bucket.s3.eu-central-1.amazonaws.com/a.txt"
 
       stub([response(400, error_xml("InvalidArgument")), response(200)])
 
@@ -691,7 +692,7 @@ defmodule Fil.Adapter.S3Test do
       stub([response(200, "content")])
 
       assert Fil.read(disk, "cv.pdf") == {:ok, "content"}
-      assert "http://s3mock:9090/bucket/cv.pdf" <> _ = Conn.request_url(request!())
+      assert "http://s3mock:9090/bucket/cv.pdf" <> _ = request_url(request!())
     end
 
     test "follows path_style" do
@@ -939,8 +940,9 @@ defmodule Fil.Adapter.S3Test do
   ##
   ## Every disk in this module sends its requests to the `Req.Test` stub named after the module, so no request reaches
   ## the network. `stub/1` expects one request per response, in order, and `Req.Test.verify_on_exit!/1` checks that
-  ## every response was used. Req runs the stub in the test process, after all its own request steps, so it messages the
-  ## test each `Plug.Conn` it gets (the body read into `conn.assigns.body`), and the tests check what the adapter sent.
+  ## every response was used. Req runs the stub after all its own request steps, and the stub messages the test each
+  ## `Plug.Conn` it gets (the body read into `conn.assigns.body`), so the tests check what the adapter sent. It sends to
+  ## the pid `stub/1` bound, not `self()`, so a request from another process still reaches the test.
   ## ------------------------------------------------------------------
 
   defp req_options, do: [plug: {Req.Test, __MODULE__}]
@@ -949,13 +951,15 @@ defmodule Fil.Adapter.S3Test do
   defp stub(responses) do
     Req.Test.verify!(__MODULE__)
     _previous = requests()
-    Enum.each(responses, &Req.Test.expect(__MODULE__, fn conn -> respond(conn, &1) end))
+    test = self()
+
+    for response <- responses, do: Req.Test.expect(__MODULE__, &respond(&1, response, test))
   end
 
-  defp respond(conn, response) do
-    {:ok, body, conn} = Conn.read_body(conn)
-    request = Conn.assign(conn, :body, body)
-    send(self(), {__MODULE__, request})
+  defp respond(conn, response, test) do
+    {:ok, body, conn} = read_body(conn)
+    request = assign(conn, :body, body)
+    send(test, {__MODULE__, request})
     reply(conn, response)
   end
 
@@ -963,8 +967,8 @@ defmodule Fil.Adapter.S3Test do
 
   defp reply(conn, %{status: status, body: body, headers: headers}) do
     conn
-    |> Conn.merge_resp_headers(headers)
-    |> Conn.send_resp(status, body)
+    |> merge_resp_headers(headers)
+    |> send_resp(status, body)
   end
 
   defp response(status, body \\ "", headers \\ []), do: %{status: status, body: body, headers: headers}
@@ -987,7 +991,7 @@ defmodule Fil.Adapter.S3Test do
 
   defp header(request, name) do
     request
-    |> Conn.get_req_header(name)
+    |> get_req_header(name)
     |> List.first()
   end
 end

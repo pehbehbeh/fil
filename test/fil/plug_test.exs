@@ -279,6 +279,8 @@ defmodule Fil.PlugTest do
 
   test "proxies an S3 disk" do
     # A stubbed S3: HeadObject and GetObject answer from the test, PutObject records the body.
+    test = self()
+
     Req.Test.stub(__MODULE__, fn conn ->
       case conn.method do
         "HEAD" ->
@@ -291,7 +293,7 @@ defmodule Fil.PlugTest do
 
         "PUT" ->
           {:ok, body, conn} = read_body(conn)
-          send(self(), {:put, request_url(conn), body})
+          send(test, {:put, request_url(conn), body})
           send_resp(conn, 200, "")
       end
     end)
