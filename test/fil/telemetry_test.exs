@@ -212,6 +212,27 @@ defmodule Fil.TelemetryTest do
       :ok
     end
 
+    test "a source that changes size is a conflict on the write's stop, not a stream exception", %{disk: disk} do
+      other = Fil.disk(adapter: Memory, root: "other")
+
+      for {changed, halted} <- [{"more content", true}, {"short", false}] do
+        source = Fil.stream!(disk, "a.txt")
+        {:ok, _} = Fil.write(disk, "a.txt", changed)
+        _ = events()
+
+        assert {:error, %Fil.ConflictError{op: :read, path: "a.txt"} = error} = Fil.write(other, "b.txt", source)
+
+        assert [
+                 {[:fil, :op, :start], _, %{op: :write}},
+                 {[:fil, :stream, :start], _, %{op: :read}},
+                 {[:fil, :stream, :stop], _, %{op: :read, halted: ^halted}},
+                 {[:fil, :op, :stop], _, %{op: :write, error: ^error}}
+               ] = events()
+
+        {:ok, _} = Fil.write(disk, "a.txt", "content")
+      end
+    end
+
     test "the op ends when the stream is handed out, the stream span when it's read", %{disk: disk} do
       assert {:ok, stream} = Fil.stream(disk, "a.txt")
 

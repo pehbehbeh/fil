@@ -94,7 +94,10 @@ defmodule Fil.Telemetry do
   `Stream.zip/2`, say) is dropped.
 
   When a stream goes into `Fil.write/4` and the source fails, the write's `:stop` has the source's error, whose `:op`
-  and `:path` name the source.
+  and `:path` name the source. A source that turns out to have another size than the write found for it (the file
+  changed while it was read) is reported the same way, with a `Fil.ConflictError` on the write's `:stop`. The write
+  checks the size, and the stream itself read fine, so its span ends with a `:stop` instead of an `:exception`, with
+  `halted: true` if the source was longer, and `false` if it ended short.
 
   ## Metrics
 
