@@ -1306,6 +1306,12 @@ defmodule Fil.Adapter.S3Test do
       assert header(request!(), "x-amz-checksum-mode") == nil
     end
 
+    test "stat has no checksum for a composite one" do
+      stub([response(200, "", [{"x-amz-checksum-sha256", composite(:sha256, ["Hello", ", World"])}])])
+
+      assert {:ok, %Fil.Stat{checksum: nil}} = Fil.stat(disk(), "a.txt", checksum: :sha256)
+    end
+
     test "a read verifies the stored checksum when asked" do
       stub([response(200, "Hello", [{"x-amz-checksum-sha256", @checksums[:sha256]}])])
 
@@ -1321,15 +1327,91 @@ defmodule Fil.Adapter.S3Test do
     end
 
     test "a read skips checksums it can't verify" do
-      # A multipart checksum covers the parts, and CRC64NVME isn't supported.
-      stub([
-        response(200, "Hello", [
-          {"x-amz-checksum-sha256", "abc=-3"},
-          {"x-amz-checksum-crc64nvme", "AAAAAAAAAAA="}
-        ])
-      ])
+      # CRC64NVME isn't supported.
+      stub([response(200, "Hello", [{"x-amz-checksum-crc64nvme", "AAAAAAAAAAA="}])])
 
       assert Fil.read(disk(), "a.txt", verify_checksum: true) == {:ok, "Hello"}
+    end
+
+    test "a read checks a composite checksum with the size of the first part" do
+      headers = [{"x-amz-checksum-sha256", composite(:sha256, ["Hello", ", Wor", "ld"])}, {"etag", ~s("e-3")}]
+
+      stub([response(200, "Hello, World", headers), response(206, "", [{"content-length", "5"}])])
+
+      assert Fil.read(disk(), "a.txt", verify_checksum: true) == {:ok, "Hello, World"}
+
+      assert [_get, head] = requests()
+      assert {head.method, head.query_params} == {"HEAD", %{"partNumber" => "1"}}
+      assert header(head, "if-match") == ~s("e-3")
+
+      stub([response(200, "Hello, Wørld", headers), response(206, "", [{"content-length", "5"}])])
+
+      assert {:error, %Fil.ChecksumMismatchError{reason: :checksum_mismatch}} =
+               Fil.read(disk(), "a.txt", verify_checksum: true)
+    end
+
+    test "a composite CRC32 is checked the same way" do
+      headers = [{"x-amz-checksum-crc32", composite(:crc32, ["Hello", ", Wor", "ld"])}]
+
+      stub([response(200, "Hello, World", headers), response(206, "", [{"content-length", "5"}])])
+
+      assert Fil.read(disk(), "a.txt", verify_checksum: true) == {:ok, "Hello, World"}
+    end
+
+    test "a composite checksum whose parts can't be found is read without a check" do
+      headers = [{"x-amz-checksum-sha256", composite(:sha256, ["Hello", ", Wor", "ld"])}]
+
+      # A server that ignores partNumber answers with the whole object, parts of other sizes don't add up, and an
+      # object replaced or removed since the read has no part 1 of its own.
+      for head <- [
+            response(200, "", [{"content-length", "12"}]),
+            response(206, "", [{"content-length", "4"}]),
+            response(412),
+            response(404)
+          ] do
+        stub([response(200, "Hellø, World", headers), head])
+
+        assert Fil.read(disk(), "a.txt", verify_checksum: true) == {:ok, "Hellø, World"}
+      end
+    end
+
+    test "a failed request for the part size fails the read" do
+      headers = [{"x-amz-checksum-sha256", composite(:sha256, ["Hello", ", Wor", "ld"])}]
+
+      stub([response(200, "Hello, World", headers), {:error, :timeout}])
+
+      assert {:error, %Fil.UnavailableError{reason: :timeout}} = Fil.read(disk(), "a.txt", verify_checksum: true)
+    end
+
+    test "a stream checks a composite checksum while it's read" do
+      checksum = composite(:sha256, ["Hello", ", Wor", "ld"])
+      headers = [{"x-amz-checksum-sha256", checksum}, {"content-length", "12"}, {"etag", ~s("e-3")}]
+      part = response(206, "", [{"content-length", "5"}])
+
+      stub([response(200, "", headers), part, response(200, ["Hel", "lo, World"], headers)])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", verify_checksum: true)
+      assert Enum.join(stream) == "Hello, World"
+      assert [_head, %{query_params: %{"partNumber" => "1"}}, _get] = requests()
+
+      stub([response(200, "", headers), part, response(200, ["Hel", "lø, World"], headers)])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", verify_checksum: true)
+      assert_raise Fil.ChecksumMismatchError, fn -> Enum.to_list(stream) end
+    end
+
+    test "a stream of an object replaced since it was checked is read without a check" do
+      headers = [{"x-amz-checksum-sha256", composite(:sha256, ["Hello", ", Wor", "ld"])}, {"content-length", "12"}]
+      replaced = [{"x-amz-checksum-sha256", composite(:sha256, ["Hellø", ", Wor", "ld"])}]
+
+      stub([
+        response(200, "", headers),
+        response(206, "", [{"content-length", "5"}]),
+        response(200, "Hellø, World", replaced)
+      ])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", verify_checksum: true)
+      assert Enum.join(stream) == "Hellø, World"
     end
 
     test "a read without the option doesn't verify" do
@@ -1410,6 +1492,21 @@ defmodule Fil.Adapter.S3Test do
       {Fil.Support.XML.text(part, "PartNumber"), Fil.Support.XML.text(part, "ETag")}
     end
   end
+
+  # The composite checksum S3 stores for content uploaded in these parts.
+  defp composite(algorithm, parts) do
+    digests = Enum.map(parts, &raw_digest(algorithm, &1))
+
+    checksum =
+      algorithm
+      |> raw_digest(digests)
+      |> Base.encode64()
+
+    checksum <> "-#{length(parts)}"
+  end
+
+  defp raw_digest(:crc32, content), do: <<:erlang.crc32(content)::32>>
+  defp raw_digest(:sha256, content), do: :crypto.hash(:sha256, content)
 
   defp crc32(content), do: Base.encode64(<<:erlang.crc32(content)::32>>)
 

@@ -222,7 +222,7 @@ defmodule Fil.Adapter.S3 do
     headers = if verify?, do: [@checksum_mode], else: []
 
     case request(state, :get, key(state, path), headers: headers) do
-      {:ok, %{status: 200, body: body} = response} when verify? -> verify_checksum(body, response.headers)
+      {:ok, %{status: 200} = response} when verify? -> verify_checksum(state, key(state, path), response)
       {:ok, %{status: 200, body: body}} -> {:ok, body}
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
@@ -305,35 +305,56 @@ defmodule Fil.Adapter.S3 do
     headers = if verify?, do: [@checksum_mode], else: []
 
     case request(state, :head, key(state, path), headers: headers) do
-      {:ok, %{status: 200} = response} -> {:ok, download(state, path, response, verify?), content_length(response)}
+      {:ok, %{status: 200} = response} -> download(state, key(state, path), response, verify?)
       {:ok, %{status: 404}} -> with {:ok, content} <- read(state, path, opts), do: {:ok, [content], byte_size(content)}
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp download(state, path, response, verify?) do
-    download(state, key(state, path), if(verify?, do: algorithm(response)))
+  defp download(state, key, response, verify?) do
+    check = if verify?, do: download_check(state, key, response), else: {:ok, nil}
+
+    with {:ok, check} <- check do
+      stream =
+        Stream.resource(
+          fn -> start_download(state, key, check) end,
+          &next_chunk/1,
+          &stop_download/1
+        )
+
+      {:ok, stream, content_length(response)}
+    end
   end
 
   defp content_length(%{headers: headers}), do: integer(header(headers, "content-length"))
 
-  # The algorithm of the checksum stored with the object, so the download can compute it as it goes.
-  defp algorithm(%{headers: headers}) do
-    with {algorithm, _checksum} <- Enum.find_value(Checksum.algorithms(), &stored_checksum(headers, &1)) do
-      algorithm
+  # What the download computes as it goes, from the checksum the HeadObject found: the checksum of the whole object,
+  # or a composite one, whose parts it then needs the size of. `nil` for none, or one that can't be checked.
+  defp download_check(state, key, response) do
+    case find_checksum(response.headers) do
+      nil ->
+        {:ok, nil}
+
+      {algorithm, _checksum} ->
+        {:ok, %{algorithm: algorithm, checksum: Checksum.init(algorithm), composite: nil}}
+
+      {algorithm, composite, parts} ->
+        size = content_length(response)
+
+        with {:ok, part_size} <- part_size(state, key, response, size, parts) do
+          {:ok, composite_check(algorithm, composite, part_size)}
+        end
     end
   end
 
-  defp download(state, key, algorithm) do
-    Stream.resource(
-      fn -> start_download(state, key, algorithm) end,
-      &next_chunk/1,
-      &stop_download/1
-    )
+  defp composite_check(_algorithm, _composite, nil), do: nil
+
+  defp composite_check(algorithm, composite, part_size) do
+    %{algorithm: algorithm, checksum: Checksum.init_parts(algorithm, part_size), composite: composite}
   end
 
-  defp start_download(state, key, algorithm) do
+  defp start_download(state, key, check) do
     reader = self()
     ref = make_ref()
     # `$callers` lets the download find what the reader was allowed, such as a `Req.Test` stub.
@@ -343,7 +364,7 @@ defmodule Fil.Adapter.S3 do
       spawn_monitor(fn ->
         Process.put(:"$callers", callers)
         relay = %Relay{to: reader, ref: ref, monitor: Process.monitor(reader)}
-        headers = if algorithm, do: [@checksum_mode], else: []
+        headers = if check, do: [@checksum_mode], else: []
 
         result =
           case request(state, :get, key, headers: headers, into: relay) do
@@ -355,7 +376,7 @@ defmodule Fil.Adapter.S3 do
         send(reader, {ref, :done, result})
       end)
 
-    %{pid: pid, monitor: monitor, ref: ref, algorithm: algorithm, checksum: algorithm && Checksum.init(algorithm)}
+    %{pid: pid, monitor: monitor, ref: ref, check: check}
   end
 
   defp next_chunk(%{pid: pid, monitor: monitor, ref: ref} = download) do
@@ -372,8 +393,11 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  defp put_chunk(%{checksum: nil} = download, _chunk), do: download
-  defp put_chunk(download, chunk), do: %{download | checksum: Checksum.update(download.checksum, chunk)}
+  defp put_chunk(%{check: nil} = download, _chunk), do: download
+
+  defp put_chunk(%{check: check} = download, chunk) do
+    %{download | check: %{check | checksum: Checksum.update(check.checksum, chunk)}}
+  end
 
   defp finish_download!(download, {:ok, headers}) do
     verify_download!(download, headers)
@@ -387,17 +411,26 @@ defmodule Fil.Adapter.S3 do
   defp crashed!(reason), do: exit(reason)
 
   # Compared with the checksum the GetObject returned, which belongs to the content that was downloaded. An object
-  # replaced since the HeadObject may have none for this algorithm, and is then read without a check, like `read/3`.
-  defp verify_download!(%{algorithm: nil}, _headers), do: :ok
+  # replaced since the HeadObject may have none for this algorithm, or parts of another size, and is then read without
+  # a check, like `read/3`.
+  defp verify_download!(%{check: nil}, _headers), do: :ok
 
-  defp verify_download!(%{algorithm: algorithm, checksum: checksum}, headers) do
-    case stored_checksum(headers, algorithm) do
-      {^algorithm, stored} ->
-        if Checksum.final(checksum) != stored, do: raise(%Fil.ChecksumMismatchError{reason: :checksum_mismatch})
-
+  defp verify_download!(%{check: check}, headers) do
+    case downloaded_checksum(check, headers) do
       nil ->
         :ok
+
+      stored ->
+        if Checksum.final(check.checksum) != stored, do: raise(%Fil.ChecksumMismatchError{reason: :checksum_mismatch})
     end
+  end
+
+  defp downloaded_checksum(%{algorithm: algorithm, composite: nil}, headers) do
+    with {^algorithm, stored} <- stored_checksum(headers, algorithm), do: stored
+  end
+
+  defp downloaded_checksum(%{algorithm: algorithm, composite: composite}, headers) do
+    if header(headers, checksum_header(algorithm)) == composite, do: composite
   end
 
   # Runs when the stream is done, halted early or raised. Stopping the download closes its connection. A chunk it sent
@@ -863,8 +896,8 @@ defmodule Fil.Adapter.S3 do
 
   defp checksum_header(algorithm), do: "x-amz-checksum-#{algorithm}"
 
-  # `{algorithm, checksum}` if S3 returned a checksum for this algorithm. Checksums of multipart uploads end in
-  # "-<parts>" and cover the parts, not the content, so they're skipped (base64 has no "-").
+  # `{algorithm, checksum}` if S3 returned a checksum for this algorithm. Composite checksums of uploads in parts end in
+  # `-` and the number of parts, and cover the parts, so they're skipped (base64 has no `-`).
   defp stored_checksum(headers, algorithm) do
     case header(headers, checksum_header(algorithm)) do
       nil -> nil
@@ -872,17 +905,86 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  defp verify_checksum(body, headers) do
-    case Enum.find_value(Checksum.algorithms(), &stored_checksum(headers, &1)) do
-      nil ->
-        {:ok, body}
-
-      {algorithm, checksum} ->
-        if Checksum.digest(algorithm, body) == checksum,
-          do: {:ok, body},
-          else: {:error, %Fil.ChecksumMismatchError{reason: :checksum_mismatch}}
+  # `{algorithm, checksum, parts}` if S3 returned a composite checksum for this algorithm.
+  defp composite_checksum(headers, algorithm) do
+    with checksum when is_binary(checksum) <- header(headers, checksum_header(algorithm)),
+         [_digest, parts] <- String.split(checksum, "-"),
+         {parts, ""} when parts > 0 <- Integer.parse(parts) do
+      {algorithm, checksum, parts}
+    else
+      _none -> nil
     end
   end
+
+  # The checksum stored with the object, of the whole object or composite, for the first algorithm that has one.
+  defp find_checksum(headers) do
+    Enum.find_value(Checksum.algorithms(), fn algorithm ->
+      stored_checksum(headers, algorithm) || composite_checksum(headers, algorithm)
+    end)
+  end
+
+  defp verify_checksum(state, key, %{body: body} = response) do
+    case checksums(state, key, response) do
+      {:ok, {same, same}} -> {:ok, body}
+      {:ok, {_computed, _stored}} -> {:error, %Fil.ChecksumMismatchError{reason: :checksum_mismatch}}
+      {:ok, nil} -> {:ok, body}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  # `{computed, stored}`, or `nil` if there's nothing to check.
+  defp checksums(state, key, %{body: body} = response) do
+    case find_checksum(response.headers) do
+      nil -> {:ok, nil}
+      {algorithm, checksum} -> {:ok, {Checksum.digest(algorithm, body), checksum}}
+      {algorithm, composite, parts} -> composite_digest(state, key, response, algorithm, composite, parts)
+    end
+  end
+
+  # `{:ok, nil}` when the parts can't be found (see `part_size/5`).
+  defp composite_digest(state, key, %{body: body} = response, algorithm, composite, parts) do
+    size = byte_size(body)
+
+    with {:ok, part_size} when is_integer(part_size) <- part_size(state, key, response, size, parts) do
+      computed =
+        algorithm
+        |> Checksum.init_parts(part_size)
+        |> Checksum.update(body)
+        |> Checksum.final()
+
+      {:ok, {computed, composite}}
+    end
+  end
+
+  # A composite checksum can only be checked with the size of the parts, which S3 doesn't store with it, but a
+  # HeadObject for part 1 returns. Every part but the last has that size in uploads from `Fil` and from AWS's tools,
+  # which is all the check assumes. Parts that don't add up to the object, and a server that ignores `partNumber`
+  # (RustFS answers with the whole object), give `nil`, and the content is read without a check. `If-Match` makes sure
+  # part 1 belongs to the object that was read, and an object replaced or removed since then is read without a check.
+  defp part_size(state, key, response, size, parts) do
+    headers = Enum.map(response.headers["etag"] || [], &{"if-match", &1})
+
+    case request(state, :head, key, params: [{"partNumber", 1}], headers: headers) do
+      {:ok, %{status: status} = part} when status in [200, 206] ->
+        {:ok, uniform_part_size(content_length(part), size, parts)}
+
+      {:ok, %{status: status}} when status in [404, 412] ->
+        {:ok, nil}
+
+      {:ok, response} ->
+        {:error, error(response)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp uniform_part_size(part_size, size, parts) when is_integer(part_size) and part_size > 0 and is_integer(size) do
+    last = size - (parts - 1) * part_size
+    if last > 0 and last <= part_size, do: part_size
+  end
+
+  defp uniform_part_size(_part_size, _size, _parts), do: nil
 
   ## ------------------------------------------------------------------
   ## Requests
