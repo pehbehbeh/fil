@@ -284,14 +284,17 @@ defmodule Fil.AdapterCase do
         assert Fil.read(other_disk, "copy.bin") == {:ok, content}
       end
 
-      test "writes and streams empty content", %{disk: disk} do
+      test "writes and streams empty content", %{disk: disk, tmp_dir: tmp_dir} do
         empty = Stream.map([], & &1)
+        empty_file = Path.join(tmp_dir, "empty.txt")
+        File.write!(empty_file, "")
 
         assert {:ok, _} = Fil.write(disk, "empty.txt", empty)
         assert {:ok, _} = Fil.write(disk, "empty-sized.txt", empty, size: 0)
         assert {:ok, _} = Fil.write(disk, "empty-chunks.txt", Stream.map(["", [], ""], & &1))
+        assert {:ok, _} = Fil.write(disk, "empty-file.txt", File.stream!(empty_file, 2))
 
-        for path <- ["empty.txt", "empty-sized.txt", "empty-chunks.txt"] do
+        for path <- ["empty.txt", "empty-sized.txt", "empty-chunks.txt", "empty-file.txt"] do
           assert Fil.read(disk, path) == {:ok, ""}
           assert {:ok, stream} = Fil.stream(disk, path)
           assert Enum.to_list(stream) == []

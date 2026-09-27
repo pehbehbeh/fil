@@ -397,6 +397,19 @@ defmodule Fil.Adapter.S3Test do
     end
 
     @tag :tmp_dir
+    test "an empty file stream has no size, and is one PutObject", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "empty.txt")
+      File.write!(path, "")
+      stub([response(200)])
+
+      assert {:ok, _} = Fil.write(disk(), "empty.txt", File.stream!(path, 2))
+
+      request = request!()
+      assert request.assigns.body == ""
+      assert header(request, "x-amz-content-sha256") == sha256("")
+    end
+
+    @tag :tmp_dir
     test "a file that changes size while it's sent is a conflict", %{tmp_dir: tmp_dir} do
       path = Path.join(tmp_dir, "a.txt")
 

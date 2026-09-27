@@ -67,11 +67,12 @@ defmodule Fil.Support.Content do
   # A `File.Stream` of chunks of bytes (not lines), on this node, without an encoding, and with no mode that changes
   # what's read (`:compressed`, `:trim_bom`), reads the file from its `:read_offset` to its end. The size is what the
   # file has now; `sized/3` notices if it changes before the stream has been read. A file that can't be found, or isn't
-  # a regular file (a device or a pipe, whose size says nothing), has none, and fails the write when it's read.
+  # a regular file (a device or a pipe, whose size says nothing), has none, and fails the write when it's read. Nor
+  # does an empty one: the pseudo-files of `/proc` on Linux are regular files of size 0 that read thousands of bytes.
   defp file_size(%File.Stream{line_or_bytes: bytes, raw: true, node: node, modes: modes, path: path})
        when is_integer(bytes) and node == node() do
     with true <- Enum.all?(modes, &plain_mode?/1),
-         {:ok, %File.Stat{type: :regular, size: size}} <- File.stat(path) do
+         {:ok, %File.Stat{type: :regular, size: size}} when size > 0 <- File.stat(path) do
       max(size - read_offset(modes), 0)
     else
       _other -> nil
