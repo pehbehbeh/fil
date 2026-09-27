@@ -1,11 +1,10 @@
 defmodule Fil.Adapter.S3Test do
   alias Fil.Adapter.S3
+  alias Plug.Conn
 
   use ExUnit.Case, async: true
 
-  setup do
-    Fil.ReqStub.stub(&adapter/1)
-  end
+  setup {Req.Test, :verify_on_exit!}
 
   @access_key_id "AKIDEXAMPLE"
   @secret_access_key "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
@@ -43,7 +42,7 @@ defmodule Fil.Adapter.S3Test do
       disk = disk(req_options: [{:params, [extra: "1"]} | req_options()])
 
       assert {:ok, "content"} = Fil.read(disk, "a.txt")
-      assert params(request!()) == %{"extra" => "1"}
+      assert request!().query_params == %{"extra" => "1"}
     end
 
     test "rejects req_options that aren't a keyword list" do
@@ -57,7 +56,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk(), "a.txt")
 
-      assert request!().url == "https://bucket.s3.eu-central-1.amazonaws.com/a.txt"
+      assert Conn.request_url(request!()) == "https://bucket.s3.eu-central-1.amazonaws.com/a.txt"
     end
 
     test "path style on request" do
@@ -67,7 +66,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk, "a.txt")
 
-      assert request!().url == "https://s3.eu-central-1.amazonaws.com/bucket/a.txt"
+      assert Conn.request_url(request!()) == "https://s3.eu-central-1.amazonaws.com/bucket/a.txt"
     end
 
     test "a custom endpoint" do
@@ -77,7 +76,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk, "a.txt")
 
-      assert request!().url == "http://localhost:9000/bucket/a.txt"
+      assert Conn.request_url(request!()) == "http://localhost:9000/bucket/a.txt"
     end
 
     test "an endpoint with a base path" do
@@ -87,7 +86,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk, "a.txt")
 
-      assert request!().url == "https://s3.example.com/storage/bucket/a.txt"
+      assert Conn.request_url(request!()) == "https://s3.example.com/storage/bucket/a.txt"
     end
 
     test "encodes each path segment" do
@@ -95,7 +94,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, "content"} = Fil.read(disk(), "a b/ünï/#hash.txt")
 
-      assert request!().url ==
+      assert Conn.request_url(request!()) ==
                "https://bucket.s3.eu-central-1.amazonaws.com/a%20b/%C3%BCn%C3%AF/%23hash.txt"
     end
   end
@@ -110,7 +109,7 @@ defmodule Fil.Adapter.S3Test do
       assert {:ok, "content"} = Fil.read(avatars, "a.png")
       assert {:ok, _} = Fil.write(uploads, "b.png", "content")
 
-      assert Enum.map(requests(), &path/1) == ["/uploads/avatars/a.png", "/uploads/b.png"]
+      assert Enum.map(requests(), & &1.request_path) == ["/uploads/avatars/a.png", "/uploads/b.png"]
     end
 
     test "lists under the root and strips it from the paths" do
@@ -121,7 +120,7 @@ defmodule Fil.Adapter.S3Test do
       assert {:ok, refs} = Fil.ls(disk, "photos")
 
       assert Enum.map(refs, & &1.path) == ["photos/2026", "photos/a.jpg"]
-      assert params(request!()) == %{"list-type" => "2", "prefix" => "uploads/photos/", "delimiter" => "/"}
+      assert request!().query_params == %{"list-type" => "2", "prefix" => "uploads/photos/", "delimiter" => "/"}
     end
 
     test "the disk root lists the root prefix" do
@@ -130,7 +129,7 @@ defmodule Fil.Adapter.S3Test do
       disk = disk(root: "uploads")
 
       assert {:ok, []} = Fil.ls(disk)
-      assert params(request!()) == %{"list-type" => "2", "prefix" => "uploads/", "delimiter" => "/"}
+      assert request!().query_params == %{"list-type" => "2", "prefix" => "uploads/", "delimiter" => "/"}
     end
 
     test "rm_rf deletes by full key" do
@@ -142,8 +141,8 @@ defmodule Fil.Adapter.S3Test do
 
       [list, delete] = requests()
 
-      assert params(list) == %{"list-type" => "2", "prefix" => "uploads/photos"}
-      assert path(delete) == "/uploads/photos/a.jpg"
+      assert list.query_params == %{"list-type" => "2", "prefix" => "uploads/photos"}
+      assert delete.request_path == "/uploads/photos/a.jpg"
     end
 
     test "copies from a key under the root" do
@@ -153,8 +152,10 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, _} = Fil.cp(disk, "a.jpg", "b.jpg")
 
-      assert path(request!()) == "/uploads/b.jpg"
-      assert header(request!(), "x-amz-copy-source") == "/bucket/uploads/a.jpg"
+      request = request!()
+
+      assert request.request_path == "/uploads/b.jpg"
+      assert header(request, "x-amz-copy-source") == "/bucket/uploads/a.jpg"
     end
 
     test "presigns the full key" do
@@ -284,8 +285,8 @@ defmodule Fil.Adapter.S3Test do
       request = request!()
 
       assert ref.path == "a.txt"
-      assert request.method == :put
-      assert request.body == "Hello, World"
+      assert request.method == "PUT"
+      assert request.assigns.body == "Hello, World"
       assert header(request, "x-amz-content-sha256") == sha256("Hello, World")
     end
 
@@ -320,7 +321,7 @@ defmodule Fil.Adapter.S3Test do
       assert {:ok, _} = Fil.rm(disk(), "a.txt")
       assert {:ok, _} = Fil.rm(disk(), "a.txt")
 
-      assert Enum.map(requests(), & &1.method) == [:delete, :delete]
+      assert Enum.map(requests(), & &1.method) == ["DELETE", "DELETE"]
     end
 
     test "a missing bucket is still an error" do
@@ -339,8 +340,8 @@ defmodule Fil.Adapter.S3Test do
       request = request!()
 
       assert ref.path == "copies/a.txt"
-      assert request.method == :put
-      assert request.url == "https://bucket.s3.eu-central-1.amazonaws.com/copies/a.txt"
+      assert request.method == "PUT"
+      assert Conn.request_url(request) == "https://bucket.s3.eu-central-1.amazonaws.com/copies/a.txt"
       assert header(request, "x-amz-copy-source") == "/bucket/a%20b.txt"
     end
 
@@ -361,8 +362,8 @@ defmodule Fil.Adapter.S3Test do
       stub([response(400, error_xml("InvalidArgument")), response(404)])
 
       assert {:error, %Fil.NotFoundError{reason: {:http_status, 404}}} = Fil.cp(disk(), "a.txt", "b.txt")
-      assert [%{method: :put}, %{method: :head, url: url}] = requests()
-      assert url == "https://bucket.s3.eu-central-1.amazonaws.com/a.txt"
+      assert [%{method: "PUT"}, %{method: "HEAD"} = head] = requests()
+      assert Conn.request_url(head) == "https://bucket.s3.eu-central-1.amazonaws.com/a.txt"
 
       stub([response(400, error_xml("InvalidArgument")), response(200)])
 
@@ -375,7 +376,7 @@ defmodule Fil.Adapter.S3Test do
       assert {:ok, ref} = Fil.rename(disk(), "a.txt", "b.txt")
 
       assert ref.path == "b.txt"
-      assert Enum.map(requests(), & &1.method) == [:put, :delete]
+      assert Enum.map(requests(), & &1.method) == ["PUT", "DELETE"]
     end
   end
 
@@ -396,9 +397,9 @@ defmodule Fil.Adapter.S3Test do
 
       [first, second] = requests()
 
-      assert params(first) == %{"list-type" => "2", "prefix" => "photos/", "delimiter" => "/"}
+      assert first.query_params == %{"list-type" => "2", "prefix" => "photos/", "delimiter" => "/"}
 
-      assert params(second) == %{
+      assert second.query_params == %{
                "list-type" => "2",
                "prefix" => "photos/",
                "delimiter" => "/",
@@ -425,7 +426,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, _} = Fil.ls(disk(), "photos", recursive: true)
 
-      assert params(request!()) == %{"list-type" => "2", "prefix" => "photos/"}
+      assert request!().query_params == %{"list-type" => "2", "prefix" => "photos/"}
     end
 
     test "the disk root lists without a prefix" do
@@ -433,7 +434,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, _} = Fil.ls(disk())
 
-      assert params(request!()) == %{"list-type" => "2", "prefix" => "", "delimiter" => "/"}
+      assert request!().query_params == %{"list-type" => "2", "prefix" => "", "delimiter" => "/"}
     end
 
     test "skips the directory marker object" do
@@ -469,14 +470,14 @@ defmodule Fil.Adapter.S3Test do
       assert stat.content_type == "image/jpeg"
       assert stat.etag == "d41d8cd98f00b204e9800998ecf8427e"
       assert stat.mtime == ~U[2015-10-21 07:28:00Z]
-      assert request!().method == :head
+      assert request!().method == "HEAD"
     end
 
     test "falls back to a prefix probe" do
       stub([response(404), response(200, list_page_two())])
 
       assert {:ok, %Fil.Stat{type: :directory}} = Fil.stat(disk(), "photos")
-      assert Enum.map(requests(), & &1.method) == [:head, :get]
+      assert Enum.map(requests(), & &1.method) == ["HEAD", "GET"]
     end
 
     test "dir? is true for a prefix and false for an object" do
@@ -512,10 +513,10 @@ defmodule Fil.Adapter.S3Test do
 
       [list, first, second] = requests()
 
-      assert params(list) == %{"list-type" => "2", "prefix" => "photos"}
-      assert Enum.map([first, second], & &1.method) == [:delete, :delete]
+      assert list.query_params == %{"list-type" => "2", "prefix" => "photos"}
+      assert Enum.map([first, second], & &1.method) == ["DELETE", "DELETE"]
 
-      assert Enum.map([first, second], &path/1) == [
+      assert Enum.map([first, second], & &1.request_path) == [
                "/photos/a.jpg",
                "/photos/2026/b.jpg"
              ]
@@ -528,7 +529,7 @@ defmodule Fil.Adapter.S3Test do
 
       [_list, delete] = requests()
 
-      assert path(delete) == "/photos/a.jpg"
+      assert delete.request_path == "/photos/a.jpg"
     end
 
     test "stops at the first key it cannot delete" do
@@ -690,7 +691,7 @@ defmodule Fil.Adapter.S3Test do
       stub([response(200, "content")])
 
       assert Fil.read(disk, "cv.pdf") == {:ok, "content"}
-      assert String.starts_with?(request!().url, "http://s3mock:9090/bucket/cv.pdf")
+      assert "http://s3mock:9090/bucket/cv.pdf" <> _ = Conn.request_url(request!())
     end
 
     test "follows path_style" do
@@ -731,7 +732,7 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:ok, _} = Fil.write(disk(), "a.txt", "Hello")
 
-      refute Enum.any?(request!().headers, fn {name, _value} -> name =~ "x-amz-checksum" end)
+      refute Enum.any?(request!().req_headers, fn {name, _value} -> name =~ "x-amz-checksum" end)
     end
 
     test "BadDigest is a checksum mismatch" do
@@ -936,53 +937,45 @@ defmodule Fil.Adapter.S3Test do
   ## ------------------------------------------------------------------
   ## Stubbed requests
   ##
-  ## Every disk in this module uses `Fil.ReqStub`, which calls `adapter/1`, so no request reaches the network. Req runs
-  ## the adapter in the test process, after all its own request steps. `stub/1` queues one response per request, and
-  ## each request is recorded, so the tests can check what the adapter sent.
+  ## Every disk in this module sends its requests to the `Req.Test` stub named after the module, so no request reaches
+  ## the network. `stub/1` expects one request per response, in order, and `Req.Test.verify_on_exit!/1` checks that
+  ## every response was used. Req runs the stub in the test process, after all its own request steps, so it messages the
+  ## test each `Plug.Conn` it gets (the body read into `conn.assigns.body`), and the tests check what the adapter sent.
   ## ------------------------------------------------------------------
 
-  defp req_options, do: [adapter: Fil.ReqStub]
+  defp req_options, do: [plug: {Req.Test, __MODULE__}]
 
+  # Starts over: the responses of the previous `stub/1` must all have been used, and its requests are dropped.
   defp stub(responses) do
-    Process.put(:responses, responses)
-    Process.put(:requests, [])
-    :ok
+    Req.Test.verify!(__MODULE__)
+    _previous = requests()
+    Enum.each(responses, &Req.Test.expect(__MODULE__, fn conn -> respond(conn, &1) end))
   end
 
-  defp adapter(request) do
-    case Process.get(:responses, []) do
-      [response | rest] ->
-        Process.put(:responses, rest)
-        Process.put(:requests, [recorded(request) | Process.get(:requests, [])])
-        {request, respond(response)}
+  defp respond(conn, response) do
+    {:ok, body, conn} = Conn.read_body(conn)
+    request = Conn.assign(conn, :body, body)
+    send(self(), {__MODULE__, request})
+    reply(conn, response)
+  end
 
-      [] ->
-        flunk("no stubbed response left for #{request.method} #{request.url}")
-    end
+  defp reply(conn, {:error, reason}), do: Req.Test.transport_error(conn, reason)
+
+  defp reply(conn, %{status: status, body: body, headers: headers}) do
+    conn
+    |> Conn.merge_resp_headers(headers)
+    |> Conn.send_resp(status, body)
   end
 
   defp response(status, body \\ "", headers \\ []), do: %{status: status, body: body, headers: headers}
 
-  defp respond({:error, reason}), do: %Req.TransportError{reason: reason}
-
-  defp respond(%{status: status, body: body, headers: headers}),
-    do: Req.Response.new(status: status, body: body, headers: headers)
-
-  defp recorded(request) do
-    headers = for {name, values} <- request.headers, value <- values, do: {name, value}
-
-    %{
-      method: request.method,
-      url: URI.to_string(request.url),
-      headers: headers,
-      body: IO.iodata_to_binary(request.body || "")
-    }
-  end
-
-  defp requests do
-    :requests
-    |> Process.get([])
-    |> Enum.reverse()
+  # The requests since the last `stub/1`, oldest first. Reading them takes them out of the mailbox.
+  defp requests(received \\ []) do
+    receive do
+      {__MODULE__, request} -> requests([request | received])
+    after
+      0 -> Enum.reverse(received)
+    end
   end
 
   defp request! do
@@ -992,16 +985,9 @@ defmodule Fil.Adapter.S3Test do
     end
   end
 
-  defp header(%{headers: headers}, name) do
-    Enum.find_value(headers, fn {key, value} -> if key == name, do: value end)
+  defp header(request, name) do
+    request
+    |> Conn.get_req_header(name)
+    |> List.first()
   end
-
-  defp params(%{url: url}) do
-    case URI.parse(url).query do
-      nil -> %{}
-      query -> URI.decode_query(query)
-    end
-  end
-
-  defp path(%{url: url}), do: URI.parse(url).path
 end

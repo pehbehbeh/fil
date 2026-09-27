@@ -131,9 +131,11 @@ go to `main` directly, which the ruleset allows only for repository admins (its 
 
 - `Fil.AdapterCase` (test/support) is the shared conformance suite, and every adapter runs it. New behaviour gets a
   test there, not a copy per adapter.
-- Cloud unit tests stub the storage with `Fil.ReqStub` (`Fil.ReqStub.stub(&adapter/1)` and
-  `req_options: [adapter: Fil.ReqStub]`), so `mix test` makes no network requests and needs no Plug. Req calls the
-  adapter in the test process after its own request steps, so a test can record the request or message itself from it.
+- Cloud unit tests stub the storage with `Req.Test` (`Req.Test.stub(__MODULE__, &s3/1)` or `Req.Test.expect/3`, and
+  `req_options: [plug: {Req.Test, __MODULE__}]`), so `mix test` makes no network requests. The stubs are plugs, so the
+  tests need Plug, which stays optional for users. Req runs the stub in the test process after its own request steps
+  (signing included), so a test can message itself the `Plug.Conn` it got and assert on its method, path, query, headers
+  and body (`Plug.Conn.read_body/1`). Stubs are owned per test process, so the tests stay async.
 - Integration tests create their own buckets and use a unique prefix per test.
 - One-line input/output checks are doctests on the function they test, not separate tests. `Fil.DoctestTest` runs
   the doctests of every module in the app, so don't add `doctest` lines to other test files.

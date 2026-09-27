@@ -39,7 +39,7 @@ defmodule Fil.MixProject do
       {:req, "~> 0.7"},
       {:mime, "~> 2.0"},
 
-      # Optional: Fil.Plug serves signed URLs of Local and Memory disks
+      # Optional: Fil.Plug serves signed URLs of Local and Memory disks. The tests need it too (Req.Test stubs are plugs).
       {:plug, "~> 1.14", optional: true},
 
       # Development

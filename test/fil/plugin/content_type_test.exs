@@ -5,20 +5,20 @@ defmodule Fil.Plugin.ContentTypeTest do
   use ExUnit.Case, async: true
 
   setup do
-    Fil.ReqStub.stub(&adapter/1)
+    Req.Test.stub(__MODULE__, &s3/1)
   end
 
   defp disk(opts \\ []) do
-    [adapter: S3, bucket: "bucket", req_options: [adapter: Fil.ReqStub]]
+    [adapter: S3, bucket: "bucket", req_options: [plug: {Req.Test, __MODULE__}]]
     |> Fil.disk()
     |> ContentType.attach(opts)
   end
 
-  # Answers every request with a 200 instead of reaching S3. Req runs the adapter in the test process, so it can
-  # message itself the content type it was sent.
-  defp adapter(request) do
-    send(self(), {:content_type, Req.Request.get_header(request, "content-type")})
-    {request, Req.Response.new(status: 200)}
+  # Answers every request with a 200 instead of reaching S3. Req runs the stub in the test process, so it can message
+  # itself the content type it was sent.
+  defp s3(conn) do
+    send(self(), {:content_type, Plug.Conn.get_req_header(conn, "content-type")})
+    Plug.Conn.send_resp(conn, 200, "")
   end
 
   # Runs `fun` and returns the content type of the one request it sent.
