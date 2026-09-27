@@ -518,7 +518,8 @@ defmodule Fil do
     opts = validate!(opts, @write_schema)
     :ok = Content.validate!(content)
 
-    run(ref, :write, opts, content: check_size!(content, opts[:size]))
+    {content, size} = check_content!(content, opts[:size])
+    run(ref, :write, opts, [content: content], size)
   end
 
   @doc "Writes a file. See `write/2`."
@@ -994,23 +995,37 @@ defmodule Fil do
     end
   end
 
-  # The caller's content is checked against `:size` before plugins see it, so a plugin that collects or transforms a
-  # stream doesn't hide a wrong size. Iodata is checked right away, a stream while it's read
-  # (`Fil.Support.Content.sized/2`).
-  defp check_size!(content, nil), do: content
-
-  defp check_size!(content, size) do
-    cond do
-      not Content.iodata?(content) ->
-        Content.sized(content, size)
-
-      IO.iodata_length(content) != size ->
-        raise ArgumentError, "the content has #{IO.iodata_length(content)} bytes, but the :size option is #{size}"
-
-      true ->
-        content
+  # The caller's content is checked before plugins see it, so a plugin that collects, transforms or replaces it doesn't
+  # hide bad content or a wrong size. Iodata is measured once, here, and its size is also the `:bytes` of the write's
+  # events. A stream is checked against `:size` while it's read (`Fil.Support.Content.sized/3`). Returns the content
+  # and its size, if it's known.
+  defp check_content!(content, size) do
+    if Content.iodata?(content) do
+      {content, check_iodata_size!(content, size)}
+    else
+      {check_stream_size(content, size), size}
     end
   end
+
+  defp check_iodata_size!(content, size) do
+    case iodata_length!(content) do
+      length when size in [nil, length] -> length
+      length -> raise ArgumentError, "the content has #{length} bytes, but the :size option is #{size}"
+    end
+  end
+
+  defp iodata_length!(content) do
+    IO.iodata_length(content)
+  rescue
+    ArgumentError ->
+      reraise ArgumentError,
+              "expected the content to be iodata or an enumerable of iodata, got a list that isn't iodata: " <>
+                inspect(content),
+              __STACKTRACE__
+  end
+
+  defp check_stream_size(stream, nil), do: stream
+  defp check_stream_size(stream, size), do: Content.sized(stream, size)
 
   # Parameters that signed URLs already use on some disk. They're rejected on every disk, so a URL that works on one
   # works on all.
@@ -1043,11 +1058,11 @@ defmodule Fil do
     end
   end
 
-  defp run(ref, name, opts, fields \\ []) do
+  defp run(ref, name, opts, fields \\ [], size \\ nil) do
     with {:ok, %Ref{disk: disk, path: path}} <- resolve(ref, name) do
       %Op{disk: disk, name: name, path: path, options: opts}
       |> struct!(fields)
-      |> Op.run()
+      |> Op.run(size)
     end
   end
 
@@ -1072,7 +1087,7 @@ defmodule Fil do
   defp across_disks(src, dest, opts, name) do
     op = %Op{disk: src.disk, name: name, path: src.path, dest: dest.path}
 
-    Telemetry.span(op, %{dest_disk: dest.disk}, fn _op, _metadata ->
+    Telemetry.span(op, [metadata: %{dest_disk: dest.disk}], fn _op, _metadata ->
       name
       |> cross_disk(src, dest, opts)
       |> name_op(name)
@@ -1117,7 +1132,7 @@ defmodule Fil do
   defp resolve(ref, name, {op, extra}) do
     case Ref.normalize(ref) do
       {:ok, ref} -> {:ok, ref}
-      {:error, error} -> Telemetry.span(op, extra, fn _op, _metadata -> {:error, %{error | op: name}} end)
+      {:error, error} -> Telemetry.span(op, [metadata: extra], fn _op, _metadata -> {:error, %{error | op: name}} end)
     end
   end
 

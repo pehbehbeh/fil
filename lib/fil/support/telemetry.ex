@@ -13,13 +13,16 @@ defmodule Fil.Support.Telemetry do
 
   @doc """
   Runs `fun` in an `[:fil, :op]` span for `op`, the operation as the caller made it. `fun` gets the op to run, whose
-  stream content counts the bytes read from it, and the metadata, for the stream events of a streamed read. `extra` is
-  merged into the metadata.
+  stream content counts the bytes read from it, and the metadata, for the stream events of a streamed read.
+
+    * `:metadata`: merged into the metadata
+    * `:size`: the size of a write's content, when `Fil.write/4` knows it: the `:size` option, or the length of iodata,
+      which it measured when it checked the content
   """
-  @spec span(Op.t(), map(), (Op.t(), map() -> Fil.result(term()))) :: Fil.result(term())
-  def span(%Op{} = op, extra \\ %{}, fun) do
-    metadata = metadata(op, extra)
-    {op, bytes} = count(op)
+  @spec span(Op.t(), keyword(), (Op.t(), map() -> Fil.result(term()))) :: Fil.result(term())
+  def span(%Op{} = op, opts \\ [], fun) do
+    metadata = metadata(op, Keyword.get(opts, :metadata, %{}))
+    {op, bytes} = count(op, opts[:size])
 
     :telemetry.span([:fil, :op], metadata, fn ->
       result = fun.(op, metadata)
@@ -41,31 +44,32 @@ defmodule Fil.Support.Telemetry do
     Map.merge(metadata, extra)
   end
 
-  # A write knows its size up front when the caller declared it (the content is checked against it) or passed iodata.
-  # A stream without a size counts what's read from it. A counter works from any process, and a third-party adapter may
-  # read the content in another one.
-  defp count(%Op{name: :write, content: content, options: options} = op) do
-    cond do
-      options[:size] != nil ->
-        {op, {:size, options[:size]}}
+  # A write knows its size up front when the caller declared it (the content is checked against it) or passed iodata,
+  # which `Fil.write/4` measured. A stream without a size counts what's read from it. A counter works from any process,
+  # and a third-party adapter may read the content in another one.
+  #
+  # Counting wraps the stream, so plugins and the adapter get a `Stream` instead of the caller's enumerable (a
+  # `File.Stream`, say). A write with a size matches the first clause and is never wrapped, so a copy across disks,
+  # which passes the size of its `Fil.Support.Sized` source, keeps it.
+  defp count(%Op{name: :write} = op, size) when is_integer(size), do: {op, {:size, size}}
 
-      Content.iodata?(content) ->
-        {op, {:iodata, content}}
-
-      true ->
-        counter = :counters.new(1, [])
-        {%{op | content: Stream.map(content, &count_chunk(&1, counter))}, {:counter, counter}}
+  defp count(%Op{name: :write, content: content} = op, nil) do
+    if Content.iodata?(content) do
+      {op, nil}
+    else
+      counter = :counters.new(1, [])
+      {%{op | content: Stream.map(content, &count_chunk(&1, counter))}, {:counter, counter}}
     end
   end
 
-  defp count(op), do: {op, nil}
+  defp count(op, _size), do: {op, nil}
 
   defp count_chunk(chunk, counter) do
     :counters.add(counter, 1, IO.iodata_length(chunk))
     chunk
   end
 
-  defp measurements(%Op{name: :write}, {:ok, _ref}, bytes), do: %{bytes: bytes(bytes)}
+  defp measurements(%Op{name: :write}, {:ok, _ref}, bytes) when bytes != nil, do: %{bytes: bytes(bytes)}
 
   defp measurements(%Op{name: :read, streaming: false}, {:ok, content}, _bytes), do: read_bytes(content)
   defp measurements(_op, _result, _bytes), do: %{}
@@ -82,7 +86,6 @@ defmodule Fil.Support.Telemetry do
   defp read_bytes(_content), do: %{}
 
   defp bytes({:size, size}), do: size
-  defp bytes({:iodata, content}), do: IO.iodata_length(content)
   defp bytes({:counter, counter}), do: :counters.get(counter, 1)
 
   defp error({:error, error}), do: error

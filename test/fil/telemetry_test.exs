@@ -77,6 +77,19 @@ defmodule Fil.TelemetryTest do
                Enum.map(stops(), fn {measurements, metadata} -> {metadata.op, measurements[:bytes]} end)
     end
 
+    test "content that isn't iodata raises before any event, whatever the plugins do", %{disk: disk} do
+      answered =
+        Fil.attach(disk, :answer, fn op, _next, _opts -> Op.put_result(op, {:ok, Fil.ref(op.disk, op.path)}) end)
+
+      replaced = Fil.attach(disk, :replace, fn op, next, _opts -> next.(%{op | content: "replaced"}) end)
+
+      for disk <- [disk, answered, replaced], content <- [[70_000], ~c"日本", ["a", :b]] do
+        assert_raise ArgumentError, ~r/got a list that isn't iodata/, fn -> Fil.write(disk, "a.txt", content) end
+      end
+
+      assert events() == []
+    end
+
     test "bytes count what a plugin read of the caller's stream", %{disk: disk} do
       compressed =
         Fil.attach(disk, :gzip, fn op, next, _opts ->

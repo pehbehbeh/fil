@@ -331,9 +331,10 @@ defmodule Fil.Op do
   # Errors get their context from `caller`, the op as the caller made it, not from the op a plugin may have rewritten:
   # `error.path` is the path the caller passed, so `Fil.ref(error.disk, error.path)` is a ref to the same file.
   #
-  # Every run is an `[:fil, :op]` span (`Fil.Telemetry`), plugins included.
-  @spec run(t()) :: {:ok, term()} | {:error, Exception.t()}
-  def run(%__MODULE__{} = caller), do: Telemetry.span(caller, &run_plugins/2)
+  # Every run is an `[:fil, :op]` span (`Fil.Telemetry`), plugins included. `size` is the size of a write's content, if
+  # `Fil.write/4` knows it.
+  @spec run(t(), non_neg_integer() | nil) :: {:ok, term()} | {:error, Exception.t()}
+  def run(%__MODULE__{} = caller, size \\ nil), do: Telemetry.span(caller, [size: size], &run_plugins/2)
 
   defp run_plugins(%__MODULE__{disk: %Disk{plugins: plugins}} = caller, telemetry) do
     chain =

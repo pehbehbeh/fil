@@ -47,6 +47,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `Fil.write/4` raises `ArgumentError` for a list that isn't iodata, such as `[70_000]`, before any plugin sees it.
+  Before, a plugin that replaced the content or answered the call itself hid it.
+  ([#12](https://github.com/pehbehbeh/fil/pull/12))
 - S3 reads a stream with `checksum:` one part at a time instead of collecting it into memory. A `:crc32` checksum
   covers the whole file, however it's uploaded. A `:sha256` or `:sha1` checksum of an upload in parts covers each
   part, and S3 stores a checksum of those: `Fil.stat/3` returns `nil` for it, and `verify_checksum: true` checks the
