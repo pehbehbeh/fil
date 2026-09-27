@@ -62,6 +62,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - S3's `InvalidRequest` error code is a `Fil.InvalidRequestError` instead of a `Fil.UnknownError`. S3 sends it for a
   copy or a move of an object onto itself, for example.
   ([#16](https://github.com/pehbehbeh/fil/pull/16))
+- A copy or a move on a local disk that fails removes the directories it created for the destination, like a write.
+  ([#16](https://github.com/pehbehbeh/fil/pull/16))
 - `Fil.Plug` answers an upload that the disk refuses for its content, a `Fil.InvalidRequestError` that isn't about the
   path, with a `422` instead of a `404`.
   ([#14](https://github.com/pehbehbeh/fil/pull/14))
