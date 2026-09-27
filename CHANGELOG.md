@@ -9,11 +9,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- `Fil.write/4` finds the size of a `File.Stream` of bytes and of a stream from `Fil.stream/3` itself, so S3 sends
-  them as they're read, in one request, without `size:`. When the file changes size while it's written, the write
-  returns `Fil.ConflictError` and writes nothing. `size: :unknown` turns this off, for a file that grows while it's
-  written (a log) or whose stat size may be wrong (`/sys`, network and FUSE file systems).
-  ([#15](https://github.com/pehbehbeh/fil/pull/15))
 - `Fil.Plugin.Thumbnails` writes smaller copies of images when they're written, sized per variant, and deletes, copies
   and renames them with the image. They go under `thumbnails/`, or wherever a `:variant_path` function puts them, such
   as next to the image. `generate/1` makes them later, with `mode: :manual` or for images stored before. It needs the
@@ -26,24 +21,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   ([#12](https://github.com/pehbehbeh/fil/pull/12))
 - `Fil.Telemetry.attach_default_logger/1` logs every operation and every read of a stream, with its duration.
   ([#12](https://github.com/pehbehbeh/fil/pull/12))
-- S3 uploads a stream without a size, and content over 5 GiB, in parts (a multipart upload), with one part in memory
-  at a time: 8 MiB by default, set with the new `:part_size` option. A stream that fits in one part is still one
-  PutObject. A part that fails because the storage is unavailable is sent once more, a second later. A failed upload
-  is aborted, and so is the upload of a process that's killed.
+- S3 uploads a stream without a size, a stream with `checksum:`, and content over 5 GiB in parts (a multipart upload),
+  with one part in memory at a time: 8 MiB by default, set with the new `:part_size` option. A stream that fits in one
+  part is still one PutObject. A part that fails because the storage is unavailable is sent once more, a second later.
+  A failed upload is aborted, and so is the upload of a process that's killed. A `:crc32` checksum covers the whole
+  file, however it's uploaded. A `:sha256` or `:sha1` checksum of an upload in parts covers each part, and S3 stores a
+  checksum of those: `Fil.stat/3` returns `nil` for it, and `verify_checksum: true` checks the content against it.
   ([#11](https://github.com/pehbehbeh/fil/pull/11))
 - `Fil.stream/1,2,3` and `Fil.stream!/1,2,3` return a file's content as a stream of binaries, on every disk. They
   check the file right away and read it when the stream is enumerated.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
-- `Fil.write/4` takes a stream as well as iodata, with its size in the new `size:` option if it's known. A stream that
-  raises writes nothing. S3 sends a stream with a size as it's read, and uploads one without a size in parts.
-  ([#10](https://github.com/pehbehbeh/fil/pull/10))
+- `Fil.write/4` takes a stream as well as iodata. A stream that raises writes nothing. S3 sends a stream of known size
+  as it's read, in one request, and uploads any other in parts. `Fil` finds the size of a `File.Stream` of bytes and of
+  a stream from `Fil.stream/3` itself, and the new `size:` option gives it for other streams. `size: :unknown` turns
+  finding it off, for a file that grows while it's written (a log) or whose stat size may be wrong (`/sys`, network
+  and FUSE file systems).
+  ([#10](https://github.com/pehbehbeh/fil/pull/10), [#15](https://github.com/pehbehbeh/fil/pull/15))
 - `Fil.Op.update_content/2` and `Fil.Op.update_result/2` take a `stream:` function, which transforms a stream lazily,
   chunk by chunk or with state across chunks. `op.streaming` marks a read from `Fil.stream/3`. A read transform that
   raises one of `Fil`'s errors turns the read into that error. The plugins guide describes what a plugin can rely on.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
-- `Fil.ConflictError`: the file changed while the operation used it, so reading it again and retrying can help. A copy
-  across disks returns it when the source changes size while it's copied, and `Fil.Plug` answers it with a `409`.
-  ([#10](https://github.com/pehbehbeh/fil/pull/10))
+- `Fil.ConflictError`: the file changed while the operation used it, so reading it again and retrying can help. A write
+  of a stream whose size `Fil` found, and a copy across disks, return it when the file changes size meanwhile, and S3
+  when something else aborted an upload in parts. `Fil.Plug` answers it with a `409`.
+  ([#10](https://github.com/pehbehbeh/fil/pull/10), [#11](https://github.com/pehbehbeh/fil/pull/11),
+  [#15](https://github.com/pehbehbeh/fil/pull/15))
 - `stream/3` is an optional adapter callback. Adapters without it stream the result of `read/3` as one chunk.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `disposition:` on `Fil.signed_url/3` sets the `content-disposition` of the download (`:inline`, `:attachment` or
@@ -63,11 +65,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.write/4` raises `ArgumentError` for a list that isn't iodata, such as `[70_000]`, before any plugin sees it.
   Before, a plugin that replaced the content or answered the call itself hid it.
   ([#12](https://github.com/pehbehbeh/fil/pull/12))
-- S3 reads a stream with `checksum:` one part at a time instead of collecting it into memory. A `:crc32` checksum
-  covers the whole file, however it's uploaded. A `:sha256` or `:sha1` checksum of an upload in parts covers each
-  part, and S3 stores a checksum of those: `Fil.stat/3` returns `nil` for it, and `verify_checksum: true` checks the
-  content against it.
-  ([#11](https://github.com/pehbehbeh/fil/pull/11))
 - `Fil.Op.update_content/2` and `update_result/2` take `iodata:` instead of `binary:`, which now raises
   `ArgumentError` like any unknown transform. The function gets the same argument as before.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))

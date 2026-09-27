@@ -130,14 +130,16 @@ list).
 
 - **Changelog:** `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first,
   one entry per user-visible change under `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, added
-  under `## [Unreleased]` in the same pull request as the change. User-visible changes always go through a pull request;
-  direct pushes to `main` are only for changes without an entry. Each entry ends with an inline link to its pull
-  request, such as `([#1](https://github.com/pehbehbeh/fil/pull/1))`, or `([#1](...), [#4](...))` for several. Add it in
-  a commit once `gh pr create` has returned the number: issues and pull requests share their numbers, so don't guess it.
-  Inline, because the GitHub release gets only the section, without the link definitions at the end.
-  `bin/check-changelog` enforces it for the entries under Unreleased, in CI and in `bin/release`. Released sections are
-  headed `## [0.2.0] - 2026-10-01`. `bin/release` keeps the link definitions at the end, which compare each version with
-  the one before. The file is in the Hex package and a Guides tab on HexDocs, so each published version includes its
+  under `## [Unreleased]` in the same pull request as the change. Entries describe the difference from the last release:
+  a change to something that's new in the same release updates that feature's entry, adding its pull request's link,
+  instead of getting an entry of its own. User-visible changes always go through a pull request; direct pushes to `main`
+  are only for changes without an entry. Each entry ends with an inline link to its pull request, such as
+  `([#1](https://github.com/pehbehbeh/fil/pull/1))`, or `([#1](...), [#4](...))` for several. Add it in a commit once
+  `gh pr create` has returned the number: issues and pull requests share their numbers, so don't guess it. Inline,
+  because the GitHub release gets only the section, without the link definitions at the end. `bin/check-changelog`
+  enforces it for the entries under Unreleased, in CI and in `bin/release`. Released sections are headed
+  `## [0.2.0] - 2026-10-01`. `bin/release` keeps the link definitions at the end, which compare each version with the
+  one before. The file is in the Hex package and a Guides tab on HexDocs, so each published version includes its
   changelog.
 - **Milestones:** one per planned release, named after its tag (`v0.2.0`), with the issues and pull requests meant to
   ship in it. Issues without a milestone are the backlog, and a patch release needs no milestone. Before a release,
