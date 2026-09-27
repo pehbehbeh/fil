@@ -62,7 +62,9 @@ defmodule Fil.Adapter.Memory do
       `:content_type` is the `content_type:` the write stored. `checksum:` returns the stored checksum if the write
       used the same algorithm, and `nil` otherwise. A stat on a directory returns `%Fil.Stat{type: :directory}` with
       every other field `nil`.
-    * `Fil.cp/4`: the copy keeps the content type and the checksum. Copying a directory is a `Fil.NotFoundError`.
+    * `Fil.cp/4`: the copy keeps the content type and the checksum. `if_exists: :error` uses `:ets.insert_new/2`, like
+      a write. Copying a directory is a `Fil.NotFoundError`.
+    * `Fil.rename/4`: a copy, then removing the source.
     * `Fil.url/3` and `Fil.signed_url/3`: a memory store has no URLs. Attach `Fil.Plugin.URL` to build them, and
       `Fil.Plug` serves them, in a test through `Phoenix.ConnTest` too.
 
@@ -180,10 +182,7 @@ defmodule Fil.Adapter.Memory do
     content = Content.to_binary(content)
     entry = {key(state, path), content, Keyword.get(opts, :content_type), now(), checksum(content, opts)}
 
-    case Keyword.get(opts, :if_exists, :overwrite) do
-      :overwrite -> insert(store!(), entry)
-      :error -> if :ets.insert_new(store!(), entry), do: :ok, else: {:error, %Fil.AlreadyExistsError{reason: :eexist}}
-    end
+    put(store!(), entry, opts)
   end
 
   # The file is looked up again when the stream is read, like on the other adapters.
@@ -239,20 +238,28 @@ defmodule Fil.Adapter.Memory do
   end
 
   @impl Fil.Adapter
-  def cp(state, src, dest, _opts) do
+  def cp(state, src, dest, opts) do
     store = store!()
 
     case :ets.lookup(store, key(state, src)) do
       [{_key, content, content_type, _mtime, checksum}] ->
-        insert(store, {key(state, dest), content, content_type, now(), checksum})
+        store
+        |> put({key(state, dest), content, content_type, now(), checksum}, opts)
+        |> at_dest(dest)
 
       [] ->
         {:error, %Fil.NotFoundError{reason: :enoent}}
     end
   end
 
+  # A file renamed onto itself stays as it is, unless the rename mustn't replace a file: then it's already there.
   @impl Fil.Adapter
-  def rename(_state, path, path, _opts), do: :ok
+  def rename(state, path, path, opts) do
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite -> :ok
+      :error -> cp(state, path, path, opts)
+    end
+  end
 
   def rename(state, src, dest, opts) do
     with :ok <- cp(state, src, dest, opts), do: rm(state, src, opts)
@@ -292,6 +299,17 @@ defmodule Fil.Adapter.Memory do
     true = :ets.insert(store, entry)
     :ok
   end
+
+  # `if_exists: :error` uses `:ets.insert_new/2`, which checks and inserts in one step.
+  defp put(store, entry, opts) do
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite -> insert(store, entry)
+      :error -> if :ets.insert_new(store, entry), do: :ok, else: {:error, %Fil.AlreadyExistsError{reason: :eexist}}
+    end
+  end
+
+  defp at_dest({:error, error}, dest), do: {:error, %{error | path: dest}}
+  defp at_dest(:ok, _dest), do: :ok
 
   ## ------------------------------------------------------------------
   ## Keys

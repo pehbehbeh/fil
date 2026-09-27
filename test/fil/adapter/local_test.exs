@@ -148,6 +148,64 @@ defmodule Fil.Adapter.LocalTest do
     end
   end
 
+  describe "copies and moves with if_exists: :error" do
+    test "that fail leave no temporary files behind", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "source.txt", "source")
+      assert {:ok, _} = Fil.write(disk, "kept/taken.txt", "taken")
+
+      assert {:error, %Fil.AlreadyExistsError{reason: :eexist}} =
+               Fil.cp(disk, "source.txt", "kept/taken.txt", if_exists: :error)
+
+      assert {:error, %Fil.InvalidRequestError{reason: :enotdir, path: "source.txt/deeper/copy.txt"}} =
+               Fil.cp(disk, "source.txt", "source.txt/deeper/copy.txt", if_exists: :error)
+
+      root = Path.join(tmp_dir, "primary")
+
+      assert root
+             |> File.ls!()
+             |> Enum.sort() == ["kept", "source.txt"]
+
+      assert root
+             |> Path.join("kept")
+             |> File.ls!() == ["taken.txt"]
+    end
+
+    test "onto a directory or from a directory are :eisdir", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "source.txt", "source")
+      assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
+
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir, path: "dir"}} =
+               Fil.cp(disk, "source.txt", "dir", if_exists: :error)
+
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir, path: "dir"}} =
+               Fil.rename(disk, "source.txt", "dir", if_exists: :error)
+
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir, path: "dir"}} =
+               Fil.cp(disk, "dir", "copy", if_exists: :error)
+
+      assert Fil.read(disk, "source.txt") == {:ok, "source"}
+    end
+
+    test "move a directory as before", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
+      assert {:ok, _} = Fil.rename(disk, "dir", "moved/dir", if_exists: :error)
+      assert Fil.read(disk, "moved/dir/file.txt") == {:ok, "content"}
+      refute Fil.exists?(disk, "dir")
+    end
+
+    test "onto the same file find it there", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "a.txt", "a")
+
+      assert {:error, %Fil.AlreadyExistsError{op: :cp, path: "a.txt"}} =
+               Fil.cp(disk, "a.txt", "a.txt", if_exists: :error)
+
+      assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "a.txt"}} =
+               Fil.rename(disk, "a.txt", "a.txt", if_exists: :error)
+
+      assert Fil.read(disk, "a.txt") == {:ok, "a"}
+    end
+  end
+
   describe "stat/1" do
     test "derives a weak etag that changes with the content", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "etag.txt", "small")

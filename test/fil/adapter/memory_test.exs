@@ -158,6 +158,15 @@ defmodule Fil.Adapter.MemoryTest do
       assert {:ok, _} = Fil.rename(disk, "a.txt", "a.txt")
       assert Fil.read(disk, "a.txt") == {:ok, "a"}
     end
+
+    test "onto itself with if_exists: :error finds the file there", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "a.txt", "a")
+
+      assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "a.txt"}} =
+               Fil.rename(disk, "a.txt", "a.txt", if_exists: :error)
+
+      assert Fil.read(disk, "a.txt") == {:ok, "a"}
+    end
   end
 
   describe "url/2 and signed_url/2" do

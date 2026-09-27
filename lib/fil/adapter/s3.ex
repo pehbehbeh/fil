@@ -129,8 +129,10 @@ defmodule Fil.Adapter.S3 do
       `checksum:` returns the checksum S3 stored if the write used the same algorithm, and `nil` otherwise, as well as
       for the composite checksum of an upload in parts.
     * `Fil.ls/3`: ListObjectsV2, with `delimiter=/` unless recursive, paginated internally.
-    * `Fil.cp/4`: CopyObject. Copying a directory is a `Fil.NotFoundError`.
-    * `Fil.rename/4`: CopyObject, then DeleteObject.
+    * `Fil.cp/4`: CopyObject. `if_exists: :error` sends `If-None-Match: *`, which AWS checks on copies since October
+      2025 (RustFS 1.0.0 does too). Copying a directory is a `Fil.NotFoundError`.
+    * `Fil.rename/4`: CopyObject, then DeleteObject. A copy that finds the destination with `if_exists: :error` fails
+      before the source is deleted.
     * `Fil.rm_rf/3`: ListObjectsV2, then one DeleteObject per key.
     * `Fil.url/3`: the object URL, without a signature, so it works for public objects only.
     * `Fil.signed_url/3`: a presigned GET or PUT URL, with `response-content-disposition` for `disposition:`, and the
@@ -559,16 +561,23 @@ defmodule Fil.Adapter.S3 do
   end
 
   @impl Fil.Adapter
-  def cp(state, src, dest, _opts) do
-    headers = [{"x-amz-copy-source", copy_source(state, src)}]
+  def cp(state, src, dest, opts) do
+    headers = put_if_exists([{"x-amz-copy-source", copy_source(state, src)}], opts)
 
-    case request(state, :put, key(state, dest), headers: headers) do
-      {:ok, %{status: 200} = response} -> xml_result(response)
-      {:ok, %{status: 400} = response} -> copy_error(state, src, error(response))
-      {:ok, response} -> {:error, error(response)}
-      {:error, reason} -> {:error, reason}
-    end
+    result =
+      case request(state, :put, key(state, dest), headers: headers) do
+        {:ok, %{status: 200} = response} -> xml_result(response)
+        {:ok, %{status: 400} = response} -> copy_error(state, src, error(response))
+        {:ok, response} -> {:error, error(response)}
+        {:error, reason} -> {:error, reason}
+      end
+
+    existing_dest(result, dest)
   end
+
+  # `If-None-Match` is about the destination, so a copy that found it already there fails with its path.
+  defp existing_dest({:error, %Fil.AlreadyExistsError{} = error}, dest), do: {:error, %{error | path: dest}}
+  defp existing_dest(result, _dest), do: result
 
   # AWS answers a missing source with `404 NoSuchKey`, but some S3-compatible servers (SeaweedFS) send a plain 400, so
   # an unexplained 400 is checked against the source.

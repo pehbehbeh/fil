@@ -46,8 +46,12 @@ defmodule Fil.Adapter.Local do
     * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too, temporary `.fil-`
       files of writes aren't. The disk reserves that prefix, so a file of your own whose name starts with `.fil-` is
       skipped as well. A path that isn't a directory lists nothing, the same as a missing one.
-    * `Fil.cp/4`: `File.cp/2`. Copying a directory is a `Fil.InvalidRequestError`.
-    * `Fil.rename/4`: `File.rename/2`.
+    * `Fil.cp/4`: `File.cp/2`. `if_exists: :error` copies to a `.fil-` temporary file instead and hard-links it to the
+      destination, like a write. Copying a directory is a `Fil.InvalidRequestError`.
+    * `Fil.rename/4`: `File.rename/2`, which moves directories too. `if_exists: :error` hard-links the file to the
+      destination and then removes the source (on a filesystem without hard links, it creates the destination with
+      `O_EXCL` first, like a write). A directory is still moved with `File.rename/2`, which can replace an empty
+      directory, but never a file.
     * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Files whose name starts with `.fil-` are removed
       too, but not counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
@@ -118,10 +122,10 @@ defmodule Fil.Adapter.Local do
   def ls(state, prefix, opts), do: to_error(list(state, prefix, opts))
 
   @impl Fil.Adapter
-  def cp(state, src, dest, _opts), do: to_error(transfer(&File.cp/2, state, src, dest))
+  def cp(state, src, dest, opts), do: to_error(copy(state, src, dest, opts))
 
   @impl Fil.Adapter
-  def rename(state, src, dest, _opts), do: to_error(transfer(&File.rename/2, state, src, dest))
+  def rename(state, src, dest, opts), do: to_error(move(state, src, dest, opts))
 
   @impl Fil.Adapter
   def rm_rf(state, prefix, _opts), do: to_error(rm_tree(state, prefix))
@@ -173,10 +177,17 @@ defmodule Fil.Adapter.Local do
   # happens in between (an error, or a stream that raises), the temporary file is removed, and so are the directories
   # this write created, so the disk is left as it was.
   defp write_file(state, path, content, opts) do
+    chunks = if is_binary(content) or is_list(content), do: [content], else: content
+
+    put_file(state, path, &write_chunks(&1, chunks), opts)
+  end
+
+  # `fill` writes the content into the open temporary file.
+  defp put_file(state, path, fill, opts) do
     with {:ok, full} <- full_path(state, path),
          {:ok, created} <- make_parents(full),
          {:ok, tmp, io, created} <- open_tmp(full, created) do
-      write_into(full, {tmp, io}, created, content, opts)
+      write_into(full, {tmp, io}, created, fill, opts)
     else
       {:error, reason, created} ->
         remove_dirs(created)
@@ -212,10 +223,10 @@ defmodule Fil.Adapter.Local do
 
   defp open_exclusive(tmp), do: :file.open(tmp, [:write, :exclusive, :raw, :binary])
 
-  defp write_into(full, {tmp, io}, created, content, opts) do
+  defp write_into(full, {tmp, io}, created, fill, opts) do
     result =
       try do
-        place(tmp, io, full, content, opts)
+        place(tmp, io, full, fill, opts)
       catch
         kind, reason ->
           discard(tmp, created)
@@ -226,8 +237,8 @@ defmodule Fil.Adapter.Local do
     result
   end
 
-  defp place(tmp, io, full, content, opts) do
-    with :ok <- write_tmp(io, content) do
+  defp place(tmp, io, full, fill, opts) do
+    with :ok <- write_tmp(io, fill) do
       case Keyword.get(opts, :if_exists, :overwrite) do
         :overwrite -> File.rename(tmp, full)
         :error -> create(tmp, full)
@@ -257,6 +268,79 @@ defmodule Fil.Adapter.Local do
       put_checksum(to_stat(stat), full, Keyword.get(opts, :checksum))
     end
   end
+
+  # A copy that mustn't replace a file is a write with the source's content: it goes to a temporary file, which is then
+  # hard-linked into place.
+  defp copy(state, src, dest, opts) do
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite -> transfer(&File.cp/2, state, src, dest)
+      :error -> copy_new(state, src, dest, opts)
+    end
+  end
+
+  defp copy_new(state, src, dest, opts) do
+    with {:ok, from} <- full_path(state, src),
+         {:ok, io} <- open_read(from) do
+      try do
+        state
+        |> put_file(dest, &copy_chunks(&1, io), opts)
+        |> at_dest(dest)
+      after
+        :file.close(io)
+      end
+    end
+  end
+
+  defp copy_chunks(tmp_io, io) do
+    case :file.copy(io, tmp_io) do
+      {:ok, _bytes} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp move(state, src, dest, opts) do
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite ->
+        transfer(&File.rename/2, state, src, dest)
+
+      :error ->
+        result = transfer(&move_new/2, state, src, dest)
+        at_dest(result, dest)
+    end
+  end
+
+  # A hard link claims the destination only if it doesn't exist, and removing the source then completes the move (see
+  # `create/2`, which falls back to `O_EXCL` without hard links). When the source can't be removed, the link is removed
+  # again, so both files stay as they were. Directories can't be hard-linked, so they're moved with `File.rename/2`,
+  # which never puts a directory over a file.
+  defp move_new(from, to) do
+    if File.dir?(from) do
+      File.rename(from, to)
+    else
+      with :ok <- create(from, to), do: remove_source(from, to)
+    end
+  end
+
+  defp remove_source(from, to) do
+    case File.rm(from) do
+      :ok ->
+        :ok
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        _ = File.rm(to)
+        {:error, reason}
+    end
+  end
+
+  # An exclusive copy or move that fails because the destination exists, is a directory or is under a file has the
+  # destination's path.
+  defp at_dest({:error, reason}, dest) when reason in [:eexist, :eisdir, :enotdir],
+    do: {:error, %{to_struct(reason) | path: dest}}
+
+  defp at_dest(result, _dest), do: result
 
   # A destination under a file fails on the destination side, so the error has that path.
   defp transfer(fun, state, src, dest) do
@@ -388,12 +472,10 @@ defmodule Fil.Adapter.Local do
   ## Writing
   ## ------------------------------------------------------------------
 
-  defp write_tmp(io, content) do
-    chunks = if is_binary(content) or is_list(content), do: [content], else: content
-
+  defp write_tmp(io, fill) do
     result =
       try do
-        write_chunks(io, chunks)
+        fill.(io)
       catch
         kind, reason ->
           _ = :file.close(io)
