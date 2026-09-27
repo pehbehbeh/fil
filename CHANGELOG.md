@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   at a time: 8 MiB by default, set with the new `:part_size` option. A stream that fits in one part is still one
   PutObject. A part that fails because the storage is unavailable is sent once more. A failed upload is aborted, and
   so is the upload of a process that's killed.
-  ([#N](https://github.com/pehbehbeh/fil/pull/N))
+  ([#11](https://github.com/pehbehbeh/fil/pull/11))
 - `Fil.stream/1,2,3` and `Fil.stream!/1,2,3` return a file's content as a stream of binaries, on every disk. They
   check the file right away and read it when the stream is enumerated.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
@@ -44,7 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   covers the whole file, however it's uploaded. A `:sha256` or `:sha1` checksum of an upload in parts covers each
   part, and S3 stores a checksum of those: `Fil.stat/3` returns `nil` for it, and `verify_checksum: true` checks the
   content against it.
-  ([#N](https://github.com/pehbehbeh/fil/pull/N))
+  ([#11](https://github.com/pehbehbeh/fil/pull/11))
 - `Fil.Op.update_content/2` and `update_result/2` take `iodata:` instead of `binary:`, which now raises
   `ArgumentError` like any unknown transform. The function gets the same argument as before.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
