@@ -1,0 +1,33 @@
+name: Renovate milestone
+
+# Puts each new Renovate pull request into the open milestone with the lowest version, the next release (see
+# "Milestones" in AGENTS.md). Renovate itself only takes a fixed milestone number.
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  milestone:
+    name: Set milestone
+    if: github.event.pull_request.user.login == 'renovate[bot]' && github.event.pull_request.milestone == null
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Set the next release's milestone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          milestone=$(gh api "repos/$GITHUB_REPOSITORY/milestones?state=open&per_page=100" --jq '
+            [.[] | select(.title | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
+            | sort_by(.title | ltrimstr("v") | split(".") | map(tonumber))
+            | first | .number // empty')
+
+          if [ -z "$milestone" ]; then
+            echo "No open milestone, leaving #$PR without one."
+          else
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$PR" -F milestone="$milestone" --silent
+          fi

@@ -132,7 +132,8 @@ list).
   changelog.
 - **Milestones:** one per planned release, named after its tag (`v0.2.0`), with the issues and pull requests meant to
   ship in it. Issues without a milestone are the backlog, and a patch release needs no milestone. Before a release,
-  close what's left in the milestone or move it to the next one.
+  close what's left in the milestone or move it to the next one. `.github/workflows/renovate-milestone.yml` puts every
+  new Renovate pull request into the open milestone with the lowest version.
 - **Hotfix:** a normal pull request to `main`, then `bin/release 0.2.1`.
 - **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix with its changelog entry under a new
   `## [Unreleased]`, push the branch, then `bin/release 0.1.1` on it. The entry keeps the link to the pull request that
