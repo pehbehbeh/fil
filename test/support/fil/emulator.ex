@@ -110,23 +110,24 @@ defmodule Fil.Emulator do
   ## Buckets
   ## ------------------------------------------------------------------
 
+  # A bucket that already exists answers 409 (`BucketAlreadyOwnedByYou`) outside us-east-1 and counts as created.
   @spec create_s3_bucket(String.t()) :: :ok | {:error, term()}
-  def create_s3_bucket(bucket), do: s3_request(:put, "/" <> bucket)
+  def create_s3_bucket(bucket), do: s3_request(:put, "/" <> bucket, [200, 409])
 
   # S3 and RustFS refuse to delete a bucket that isn't empty, so the objects go first. A bucket that doesn't exist
-  # counts as deleted.
+  # counts as deleted, but a 409 (`BucketNotEmpty`) doesn't: it means `Fil.rm_rf/2` left something behind.
   @spec delete_s3_bucket(String.t()) :: :ok | {:error, term()}
   def delete_s3_bucket(bucket) do
     disk = Fil.disk([adapter: Fil.Adapter.S3, bucket: bucket, endpoint: url(:s3), path_style: true] ++ s3_credentials())
 
     case Fil.rm_rf(disk, ".") do
-      {:ok, _count} -> s3_request(:delete, "/" <> bucket)
+      {:ok, _count} -> s3_request(:delete, "/" <> bucket, [200, 204, 404])
       {:error, %Fil.ConfigurationError{reason: "NoSuchBucket"}} -> :ok
       {:error, error} -> {:error, error}
     end
   end
 
-  defp s3_request(method, path) do
+  defp s3_request(method, path, allowed) do
     credentials = s3_credentials()
 
     [
@@ -142,7 +143,7 @@ defmodule Fil.Emulator do
       raw: true
     ]
     |> Req.request()
-    |> accept([200, 204, 404, 409])
+    |> accept(allowed)
   end
 
   defp accept({:ok, %{status: status}}, allowed) when is_list(allowed) do
