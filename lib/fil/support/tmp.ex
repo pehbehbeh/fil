@@ -64,12 +64,17 @@ defmodule Fil.Support.Tmp do
 
   @doc """
   Removes empty directories, deepest first, and stops at the first one that isn't empty, because another write put
-  something into it meanwhile.
+  something into it meanwhile. Missing ones are skipped: a write that's killed while it creates its directories has
+  made only the top ones.
   """
   @spec remove_dirs([Path.t()]) :: :ok
   def remove_dirs(dirs) do
     Enum.reduce_while(dirs, :ok, fn dir, :ok ->
-      if :file.del_dir(dir) == :ok, do: {:cont, :ok}, else: {:halt, :ok}
+      case :file.del_dir(dir) do
+        :ok -> {:cont, :ok}
+        {:error, :enoent} -> {:cont, :ok}
+        {:error, _reason} -> {:halt, :ok}
+      end
     end)
   end
 

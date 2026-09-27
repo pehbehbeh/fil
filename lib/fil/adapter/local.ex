@@ -192,54 +192,40 @@ defmodule Fil.Adapter.Local do
 
   # `fill` gets the temporary file's path and its open handle, and writes the content into it.
   defp put_file(state, path, fill, opts) do
-    with {:ok, full} <- full_path(state, path),
-         {:ok, created} <- make_parents(full),
-         {:ok, tmp, io, created} <- open_tmp(full, created) do
-      write_into(full, {tmp, io}, created, fill, opts)
-    else
-      {:error, reason, created} ->
-        undo_parents({:error, reason}, created)
+    with {:ok, full} <- full_path(state, path) do
+      tmp = tmp_path(full)
 
-      {:error, reason} ->
-        {:error, reason}
+      case open_tmp(full, tmp, [], :retry) do
+        {:ok, io, created} ->
+          write_into(full, {tmp, io}, created, fill, opts)
+
+        {:error, reason, created} ->
+          discard(tmp, created)
+          {:error, reason}
+      end
     end
   end
 
+  # Creates the missing parents and opens the temporary file. `Fil.Support.Tmp` gets the file and the directories the
+  # write is about to create before the first `mkdir`, and the directories it did create once they exist, so a writer
+  # that's killed at any point leaves nothing behind.
+  #
   # Another write that created a directory this one found, and then failed, removes it again. If that happens before
   # the temporary file is opened, the directories are created once more, and then belong to this write. The open fails
   # with `:enoent` then, or with `:einval` on macOS when the directory is removed during the open.
-  defp open_tmp(full, created) do
-    tmp = tmp_path(full)
+  defp open_tmp(full, tmp, created, retry) do
+    missing = missing_parents(full)
+    planned = Enum.reverse(missing, created)
+    Tmp.put({:file, tmp}, planned)
 
-    case open_exclusive(tmp, created) do
-      {:ok, io} -> {:ok, tmp, io, created}
-      {:error, reason} when reason in [:enoent, :einval] -> reopen_tmp(full, tmp, created)
-      {:error, reason} -> {:error, reason, created}
-    end
-  end
+    with {:ok, made} <- make_dirs(missing, created) do
+      if made != planned, do: Tmp.put({:file, tmp}, made)
 
-  defp reopen_tmp(full, tmp, created) do
-    with {:ok, recreated} <- make_parents(full),
-         {:ok, io} <- open_exclusive(tmp, created ++ recreated) do
-      {:ok, tmp, io, created ++ recreated}
-    else
-      {:error, reason, recreated} -> {:error, reason, created ++ recreated}
-      {:error, reason} -> {:error, reason, created}
-    end
-  end
-
-  # The file is registered with `Fil.Support.Tmp` before it exists, so a writer that's killed right after the open
-  # can't leave it behind. The server then removes it and the directories this write created.
-  defp open_exclusive(tmp, created) do
-    Tmp.put({:file, tmp}, created)
-
-    case :file.open(tmp, [:write, :exclusive, :raw, :binary]) do
-      {:ok, io} ->
-        {:ok, io}
-
-      {:error, reason} ->
-        Tmp.delete({:file, tmp})
-        {:error, reason}
+      case :file.open(tmp, [:write, :exclusive, :raw, :binary]) do
+        {:ok, io} -> {:ok, io, made}
+        {:error, reason} when reason in [:enoent, :einval] and retry == :retry -> open_tmp(full, tmp, made, :no_retry)
+        {:error, reason} -> {:error, reason, made}
+      end
     end
   end
 
@@ -425,7 +411,9 @@ defmodule Fil.Adapter.Local do
   defp transfer(fun, state, src, dest) do
     with {:ok, from} <- full_path(state, src),
          {:ok, to} <- full_path(state, dest) do
-      case make_parents(to) do
+      missing = missing_parents(to)
+
+      case make_dirs(missing, []) do
         {:ok, created} ->
           result = fun.(from, to)
 
@@ -497,14 +485,16 @@ defmodule Fil.Adapter.Local do
     end
   end
 
-  # Creates the missing parents of a file one by one, top down, and returns the ones it created, deepest first, so a
-  # failed write can remove them again. A directory another process created meanwhile isn't counted.
-  defp make_parents(full) do
+  # The parents of a file that don't exist yet, top down.
+  defp missing_parents(full) do
     full
     |> Path.dirname()
     |> missing_dirs([])
-    |> Enum.reduce_while({:ok, []}, &make_dir/2)
   end
+
+  # Creates the missing parents one by one, top down, and adds the ones it created to `created`, deepest first, so a
+  # failed write can remove them again. A directory another process created meanwhile isn't counted.
+  defp make_dirs(missing, created), do: Enum.reduce_while(missing, {:ok, created}, &make_dir/2)
 
   defp make_dir(dir, {:ok, created}) do
     case File.mkdir(dir) do
@@ -532,7 +522,7 @@ defmodule Fil.Adapter.Local do
   end
 
   # A path through a file (`report.txt/x`) is `:enotdir` to the filesystem, but that file doesn't exist, which
-  # is what an object store says too. `cp/4` and `rename/4` call it after `make_parents/1`, so there it can only be the
+  # is what an object store says too. `cp/4` and `rename/4` call it after `make_dirs/2`, so there it can only be the
   # source, and a destination under a file stays `:enotdir`.
   defp missing({:error, :enotdir}), do: {:error, :enoent}
   defp missing(result), do: result

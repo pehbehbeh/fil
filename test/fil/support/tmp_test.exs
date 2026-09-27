@@ -80,6 +80,25 @@ defmodule Fil.Support.TmpTest do
     assert tree(tmp_dir) == ["kept", "new", "new/b.txt"]
   end
 
+  test "an owner killed while it creates its directories leaves none of them", %{tmp_dir: tmp_dir} do
+    [deepest, middle, top] = Enum.map(["new/a/b", "new/a", "new"], &Path.join(tmp_dir, &1))
+    File.mkdir!(top)
+    test = self()
+
+    owner =
+      spawn(fn ->
+        Tmp.put({:file, Path.join(deepest, ".fil-planned")}, [deepest, middle, top])
+        send(test, :registered)
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive :registered
+    kill(owner)
+    Tmp.sync()
+
+    assert tree(tmp_dir) == ["kept"]
+  end
+
   test "a server crash keeps the entries, and the restarted server removes them", %{disk: disk, tmp_dir: tmp_dir} do
     writer = start_write(disk, "new/a.txt")
     [entry] = entries(writer)
