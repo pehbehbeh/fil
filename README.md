@@ -1,5 +1,6 @@
 # Fil
 
+[![CI](https://img.shields.io/github/actions/workflow/status/pehbehbeh/fil/ci.yml?branch=main&label=CI)](https://github.com/pehbehbeh/fil/actions/workflows/ci.yml?query=branch%3Amain)
 [![License](https://img.shields.io/hexpm/l/fil.svg)](https://github.com/pehbehbeh/fil/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/fil.svg)](https://hex.pm/packages/fil)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://fil.hexdocs.pm)
