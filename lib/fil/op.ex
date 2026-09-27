@@ -142,7 +142,7 @@ defmodule Fil.Op do
     * `binary:` gets the whole content as a binary and returns iodata. A stream is collected into memory first when
       there's no `chunk:` or `stream:`
     * `chunk:` gets one chunk of a stream as a binary and returns iodata, once per chunk, when the adapter reads it.
-      Without `binary:`, whole content is passed to it as a single chunk
+      Without `binary:`, whole content is passed to it as a single chunk, and empty content not at all
     * `stream:` gets the stream (an enumerable of binaries) and returns an enumerable of iodata, for transforms that
       keep state from one chunk to the next or add something at the end. Without `binary:`, whole content is passed to
       it as a stream of one chunk (none if it's empty), and the result is collected again
@@ -234,6 +234,10 @@ defmodule Fil.Op do
         |> Content.chunks()
         |> fun.()
         |> Enum.to_list()
+
+      # Like a stream, empty content has no chunks.
+      %{chunk: _fun} when binary == "" ->
+        ""
 
       %{chunk: fun} ->
         fun.(binary)

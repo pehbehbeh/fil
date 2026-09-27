@@ -430,6 +430,20 @@ defmodule Fil.PluginsTest do
       assert_received {:pulled, "ab"}
     end
 
+    test "chunk: gets no call for empty content, whole or streamed", %{disk: disk} do
+      marking = &[&1, "!"]
+
+      for content <- ["", [], Stream.map([""], & &1)] do
+        op = %Op{disk: disk, name: :write, path: "a.txt", content: content}
+        written = Op.update_content(op, chunk: marking)
+        assert Fil.Support.Content.to_binary(written.content) == ""
+
+        read = %Op{disk: disk, name: :read, path: "a.txt", streaming: true, result: {:ok, content}}
+        assert {:ok, result} = Op.update_result(read, chunk: marking).result
+        assert Fil.Support.Content.to_binary(result) == ""
+      end
+    end
+
     test "other operations are left alone, but the transforms are still checked", %{disk: disk} do
       op = %Op{disk: disk, name: :stat, path: "a.txt"}
 
