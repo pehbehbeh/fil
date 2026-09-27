@@ -39,8 +39,9 @@ defmodule Fil.Adapter.S3 do
               doc: """
               The base URL clients reach the storage at, when it isn't `:endpoint`, e.g. `"http://localhost:9090"` for
               a container the application reaches as `"http://s3mock:9090"`. `Fil.url/2` and `Fil.signed_url/3` build
-              their URLs with it, every request the disk makes itself goes to `:endpoint`. A signature covers the host,
-              so a signed URL can't be rewritten to another host afterwards. `:path_style` applies to both.
+              their URLs with it, and the requests the disk makes itself still go to `:endpoint`. A signature covers the
+              host, so a signed URL can't be rewritten to another host afterwards. `:path_style` applies to both, but
+              only `:endpoint` turns it on by default.
               """
             ],
             path_style: [

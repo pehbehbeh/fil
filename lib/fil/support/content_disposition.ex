@@ -22,12 +22,23 @@ defmodule Fil.Support.ContentDisposition do
       iex> Fil.Support.ContentDisposition.header({:attachment, ~s(say "hi".txt)}, "cv.pdf")
       ~s(attachment; filename="say _hi_.txt"; filename*=UTF-8''say%20%22hi%22.txt)
 
+  Bytes that aren't UTF-8 (a Latin-1 name from an old database, say) become `U+FFFD`, so the name keeps its extension.
+  Without a basename (the disk root), the browser picks the name:
+
+      iex> Fil.Support.ContentDisposition.header({:attachment, <<"M", 0xE4, "rz.pdf">>}, "cv.pdf")
+      ~s(attachment; filename="M_rz.pdf"; filename*=UTF-8''M%EF%BF%BDrz.pdf)
+
+      iex> Fil.Support.ContentDisposition.header(:attachment, ".")
+      "attachment"
+
   """
   @spec header(:inline | :attachment | {:attachment, String.t()}, String.t()) :: String.t()
   def header(:inline, _basename), do: "inline"
+  def header(:attachment, basename) when basename in ["", ".", ".."], do: "attachment"
   def header(:attachment, basename), do: header({:attachment, basename}, basename)
 
   def header({:attachment, filename}, _basename) do
+    filename = String.replace_invalid(filename)
     fallback = ascii_fallback(filename)
 
     if fallback == filename do

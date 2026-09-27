@@ -183,12 +183,15 @@ defmodule Fil.Op do
   def materialize(%__MODULE__{} = op), do: op
 
   defp transform!(content, funs) do
-    binary = IO.iodata_to_binary(content)
+    fun =
+      case validate_transform!(funs) do
+        %{binary: fun} -> fun
+        %{chunk: fun} -> fun
+      end
 
-    case validate_transform!(funs) do
-      %{binary: fun} -> fun.(binary)
-      %{chunk: fun} -> fun.(binary)
-    end
+    content
+    |> IO.iodata_to_binary()
+    |> fun.()
   end
 
   defp validate_transform!(funs) when is_list(funs) do

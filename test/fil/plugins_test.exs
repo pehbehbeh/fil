@@ -312,5 +312,11 @@ defmodule Fil.PluginsTest do
       assert_raise ArgumentError, ~r/unknown transforms \[:stream\]/, fn -> Op.update_content(op, stream: & &1) end
       assert_raise ArgumentError, ~r/1-arity function/, fn -> Op.update_result(op, binary: :nope) end
     end
+
+    test "the transforms are checked before the content", %{disk: disk} do
+      op = %Op{disk: disk, name: :read, path: "a.txt", result: {:ok, :not_iodata}}
+
+      assert_raise ArgumentError, ~r/at least one of/, fn -> Op.update_result(op, []) end
+    end
   end
 end

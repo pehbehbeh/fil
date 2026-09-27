@@ -28,8 +28,8 @@ rewrite() {
   awk "$@" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 }
 
-# CHANGELOG.md follows Keep a Changelog 1.1.0: `## [Unreleased]`, `## [0.2.0] - 2026-10-01`, and link definitions
-# (`[unreleased]: …/compare/v0.1.0...HEAD`) at the end.
+# CHANGELOG.md follows Keep a Changelog 1.1.0: `## [Unreleased]`, `## [0.2.0] - 2026-10-01`, and link definitions at
+# the end, such as `[unreleased]: https://github.com/pehbehbeh/fil/compare/v0.1.0...HEAD`.
 unreleased() { awk '$0 == "## [Unreleased]" { s = 1; next } /^## |^\[/ { s = 0 } s' CHANGELOG.md; }
 
 for tool in git gh mix curl; do
@@ -57,7 +57,8 @@ case "$ci" in
 esac
 
 say "Unreleased changes"
-unreleased | grep -q '^- ' || die "CHANGELOG.md has no entries under Unreleased"
+# Not `grep -q`: it exits at the first match, and with `pipefail` the SIGPIPE of awk would fail the pipeline.
+unreleased | grep '^- ' > /dev/null || die "CHANGELOG.md has no entries under Unreleased"
 unreleased
 
 version=${1:-}

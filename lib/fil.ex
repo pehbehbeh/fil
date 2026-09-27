@@ -122,8 +122,8 @@ defmodule Fil do
                          doc: """
                          The `content-disposition` of the download, for `method: :get` only. `:inline` lets the browser
                          show the file, `:attachment` saves it under the file's name, and `{:attachment, filename}`
-                         under another name. Names that aren't plain ASCII work too. Without it, the download has the
-                         disposition stored with the file, if any.
+                         under another name, which can be any UTF-8 string. Without it, S3 sends the disposition an
+                         object was uploaded with outside `Fil`, and the other disks send none.
                          """
                        ],
                        query: [
@@ -131,9 +131,9 @@ defmodule Fil do
                          default: [],
                          doc: """
                          Extra query parameters, e.g. `[{"trackingInfo", "42"}]`, for a page that reads them from its
-                         own URL. They're signed with the URL, so they can't be changed or added afterwards. Names the
-                         URL uses itself (`expires`, `disposition`, `signature`, and `X-Amz-*` or `response-*` on S3)
-                         raise.
+                         own URL. They're signed with the URL, so they can't be changed or added afterwards. Names that
+                         signed URLs use themselves on some disk raise on every disk: `expires`, `disposition`,
+                         `signature`, and anything starting with `X-Amz-` or `response-`.
                          """
                        ]
                      )
@@ -688,10 +688,13 @@ defmodule Fil do
 
   def signed_url(ref, opts) when is_list(opts) do
     opts = validate!(opts, @signed_url_schema)
-
+    check_disposition!(opts)
     check_query!(opts[:query])
 
-    run(ref, :signed_url, put_disposition(opts, ref))
+    # The file name for `disposition: :attachment` comes from the normalized path, so `docs/..` doesn't become `..`.
+    with {:ok, ref} <- resolve(ref, :signed_url) do
+      run(ref, :signed_url, put_disposition(opts, Path.basename(ref.path)))
+    end
   end
 
   @doc "Builds a signed URL. See `signed_url/1`."
@@ -899,19 +902,20 @@ defmodule Fil do
     name in ["expires", "disposition", "signature"] or String.starts_with?(name, ["x-amz-", "response-"])
   end
 
-  # Adapters get `:disposition` as the header value, built here so it's the same on every disk.
-  defp put_disposition(opts, ref) do
+  defp check_disposition!(opts) do
     case {opts[:disposition], opts[:method]} do
-      {nil, _method} ->
-        opts
+      {nil, _method} -> :ok
+      {_disposition, :put} -> raise ArgumentError, "the :disposition option only applies to downloads (method: :get)"
+      {{:attachment, ""}, :get} -> raise ArgumentError, "the file name of the :disposition option can't be empty"
+      {_disposition, :get} -> :ok
+    end
+  end
 
-      {_disposition, :put} ->
-        raise ArgumentError, "the :disposition option only applies to downloads (method: :get)"
-
-      {disposition, :get} ->
-        basename = if match?(%Ref{}, ref), do: Path.basename(ref.path), else: ""
-
-        Keyword.put(opts, :disposition, Fil.Support.ContentDisposition.header(disposition, basename))
+  # Adapters get `:disposition` as the header value, built here so it's the same on every disk.
+  defp put_disposition(opts, basename) do
+    case opts[:disposition] do
+      nil -> opts
+      disposition -> Keyword.put(opts, :disposition, Fil.Support.ContentDisposition.header(disposition, basename))
     end
   end
 

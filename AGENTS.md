@@ -105,13 +105,14 @@ account on the ruleset's bypass list.
 
 - **Changelog:** `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first,
   one entry per user-visible change under `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, added
-  under `## [Unreleased]` in the same commit as the change. Released sections are headed `## [0.2.0] - 2026-10-01`, and
-  the link definitions at the end (`[unreleased]: …/compare/v0.2.0...HEAD`) are kept by `bin/release`. The file is in
-  the Hex package and a Guides tab on HexDocs, so each published version carries its changelog.
+  under `## [Unreleased]` in the same commit as the change. Released sections are headed `## [0.2.0] - 2026-10-01`.
+  `bin/release` keeps the link definitions at the end, which compare each version with the one before. The file is in
+  the Hex package and a Guides tab on HexDocs, so each published version includes its changelog.
 - **Hotfix:** a normal fix on `main`, then `bin/release 0.2.1`.
 - **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix with its changelog entry under a new
   `## [Unreleased]`, push the branch, then `bin/release 0.1.1` on it. A `v0.N` branch keeps its own changelog and is
-  never merged anywhere; `main` may note the backport in the current section.
+  never merged anywhere; `main` may note the backport in the current section. `v0.1.0` still has the old changelog
+  format, so a `v0.1` branch first cherry-picks the commit "Follow Keep a Changelog 1.1.0".
 - **Bad release:** `mix hex.retire fil 0.2.0 security --message "..."` warns users on `mix deps.get`, and the changelog
   heading becomes `## [0.2.0] - 2026-10-01 [YANKED]`. A version can't be replaced, so the fix is the next patch
   version.

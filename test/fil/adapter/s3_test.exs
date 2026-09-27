@@ -645,6 +645,20 @@ defmodule Fil.Adapter.S3Test do
       assert requests() == []
     end
 
+    test "takes the file name from the normalized path" do
+      disposition = fn path, opts ->
+        {:ok, url} = Fil.signed_url(disk(), path, opts)
+        query(url)["response-content-disposition"]
+      end
+
+      assert disposition.("docs/../cv.pdf", disposition: :attachment) == ~s(attachment; filename="cv.pdf")
+      assert disposition.("", disposition: :attachment) == "attachment"
+
+      assert_raise ArgumentError, ~r/can't be empty/, fn ->
+        Fil.signed_url(disk(), "cv.pdf", disposition: {:attachment, ""})
+      end
+    end
+
     test "signs extra query parameters" do
       assert {:ok, plain} = Fil.signed_url(disk(), "index.html")
       assert {:ok, tracked} = Fil.signed_url(disk(), "index.html", query: [{"trackingInfo", "7-42-a b"}])

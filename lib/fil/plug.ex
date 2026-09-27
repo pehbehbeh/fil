@@ -76,7 +76,8 @@ if Code.ensure_loaded?(Plug) do
     `GET /avatars/1.png` then returns `1.png` from the disk, on every adapter. There are no directory listings, and a
     path can't leave the disk root. With `Fil.Plugin.URL` and `base_url: "http://localhost:4000/avatars"` on the disk,
     `Fil.url/2` builds these URLs. Uploads still need a signed URL, and without a `:secret` for `Fil.Plugin.URL` on the
-    disk, a `PUT` gets a `403`.
+    disk, a `PUT` gets a `403`. A signed download URL that has expired or was changed still works on a public disk, but
+    without the `content-disposition` it was signed with.
 
     ## In a router
 
