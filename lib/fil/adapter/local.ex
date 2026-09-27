@@ -32,12 +32,13 @@ defmodule Fil.Adapter.Local do
     * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read.
     * `Fil.write/4`: the content, in memory or a stream, goes to a temporary file named `.fil-` and a unique suffix in
       the destination directory, which `File.rename/2` then moves into place, so readers never see a partial file. A
-      failed write leaves nothing behind, and removes the directories it created. A writer that's killed before it's
-      done (a request process that the server stops when the client disconnects, for example) leaves its `.fil-` file
-      and those directories behind. `if_exists: :error` hard-links the temporary file to the destination instead,
-      which fails if it exists (on a filesystem without hard links, it creates the destination with `O_EXCL` first).
-      `checksum:` is ignored. Writing over a directory, or to `report.txt/x` when `report.txt` is a file, is a
-      `Fil.InvalidRequestError`.
+      failed write leaves nothing behind, and removes the directories it created. The same holds when the writer is
+      killed before it's done (a request process that the server stops when the client disconnects, for example): a
+      process of `Fil`'s application watches every writer and removes its `.fil-` file and those directories once it's
+      gone. Only a crash of the whole node (`kill -9`, a power loss) leaves them behind. `if_exists: :error` hard-links
+      the temporary file to the destination instead, which fails if it exists (on a filesystem without hard links, it
+      creates the destination with `O_EXCL` first). `checksum:` is ignored. Writing over a directory, or to
+      `report.txt/x` when `report.txt` is a file, is a `Fil.InvalidRequestError`.
     * `Fil.rm/3`: `File.rm/1`, with a missing file mapped to success. Removing a directory is a
       `Fil.InvalidRequestError`.
     * `Fil.stat/3`: `File.stat/2`. `:etag` is a weak `"size-mtime"` tag: good enough to notice a change, but it can't
@@ -86,6 +87,7 @@ defmodule Fil.Adapter.Local do
 
   alias Fil.Stat
   alias Fil.Support.Checksum
+  alias Fil.Support.Tmp
 
   # The size of the chunks `Fil.stream/3` reads.
   @chunk_size 65_536
@@ -181,7 +183,7 @@ defmodule Fil.Adapter.Local do
 
   # The content goes to a temporary file next to the destination, which then takes its place in one step. Whatever
   # happens in between (an error, or a stream that raises), the temporary file is removed, and so are the directories
-  # this write created, so the disk is left as it was.
+  # this write created, so the disk is left as it was. When the writer is killed, `Fil.Support.Tmp` removes them.
   defp write_file(state, path, content, opts) do
     chunks = if is_binary(content) or is_list(content), do: [content], else: content
 
@@ -209,7 +211,7 @@ defmodule Fil.Adapter.Local do
   defp open_tmp(full, created) do
     tmp = tmp_path(full)
 
-    case open_exclusive(tmp) do
+    case open_exclusive(tmp, created) do
       {:ok, io} -> {:ok, tmp, io, created}
       {:error, reason} when reason in [:enoent, :einval] -> reopen_tmp(full, tmp, created)
       {:error, reason} -> {:error, reason, created}
@@ -218,7 +220,7 @@ defmodule Fil.Adapter.Local do
 
   defp reopen_tmp(full, tmp, created) do
     with {:ok, recreated} <- make_parents(full),
-         {:ok, io} <- open_exclusive(tmp) do
+         {:ok, io} <- open_exclusive(tmp, created ++ recreated) do
       {:ok, tmp, io, created ++ recreated}
     else
       {:error, reason, recreated} -> {:error, reason, created ++ recreated}
@@ -226,7 +228,20 @@ defmodule Fil.Adapter.Local do
     end
   end
 
-  defp open_exclusive(tmp), do: :file.open(tmp, [:write, :exclusive, :raw, :binary])
+  # The file is registered with `Fil.Support.Tmp` before it exists, so a writer that's killed right after the open
+  # can't leave it behind. The server then removes it and the directories this write created.
+  defp open_exclusive(tmp, created) do
+    Tmp.put({:file, tmp}, created)
+
+    case :file.open(tmp, [:write, :exclusive, :raw, :binary]) do
+      {:ok, io} ->
+        {:ok, io}
+
+      {:error, reason} ->
+        Tmp.delete({:file, tmp})
+        {:error, reason}
+    end
+  end
 
   defp write_into(full, {tmp, io}, created, fill, opts) do
     result =
@@ -238,7 +253,9 @@ defmodule Fil.Adapter.Local do
           :erlang.raise(kind, reason, __STACKTRACE__)
       end
 
-    if result == :ok, do: File.rm(tmp), else: discard(tmp, created)
+    # A placed file keeps its directories. Its temporary file is gone after a rename, but not after the hard link of
+    # `if_exists: :error`.
+    if result == :ok, do: discard(tmp, []), else: discard(tmp, created)
     result
   end
 
@@ -262,7 +279,8 @@ defmodule Fil.Adapter.Local do
 
   defp discard(tmp, created) do
     _ = File.rm(tmp)
-    remove_dirs(created)
+    Tmp.remove_dirs(created)
+    Tmp.delete({:file, tmp})
   end
 
   defp rm_file(state, path) do
@@ -424,7 +442,7 @@ defmodule Fil.Adapter.Local do
   defp undo_parents(:ok, _created), do: :ok
 
   defp undo_parents(error, created) do
-    remove_dirs(created)
+    Tmp.remove_dirs(created)
     error
   end
 
@@ -511,14 +529,6 @@ defmodule Fil.Adapter.Local do
     parent = Path.dirname(dir)
 
     if File.dir?(dir) or parent == dir, do: missing, else: missing_dirs(parent, [dir | missing])
-  end
-
-  # Removes empty directories, deepest first, and stops at the first one that isn't empty, because another write put
-  # something into it meanwhile.
-  defp remove_dirs(dirs) do
-    Enum.reduce_while(dirs, :ok, fn dir, :ok ->
-      if :file.del_dir(dir) == :ok, do: {:cont, :ok}, else: {:halt, :ok}
-    end)
   end
 
   # A path through a file (`report.txt/x`) is `:enotdir` to the filesystem, but that file doesn't exist, which
