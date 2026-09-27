@@ -43,7 +43,7 @@ defmodule Fil.MixProject do
       {:plug, "~> 1.14", optional: true},
 
       # Development
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:quokka, "~> 2.13", only: [:dev, :test], runtime: false}
     ]
