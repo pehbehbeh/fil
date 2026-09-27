@@ -301,6 +301,90 @@ defmodule Fil.PluginsTest do
       assert Fil.read(disk, "a.txt") == {:ok, "ABC"}
     end
 
+    test "update_content transforms a stream lazily and drops its size", %{disk: disk} do
+      test = self()
+
+      stream =
+        Stream.map(["ab", "", "cd"], fn chunk ->
+          send(test, {:pulled, chunk})
+          chunk
+        end)
+
+      op = %Op{disk: disk, name: :write, path: "a.txt", content: stream, options: [size: 4, content_type: "x"]}
+
+      chunked = Op.update_content(op, chunk: &String.upcase/1)
+      refute_received {:pulled, _chunk}
+      assert chunked.options == [content_type: "x"]
+      assert Enum.to_list(chunked.content) == ["AB", "CD"]
+
+      streamed = Op.update_content(op, binary: &String.reverse/1, stream: &Stream.map(&1, fn c -> [c, "."] end))
+
+      assert streamed.content
+             |> Enum.to_list()
+             |> IO.iodata_to_binary() == "ab.cd."
+
+      collected = Op.update_content(op, binary: &String.reverse/1)
+      assert collected.content == "dcba"
+      assert collected.options == [content_type: "x"]
+
+      # The content stays the same, and so does its size.
+      materialized = Op.materialize(op)
+      assert materialized.content == "abcd"
+      assert materialized.options == [size: 4, content_type: "x"]
+    end
+
+    test "a stream of another size than :size raises, whatever the plugins do with it", %{disk: disk} do
+      stream = Stream.map(["he", "llo"], & &1)
+
+      updates = [materialized: &Op.materialize/1, chunked: &Op.update_content(&1, chunk: fn chunk -> chunk end)]
+
+      for {name, update} <- updates do
+        plugged =
+          Fil.attach(disk, name, fn op, next, _opts ->
+            op
+            |> update.()
+            |> next.()
+          end)
+
+        path = "#{name}.txt"
+
+        assert_raise ArgumentError, "the content has 5 bytes, but the :size option is 6", fn ->
+          Fil.write(plugged, path, stream, size: 6)
+        end
+
+        refute Fil.exists?(plugged, path)
+        assert {:ok, _} = Fil.write(plugged, path, stream, size: 5)
+      end
+    end
+
+    test "update_content passes whole content to a stream transform as one chunk", %{disk: disk} do
+      op = %Op{disk: disk, name: :write, path: "a.txt", content: ["ab", "cd"], options: [size: 4]}
+
+      streamed = Op.update_content(op, stream: &Stream.map(&1, fn chunk -> [chunk, "!"] end))
+      assert IO.iodata_to_binary(streamed.content) == "abcd!"
+      assert streamed.options == [size: 4]
+    end
+
+    test "update_result transforms a streamed read when it's read", %{disk: disk} do
+      test = self()
+
+      stream =
+        Stream.map(["ab", "cd"], fn chunk ->
+          send(test, {:pulled, chunk})
+          chunk
+        end)
+
+      op = %Op{disk: disk, name: :read, path: "a.txt", streaming: true, result: {:ok, stream}}
+
+      assert {:ok, chunked} = Op.update_result(op, chunk: &String.upcase/1).result
+      assert {:ok, collected} = Op.update_result(op, binary: &String.reverse/1).result
+      refute_received {:pulled, _chunk}
+
+      assert Enum.to_list(chunked) == ["AB", "CD"]
+      assert Enum.to_list(collected) == ["dcba"]
+      assert_received {:pulled, "ab"}
+    end
+
     test "other operations are left alone, but the transforms are still checked", %{disk: disk} do
       op = %Op{disk: disk, name: :stat, path: "a.txt"}
 
@@ -308,8 +392,8 @@ defmodule Fil.PluginsTest do
       assert Op.update_result(op, binary: &String.upcase/1) == op
       assert Op.materialize(op) == op
 
-      assert_raise ArgumentError, ~r/at least one of/, fn -> Op.update_content(op, []) end
-      assert_raise ArgumentError, ~r/unknown transforms \[:stream\]/, fn -> Op.update_content(op, stream: & &1) end
+      assert_raise ArgumentError, ~r/at least one of :binary, :chunk or :stream/, fn -> Op.update_content(op, []) end
+      assert_raise ArgumentError, ~r/unknown transforms \[:lines\]/, fn -> Op.update_content(op, lines: & &1) end
       assert_raise ArgumentError, ~r/1-arity function/, fn -> Op.update_result(op, binary: :nope) end
     end
 

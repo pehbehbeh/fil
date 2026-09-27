@@ -29,10 +29,12 @@ defmodule Fil.Adapter.Local do
 
     * `Fil.read/3`: `File.read/1`. Reading a directory is a `Fil.InvalidRequestError`. The filesystem stores no
       checksums, so `verify_checksum: true` is ignored.
-    * `Fil.write/4`: the content goes to a temporary file in the destination directory, which `File.rename/2` then moves
-      into place, so readers never see a partial file. `if_exists: :error` opens the destination with `:exclusive`
-      (`O_EXCL`) instead. `checksum:` is ignored. Writing over a directory, or to `report.txt/x` when `report.txt` is a
-      file, is a `Fil.InvalidRequestError`.
+    * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read.
+    * `Fil.write/4`: the content, whole or streamed, goes to a temporary file in the destination directory, which
+      `File.rename/2` then moves into place, so readers never see a partial file, and a failed write leaves nothing
+      behind. `if_exists: :error` hard-links the temporary file to the destination instead, which fails if it exists
+      (on a filesystem without hard links, it creates the destination with `O_EXCL` first). `checksum:` is ignored.
+      Writing over a directory, or to `report.txt/x` when `report.txt` is a file, is a `Fil.InvalidRequestError`.
     * `Fil.rm/3`: `File.rm/1`, with a missing file mapped to success. Removing a directory is a
       `Fil.InvalidRequestError`.
     * `Fil.stat/3`: `File.stat/2`. `:etag` is a weak `"size-mtime"` tag: good enough to notice a change, but it can't
@@ -70,6 +72,9 @@ defmodule Fil.Adapter.Local do
   alias Fil.Stat
   alias Fil.Support.Checksum
 
+  # The size of the chunks `Fil.stream/3` reads.
+  @chunk_size 65_536
+
   defstruct [:root]
 
   @type t :: %__MODULE__{root: String.t()}
@@ -87,6 +92,9 @@ defmodule Fil.Adapter.Local do
 
   @impl Fil.Adapter
   def read(state, path, _opts), do: to_error(read_file(state, path))
+
+  @impl Fil.Adapter
+  def stream(state, path, _opts), do: to_error(stream_file(state, path))
 
   @impl Fil.Adapter
   def write(state, path, content, opts), do: to_error(write_file(state, path, content, opts))
@@ -123,12 +131,51 @@ defmodule Fil.Adapter.Local do
     with {:ok, full} <- full_path(state, path), do: missing(File.read(full))
   end
 
+  # The file is opened once to check it, and again each time the stream is read, by the process that reads it (a raw
+  # file belongs to the process that opened it).
+  defp stream_file(state, path) do
+    with {:ok, full} <- full_path(state, path),
+         {:ok, io} <- open_read(full) do
+      :ok = :file.close(io)
+
+      {:ok, Stream.resource(fn -> open_read!(full) end, &read_chunk/1, &:file.close/1)}
+    end
+  end
+
+  defp open_read(full), do: missing(:file.open(full, [:read, :raw, :binary]))
+
+  defp open_read!(full) do
+    case open_read(full) do
+      {:ok, io} -> io
+      {:error, reason} -> raise to_struct(reason)
+    end
+  end
+
+  defp read_chunk(io) do
+    case :file.read(io, @chunk_size) do
+      {:ok, chunk} -> {[chunk], io}
+      :eof -> {:halt, io}
+      {:error, reason} -> raise to_struct(reason)
+    end
+  end
+
+  # The content goes to a temporary file next to the destination, which then takes its place in one step. Whatever
+  # happens in between (an error, or a stream that raises), the temporary file is removed and the destination is left
+  # as it was.
   defp write_file(state, path, content, opts) do
     with {:ok, full} <- full_path(state, path),
          :ok <- ensure_parent(full) do
-      case Keyword.get(opts, :if_exists, :overwrite) do
-        :overwrite -> atomic_write(full, content)
-        :error -> exclusive_write(full, content)
+      tmp = full <> ".fil-" <> unique()
+
+      try do
+        with :ok <- write_tmp(tmp, content) do
+          case Keyword.get(opts, :if_exists, :overwrite) do
+            :overwrite -> File.rename(tmp, full)
+            :error -> create(tmp, full)
+          end
+        end
+      after
+        _ = File.rm(tmp)
       end
     end
   end
@@ -238,29 +285,50 @@ defmodule Fil.Adapter.Local do
   ## Writing
   ## ------------------------------------------------------------------
 
-  defp atomic_write(full, content) do
-    tmp = full <> ".fil-" <> unique()
+  defp write_tmp(tmp, content) do
+    with {:ok, io} <- :file.open(tmp, [:write, :exclusive, :raw, :binary]) do
+      chunks = if is_binary(content) or is_list(content), do: [content], else: content
 
-    with :ok <- File.write(tmp, content),
-         :ok <- File.rename(tmp, full) do
-      :ok
-    else
-      {:error, reason} ->
-        _ = File.rm(tmp)
-        {:error, reason}
+      result =
+        try do
+          write_chunks(io, chunks)
+        catch
+          kind, reason ->
+            _ = :file.close(io)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        end
+
+      closed = :file.close(io)
+      if result == :ok, do: closed, else: result
     end
   end
 
-  defp exclusive_write(full, content) do
-    case :file.open(full, [:write, :exclusive, :binary, :raw]) do
-      {:ok, io} ->
-        result = :file.write(io, content)
-        _ = :file.close(io)
+  defp write_chunks(io, chunks) do
+    Enum.reduce_while(chunks, :ok, fn chunk, :ok ->
+      case :file.write(io, chunk) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
 
-        case result do
-          :ok -> :ok
-          {:error, reason} -> {:error, reason}
-        end
+  # A hard link to the finished temporary file creates the destination only if it doesn't exist yet, in one step, so an
+  # exclusive write never shows a partial file either. Filesystems without hard links (some network shares) claim the
+  # name with `O_EXCL` instead and then move the content in, so the file is empty until the move.
+  defp create(tmp, full) do
+    case :file.make_link(tmp, full) do
+      :ok -> :ok
+      {:error, :eexist} -> {:error, directory_or(full, :eexist)}
+      {:error, reason} when reason in [:enotsup, :eperm] -> claim(tmp, full)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp claim(tmp, full) do
+    case :file.open(full, [:write, :exclusive, :raw]) do
+      {:ok, io} ->
+        :ok = :file.close(io)
+        File.rename(tmp, full)
 
       {:error, :eexist} ->
         {:error, directory_or(full, :eexist)}

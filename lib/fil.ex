@@ -17,6 +17,7 @@ defmodule Fil do
   alias Fil.Ref
   alias Fil.Stat
   alias Fil.Support.Checksum
+  alias Fil.Support.Content
 
   @typedoc """
   An error from an adapter or from `Fil` itself. Each struct stands for what the caller can do about it, and means the
@@ -37,6 +38,12 @@ defmodule Fil do
   @typedoc "A result. Plugins may return their own exceptions, so an error isn't always one of `t:error/0`."
   @type result(value) :: {:ok, value} | {:error, error() | Exception.t()}
 
+  @typedoc """
+  What `write/4` takes: iodata, or a stream of it (any `Enumerable` that isn't a list, such as a `Stream` or a
+  `File.Stream`). A list is always iodata.
+  """
+  @type content :: iodata() | Enumerable.t()
+
   @typedoc "A plugin callback: a function or a `{module, function}` pair. See the [Plugins guide](plugins.md)."
   @type plugin_callback :: (Op.t(), (Op.t() -> Op.t()), keyword() -> Op.t()) | {module(), atom()}
 
@@ -44,31 +51,46 @@ defmodule Fil do
 
   @checksums Checksum.algorithms()
 
-  @write_schema NimbleOptions.new!(
-                  if_exists: [
-                    type: {:in, [:overwrite, :error]},
-                    default: :overwrite,
-                    doc: """
-                    What to do if the file already exists. `:overwrite` replaces it. `:error` writes nothing and returns
-                    a `Fil.AlreadyExistsError`, like `File.write/3` with `[:exclusive]`. That check is atomic on local
-                    disk, in memory and on AWS S3, so two processes can't both create the file. Some S3-compatible
-                    servers ignore it.
-                    """
-                  ],
-                  content_type: [
-                    type: :string,
-                    doc: "Stored as the object's content type where the storage keeps one."
-                  ],
-                  checksum: [
-                    type: {:in, @checksums},
-                    doc: """
-                    Computes a checksum of the content with this algorithm (`:sha256`, `:sha1` or `:crc32`) and sends it
-                    along, where the storage supports it. S3 rejects the write with `Fil.ChecksumMismatchError` if the
-                    content it received doesn't match, and stores the checksum with the object. The local filesystem
-                    stores nothing.
-                    """
-                  ]
-                )
+  @write_options [
+    if_exists: [
+      type: {:in, [:overwrite, :error]},
+      default: :overwrite,
+      doc: """
+      What to do if the file already exists. `:overwrite` replaces it. `:error` writes nothing and returns a
+      `Fil.AlreadyExistsError`, like `File.write/3` with `[:exclusive]`. That check is atomic on local disk, in memory
+      and on AWS S3, so two processes can't both create the file. Some S3-compatible servers ignore it.
+      """
+    ],
+    content_type: [
+      type: :string,
+      doc: "Stored as the object's content type where the storage keeps one."
+    ],
+    checksum: [
+      type: {:in, @checksums},
+      doc: """
+      Computes a checksum of the content with this algorithm (`:sha256`, `:sha1` or `:crc32`) and sends it along, where
+      the storage supports it. S3 rejects the write with `Fil.ChecksumMismatchError` if the content it received doesn't
+      match, and stores the checksum with the object. The local filesystem stores nothing. S3 needs the checksum before
+      the content, so it collects a stream into memory first.
+      """
+    ]
+  ]
+
+  # Copies take the write options except `:size`, which only describes content the caller passes.
+  @transfer_schema NimbleOptions.new!(@write_options)
+
+  @size_option [
+    size: [
+      type: :non_neg_integer,
+      doc: """
+      The size of the content in bytes. S3 sends a stream of known size as it's read, and collects one without a size
+      into memory first. Content of another size raises `ArgumentError` and writes nothing. Plugins that transform a
+      stream drop the size.
+      """
+    ]
+  ]
+
+  @write_schema NimbleOptions.new!(@write_options ++ @size_option)
 
   @ls_schema NimbleOptions.new!(
                recursive: [
@@ -252,6 +274,55 @@ defmodule Fil do
   end
 
   @doc """
+  Streams a file: checks that it can be read and returns its content as a stream of binaries.
+
+      iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
+      iex> Fil.write!(disk, "hello.txt", "World")
+      iex> {:ok, hello} = Fil.stream(disk, "hello.txt")
+      iex> Enum.join(hello)
+      "World"
+      iex> {:error, %Fil.NotFoundError{path: "nope.txt"}} = Fil.stream(disk, "nope.txt")
+
+  The file is read only when the stream is enumerated, and again every time it is, so a stream can be read by another
+  process, more than once, or not at all. The size of the chunks depends on the adapter and says nothing about the
+  content. An error after the check, such as a file deleted in between or a lost connection, raises the same error
+  struct `read/2` would return. With `verify_checksum: true`, a mismatch raises `Fil.ChecksumMismatchError` at the
+  latest after the last chunk, so treat the content as unverified until then.
+
+  A stream can go straight into a write, to the same disk or another one:
+
+      {:ok, backup} = Fil.stream(s3, "backups/2026-09.tar")
+      Fil.write(local, "restore/2026-09.tar", backup)
+
+  ## Options
+
+  #{NimbleOptions.docs(@read_schema)}
+  """
+  @doc section: :operations
+  @spec stream(Ref.t()) :: result(Enumerable.t())
+  def stream(ref), do: stream(ref, [])
+
+  @doc "Streams a file. See `stream/1`."
+  @doc section: :operations
+  @spec stream(Disk.t(), Path.t()) :: result(Enumerable.t())
+  @spec stream(Ref.t(), keyword()) :: result(Enumerable.t())
+  def stream(%Disk{} = disk, path) when is_binary(path), do: stream(Ref.new(disk, path), [])
+
+  def stream(ref, opts) when is_list(opts) do
+    opts = validate!(opts, @read_schema)
+
+    # A plugin may answer with whole content, and the caller still gets a stream.
+    with {:ok, content} <- run(ref, :read, opts, streaming: true), do: {:ok, Content.chunks(content)}
+  end
+
+  @doc "Streams a file. See `stream/1`."
+  @doc section: :operations
+  @spec stream(Disk.t(), Path.t(), keyword()) :: result(Enumerable.t())
+  def stream(%Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
+    stream(Ref.new(disk, path), opts)
+  end
+
+  @doc """
   Returns metadata for a file or directory.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
@@ -400,7 +471,9 @@ defmodule Fil do
   @doc """
   Writes a file, creating missing parent directories.
 
-  `content` is any iodata.
+  `content` is iodata, or a stream of it (see `t:content/0`). A stream is written as it's read, without holding the
+  whole content in memory, and a file is only there once the stream has ended: if the stream raises, the error
+  propagates and nothing is written. Pass the size with `:size` if you know it, so S3 can stream too.
 
   ## Options
 
@@ -414,29 +487,37 @@ defmodule Fil do
       #Fil.Ref<memory:reports/q3.pdf>
       iex> {:error, %Fil.AlreadyExistsError{reason: :eexist}} =
       ...>   Fil.write(disk, "reports/q3.pdf", "again", if_exists: :error)
+      iex> {:ok, _} = Fil.write(disk, "numbers.txt", Stream.map(1..3, &Integer.to_string/1))
+      iex> Fil.read(disk, "numbers.txt")
+      {:ok, "123"}
+
+  Uploads and files from disk are streams too:
+
+      Fil.write(s3, "videos/intro.mp4", File.stream!("intro.mp4", 65_536), size: File.stat!("intro.mp4").size)
 
   """
   @doc section: :operations
-  @spec write(Ref.t(), iodata()) :: result(Ref.t())
+  @spec write(Ref.t(), content()) :: result(Ref.t())
   def write(ref, content), do: write(ref, content, [])
 
   @doc "Writes a file. See `write/2`."
   @doc section: :operations
-  @spec write(Disk.t(), Path.t(), iodata()) :: result(Ref.t())
-  @spec write(Ref.t(), iodata(), keyword()) :: result(Ref.t())
+  @spec write(Disk.t(), Path.t(), content()) :: result(Ref.t())
+  @spec write(Ref.t(), content(), keyword()) :: result(Ref.t())
   def write(%Disk{} = disk, path, content) when is_binary(path) do
     write(Ref.new(disk, path), content, [])
   end
 
   def write(ref, content, opts) when is_list(opts) do
     opts = validate!(opts, @write_schema)
+    :ok = Content.validate!(content)
 
-    run(ref, :write, opts, content: content)
+    run(ref, :write, opts, content: check_size!(content, opts[:size]))
   end
 
   @doc "Writes a file. See `write/2`."
   @doc section: :operations
-  @spec write(Disk.t(), Path.t(), iodata(), keyword()) :: result(Ref.t())
+  @spec write(Disk.t(), Path.t(), content(), keyword()) :: result(Ref.t())
   def write(%Disk{} = disk, path, content, opts) when is_binary(path) and is_list(opts) do
     write(Ref.new(disk, path), content, opts)
   end
@@ -520,8 +601,8 @@ defmodule Fil do
   @doc """
   Copies a file and returns the destination ref.
 
-  Within one disk, `Fil` uses the adapter's native copy. Across disks, it reads the file and writes it to the
-  destination. The destination may be a ref, or a bare path on the source's disk.
+  Within one disk, `Fil` uses the adapter's native copy. Across disks, it streams the file from the source to the
+  destination (see `stream/3`). The destination may be a ref, or a bare path on the source's disk.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
@@ -547,7 +628,7 @@ defmodule Fil do
   end
 
   def cp(src, dest, opts) when is_list(opts) do
-    transfer(src, dest, validate!(opts, @write_schema), :cp)
+    transfer(src, dest, validate!(opts, @transfer_schema), :cp)
   end
 
   @doc "Copies a file. See `cp/2`."
@@ -584,7 +665,7 @@ defmodule Fil do
   end
 
   def rename(src, dest, opts) when is_list(opts) do
-    transfer(src, dest, validate!(opts, @write_schema), :rename)
+    transfer(src, dest, validate!(opts, @transfer_schema), :rename)
   end
 
   @doc "Moves a file. See `rename/2`."
@@ -724,6 +805,22 @@ defmodule Fil do
   @spec read!(Disk.t(), Path.t(), keyword()) :: binary()
   def read!(a, b, c), do: unwrap!(read(a, b, c))
 
+  @doc "Same as `stream/1`, raising the error on failure."
+  @doc section: :bang
+  @spec stream!(Ref.t()) :: Enumerable.t()
+  def stream!(ref), do: unwrap!(stream(ref))
+
+  @doc "Same as `stream/2`, raising the error on failure."
+  @doc section: :bang
+  @spec stream!(Disk.t(), Path.t()) :: Enumerable.t()
+  @spec stream!(Ref.t(), keyword()) :: Enumerable.t()
+  def stream!(a, b), do: unwrap!(stream(a, b))
+
+  @doc "Same as `stream/3`, raising the error on failure."
+  @doc section: :bang
+  @spec stream!(Disk.t(), Path.t(), keyword()) :: Enumerable.t()
+  def stream!(a, b, c), do: unwrap!(stream(a, b, c))
+
   @doc "Same as `stat/1`, raising the error on failure."
   @doc section: :bang
   @spec stat!(Ref.t()) :: Stat.t()
@@ -759,18 +856,18 @@ defmodule Fil do
 
   @doc "Same as `write/2`, raising the error on failure."
   @doc section: :bang
-  @spec write!(Ref.t(), iodata()) :: Ref.t()
+  @spec write!(Ref.t(), content()) :: Ref.t()
   def write!(ref, content), do: unwrap!(write(ref, content))
 
   @doc "Same as `write/3`, raising the error on failure."
   @doc section: :bang
-  @spec write!(Disk.t(), Path.t(), iodata()) :: Ref.t()
-  @spec write!(Ref.t(), iodata(), keyword()) :: Ref.t()
+  @spec write!(Disk.t(), Path.t(), content()) :: Ref.t()
+  @spec write!(Ref.t(), content(), keyword()) :: Ref.t()
   def write!(a, b, c), do: unwrap!(write(a, b, c))
 
   @doc "Same as `write/4`, raising the error on failure."
   @doc section: :bang
-  @spec write!(Disk.t(), Path.t(), iodata(), keyword()) :: Ref.t()
+  @spec write!(Disk.t(), Path.t(), content(), keyword()) :: Ref.t()
   def write!(a, b, c, d), do: unwrap!(write(a, b, c, d))
 
   @doc "Same as `rm/1`, raising the error on failure."
@@ -888,6 +985,24 @@ defmodule Fil do
     end
   end
 
+  # The caller's content is checked against `:size` before plugins see it, so a plugin that collects or transforms a
+  # stream doesn't hide a wrong size. Whole content is checked right away, a stream while it's read
+  # (`Fil.Support.Content.sized/2`).
+  defp check_size!(content, nil), do: content
+
+  defp check_size!(content, size) do
+    cond do
+      not Content.whole?(content) ->
+        Content.sized(content, size)
+
+      IO.iodata_length(content) != size ->
+        raise ArgumentError, "the content has #{IO.iodata_length(content)} bytes, but the :size option is #{size}"
+
+      true ->
+        content
+    end
+  end
+
   # Parameters that signed URLs already use on some disk. They're rejected on every disk, so a URL that works on one
   # works on all.
   defp check_query!(query) do
@@ -944,8 +1059,12 @@ defmodule Fil do
   defp name_op({:error, %{op: _} = error}, name), do: {:error, %{error | op: name}}
   defp name_op(result, _name), do: result
 
+  # An error the source raises while it's streamed is still an error of the copy, so it's returned like one. It's the
+  # source's when it has the source's context, which `Fil.Op` fills in while the stream is read.
   defp cross_disk(:cp, src, dest, opts) do
-    with {:ok, content} <- read(src), do: write(dest, content, opts)
+    with {:ok, content} <- stream(src), do: write(dest, content, opts)
+  rescue
+    error -> source_error(error, src, __STACKTRACE__)
   end
 
   defp cross_disk(:rename, src, dest, opts) do
@@ -954,6 +1073,9 @@ defmodule Fil do
       {:ok, dest_ref}
     end
   end
+
+  defp source_error(%{op: :read, disk: disk} = error, %Ref{disk: disk}, _stacktrace), do: {:error, error}
+  defp source_error(error, _src, stacktrace), do: reraise(error, stacktrace)
 
   defp resolve(%Ref{} = ref, name) do
     with {:error, error} <- Ref.normalize(ref), do: {:error, %{error | op: name}}

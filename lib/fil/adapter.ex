@@ -23,6 +23,7 @@ defmodule Fil.Adapter do
 
   | Situation | `File` | Every `Fil` adapter |
   | --- | --- | --- |
+  | `c:stream/3` on a missing file | `File.stream!/3` raises when it's read | `{:error, %Fil.NotFoundError{}}` |
   | `c:write/4` into a missing directory | `{:error, :enoent}` | creates the missing parents |
   | exclusive `c:write/4` on an existing file | `{:error, :eexist}` | `{:error, %Fil.AlreadyExistsError{}}` |
   | `c:cp/4` or `c:rename/4` into a missing directory | `{:error, :enoent}` | creates the missing parents |
@@ -40,6 +41,8 @@ defmodule Fil.Adapter do
 
   Options that `File` has no equivalent for:
 
+    * `size:` on `c:write/4` is the size of a stream, when the caller knows it. Storage that needs the size before the
+      content uses it, and collects a stream without one first
     * `checksum:` on `c:write/4` sends a checksum of the content where the storage keeps one, and storage that finds
       the content doesn't match fails with `Fil.ChecksumMismatchError`. Storage without checksums ignores the option
     * `checksum:` on `c:stat/3` fills in `Fil.Stat`'s `:checksum`, from the storage or computed from the content
@@ -48,10 +51,10 @@ defmodule Fil.Adapter do
 
   `Fil.AdapterCase` (internal for now) tests this contract against a live disk.
 
-  Every adapter `Fil` ships reads, writes, lists, copies and checks checksums, and every disk builds public and signed
-  URLs (S3 itself, the others with `Fil.Plugin.URL`), so code written against one disk runs on the others. What's left
-  are edge cases, such as whether directories exist on their own, and each adapter lists them under Operations on its
-  own page.
+  Every adapter `Fil` ships reads, writes and streams files, lists, copies and checks checksums, and every disk builds
+  public and signed URLs (S3 itself, the others with `Fil.Plugin.URL`), so code written against one disk runs on the
+  others. What's left are edge cases, such as whether directories exist on their own, and each adapter lists them
+  under Operations on its own page.
 
   ## Errors
 
@@ -101,8 +104,26 @@ defmodule Fil.Adapter do
   @doc "Reads the whole file."
   @callback read(state(), path(), opts()) :: {:ok, binary()} | error()
 
-  @doc "Writes `content`, creating parent directories as needed."
-  @callback write(state(), path(), iodata(), opts()) :: :ok | error()
+  @doc """
+  Checks that a file can be read and returns a stream of its content.
+
+  Optional. Without it, `Fil.stream/3` calls `c:read/3` and streams the whole content as one chunk.
+
+  The stream is lazy: it reads the file only when it's enumerated, and again each time it is, in whatever process
+  enumerates it. It yields binaries of any size and raises an error struct when reading fails (`Fil` fills in its
+  context). `opts` are those of `c:read/3`, and a `verify_checksum: true` mismatch raises `Fil.ChecksumMismatchError`
+  at the latest after the last chunk.
+  """
+  @callback stream(state(), path(), opts()) :: {:ok, Enumerable.t()} | error()
+
+  @doc """
+  Writes `content`, creating parent directories as needed.
+
+  `content` is iodata, or a stream of non-empty binaries. `Fil` checks a stream against the `:size` option while the
+  adapter reads it, when the caller gave one. If the stream raises, the adapter lets the error propagate and writes
+  nothing: the destination keeps what it had before.
+  """
+  @callback write(state(), path(), iodata() | Enumerable.t(), opts()) :: :ok | error()
 
   @doc "Deletes a file. Idempotent: a missing file is still `:ok`."
   @callback rm(state(), path(), opts()) :: :ok | error()
@@ -157,5 +178,5 @@ defmodule Fil.Adapter do
   """
   @callback signed_url(state(), path(), opts()) :: {:ok, String.t()} | error()
 
-  @optional_callbacks url: 3, signed_url: 3
+  @optional_callbacks stream: 3, url: 3, signed_url: 3
 end

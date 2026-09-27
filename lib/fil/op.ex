@@ -10,7 +10,9 @@ defmodule Fil.Op do
       `:signed_url`
     * `:path`: the normalized path, relative to the disk root
     * `:dest`: the destination path of a `:cp` or `:rename` on the same disk, `nil` otherwise
-    * `:content`: the content of a `:write`, `nil` otherwise. Change it with `update_content/2`
+    * `:content`: the content of a `:write`, `nil` otherwise: iodata, or a stream of it. Change it with
+      `update_content/2`
+    * `:streaming`: `true` for a `:read` from `Fil.stream/3`, whose result is a stream instead of a binary
     * `:options`: the validated options of the call
     * `:result`: `nil` on the way in, then `{:ok, value}` or `{:error, exception}` with the same value the `Fil`
       function returns. Change a read result with `update_result/2`
@@ -19,9 +21,10 @@ defmodule Fil.Op do
 
   alias Fil.Disk
   alias Fil.Ref
+  alias Fil.Support.Content
 
   @enforce_keys [:disk, :name, :path]
-  defstruct [:disk, :name, :path, :dest, :content, :result, options: [], private: %{}]
+  defstruct [:disk, :name, :path, :dest, :content, :result, streaming: false, options: [], private: %{}]
 
   @type name :: :read | :write | :stat | :ls | :rm | :rm_rf | :cp | :rename | :url | :signed_url
 
@@ -30,13 +33,18 @@ defmodule Fil.Op do
           name: name(),
           path: Path.t(),
           dest: Path.t() | nil,
-          content: iodata() | nil,
+          content: iodata() | Enumerable.t() | nil,
+          streaming: boolean(),
           options: keyword(),
           result: {:ok, term()} | {:error, Exception.t()} | nil,
           private: map()
         }
 
-  @type transform :: [binary: (binary() -> iodata()), chunk: (binary() -> iodata())]
+  @type transform :: [
+          binary: (binary() -> iodata()),
+          chunk: (binary() -> iodata()),
+          stream: (Enumerable.t() -> Enumerable.t())
+        ]
 
   ## ------------------------------------------------------------------
   ## Options, results and private data
@@ -126,17 +134,31 @@ defmodule Fil.Op do
   @doc """
   Transforms the content of a `:write`. Other operations are returned unchanged.
 
-  Pass `binary:` to transform the whole content at once and `chunk:` to transform it piece by piece:
+  The content is whole (a binary or iodata) or a stream. Pass `binary:` to transform whole content, and `chunk:` or
+  `stream:` to transform a stream without collecting it:
 
-      Fil.Op.update_content(op, binary: &:zlib.gzip/1)
+      Fil.Op.update_content(op, binary: &:zlib.gzip/1, stream: &MyApp.Gzip.stream/1)
 
-  Content is always whole for now, so `binary:` runs and gets a binary (iodata is flattened first). Without `binary:`,
-  the content is passed to `chunk:` as a single chunk. Once streaming lands, `chunk:` runs on each chunk of a stream,
-  and a stream is collected first if there's only `binary:`.
+    * `binary:` gets the whole content as a binary and returns iodata. A stream is collected into memory first when
+      there's no `chunk:` or `stream:`
+    * `chunk:` gets one chunk of a stream as a binary and returns iodata, once per chunk, when the adapter reads it.
+      Without `binary:`, whole content is passed to it as a single chunk
+    * `stream:` gets the stream (an enumerable of binaries) and returns an enumerable of iodata, for transforms that
+      keep state from one chunk to the next or add something at the end. Without `binary:`, whole content is passed to
+      it as a stream of one chunk (none if it's empty), and the result is collected again
+
+  A stream prefers `stream:` over `chunk:`. The [Plugins guide](plugins.md#streams) describes what a chunk is.
+  Transforming a stream drops the `:size` option of the write, because the size can change.
   """
   @spec update_content(t(), transform()) :: t()
   def update_content(%__MODULE__{name: :write, content: content} = op, funs) do
-    %{op | content: transform!(content, funs)}
+    funs = validate_transform!(funs)
+
+    if Content.whole?(content) do
+      %{op | content: transform_whole(content, funs)}
+    else
+      drop_size(%{op | content: transform_stream(content, funs)})
+    end
   end
 
   def update_content(%__MODULE__{} = op, funs) do
@@ -147,16 +169,23 @@ defmodule Fil.Op do
   @doc """
   Transforms the content returned by a successful `:read`. Other operations and errors are returned unchanged.
 
-  Takes the same `binary:` and `chunk:` functions as `update_content/2`.
+  Takes the same `binary:`, `chunk:` and `stream:` functions as `update_content/2`. The result of `Fil.stream/3` is a
+  stream, and the transforms run when the caller reads it; a stream with only `binary:` is collected then too.
   """
   @spec update_result(t(), transform()) :: t()
   def update_result(%__MODULE__{name: :read, result: {:ok, content}} = op, funs) do
-    binary =
-      content
-      |> transform!(funs)
-      |> IO.iodata_to_binary()
+    funs = validate_transform!(funs)
 
-    %{op | result: {:ok, binary}}
+    if Content.whole?(content) do
+      binary =
+        content
+        |> transform_whole(funs)
+        |> IO.iodata_to_binary()
+
+      %{op | result: {:ok, binary}}
+    else
+      %{op | result: {:ok, transform_result_stream(content, funs)}}
+    end
   end
 
   def update_result(%__MODULE__{} = op, funs) do
@@ -167,8 +196,8 @@ defmodule Fil.Op do
   @doc """
   Makes the content of a `:write` whole, for plugins that need all of it at once.
 
-  Content is always whole for now, so this only flattens iodata into a binary. Once streaming lands, it collects a
-  stream into memory, so use it only when a plugin can't work chunk by chunk.
+  Whole content is flattened into a binary. A stream is collected into memory, so use this only when a plugin can't
+  work chunk by chunk.
 
       iex> op = %Fil.Op{disk: nil, name: :write, path: "a.txt", content: ["a", ["b"]]}
       iex> Fil.Op.materialize(op).content
@@ -177,25 +206,66 @@ defmodule Fil.Op do
   """
   @spec materialize(t()) :: t()
   def materialize(%__MODULE__{name: :write, content: content} = op) do
-    %{op | content: IO.iodata_to_binary(content)}
+    %{op | content: Content.to_binary(content)}
   end
 
   def materialize(%__MODULE__{} = op), do: op
 
-  defp transform!(content, funs) do
-    fun =
-      case validate_transform!(funs) do
-        %{binary: fun} -> fun
-        %{chunk: fun} -> fun
-      end
+  defp transform_whole(content, funs) do
+    binary = IO.iodata_to_binary(content)
 
-    content
-    |> IO.iodata_to_binary()
-    |> fun.()
+    case funs do
+      %{binary: fun} ->
+        fun.(binary)
+
+      %{stream: fun} ->
+        binary
+        |> Content.chunks()
+        |> fun.()
+        |> Enum.to_list()
+
+      %{chunk: fun} ->
+        fun.(binary)
+    end
   end
 
+  defp transform_stream(stream, funs) do
+    chunks = Content.chunks(stream)
+
+    case funs do
+      %{stream: fun} ->
+        fun.(chunks)
+
+      %{chunk: fun} ->
+        Stream.map(chunks, fun)
+
+      %{binary: fun} ->
+        chunks
+        |> Enum.into(<<>>)
+        |> fun.()
+    end
+  end
+
+  # A read stream stays lazy, so a transform that needs the whole content collects it when the caller reads.
+  defp transform_result_stream(stream, funs) do
+    case funs do
+      %{stream: _fun} -> transform_stream(stream, funs)
+      %{chunk: _fun} -> transform_stream(stream, funs)
+      %{binary: fun} -> Stream.flat_map([stream], &[collect(&1, fun)])
+    end
+  end
+
+  defp collect(stream, fun) do
+    stream
+    |> Content.to_binary()
+    |> fun.()
+    |> IO.iodata_to_binary()
+  end
+
+  defp drop_size(%__MODULE__{options: options} = op), do: %{op | options: Keyword.delete(options, :size)}
+
   defp validate_transform!(funs) when is_list(funs) do
-    case Keyword.split(funs, [:binary, :chunk]) do
+    case Keyword.split(funs, [:binary, :chunk, :stream]) do
       {[_ | _] = valid, []} ->
         Enum.each(valid, fn
           {_key, fun} when is_function(fun, 1) ->
@@ -208,10 +278,11 @@ defmodule Fil.Op do
         Map.new(valid)
 
       {[], []} ->
-        raise ArgumentError, "expected at least one of :binary or :chunk"
+        raise ArgumentError, "expected at least one of :binary, :chunk or :stream"
 
       {_valid, unknown} ->
-        raise ArgumentError, "unknown transforms #{inspect(Keyword.keys(unknown))}, expected :binary or :chunk"
+        raise ArgumentError,
+              "unknown transforms #{inspect(Keyword.keys(unknown))}, expected :binary, :chunk or :stream"
     end
   end
 
@@ -287,8 +358,20 @@ defmodule Fil.Op do
 
   defp call_adapter(%__MODULE__{disk: %Disk{adapter: {module, state}}} = op), do: call_adapter(op, module, state)
 
-  defp call_adapter(%__MODULE__{name: :write} = op, module, state) do
-    module.write(state, op.path, op.content, op.options)
+  # A stream reaches the adapter as non-empty binaries, checked against the `:size` the caller declared.
+  defp call_adapter(%__MODULE__{name: :write, content: content} = op, module, state) do
+    content = if Content.whole?(content), do: content, else: Content.sized(content, op.options[:size])
+
+    module.write(state, op.path, content, op.options)
+  end
+
+  # `stream/3` is optional. Without it, the adapter reads the whole file and the stream is that one chunk.
+  defp call_adapter(%__MODULE__{name: :read, streaming: true} = op, module, state) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :stream, 3) do
+      module.stream(state, op.path, op.options)
+    else
+      with {:ok, content} <- module.read(state, op.path, op.options), do: {:ok, [content]}
+    end
   end
 
   defp call_adapter(%__MODULE__{name: name} = op, module, state) when name in [:cp, :rename] do
@@ -316,6 +399,11 @@ defmodule Fil.Op do
 
   defp to_result({:ok, listed}, %__MODULE__{name: :ls, disk: disk}, _caller) when is_list(listed) do
     {:ok, Enum.map(listed, fn {path, stat} -> %Ref{disk: disk, path: path, stat: stat} end)}
+  end
+
+  # Errors raised while the caller reads the stream get the same context as returned ones.
+  defp to_result({:ok, stream}, %__MODULE__{name: :read, streaming: true}, caller) do
+    {:ok, Content.put_context(stream, op: caller.name, path: caller.path, disk: caller.disk)}
   end
 
   defp to_result({:ok, value}, _op, _caller), do: {:ok, value}
