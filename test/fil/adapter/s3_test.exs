@@ -1362,6 +1362,57 @@ defmodule Fil.Adapter.S3Test do
     end
   end
 
+  describe "telemetry" do
+    setup do
+      :ok = Fil.TelemetryHelper.attach([[:fil, :op, :stop], [:fil, :stream, :stop]])
+    end
+
+    test "counts the bytes written, read and streamed" do
+      stub([
+        response(200),
+        response(200, "content"),
+        response(200, "", [{"content-length", "7"}]),
+        response(200, ["con", "tent"])
+      ])
+
+      assert {:ok, _} = Fil.write(disk(), "a.txt", "content")
+      assert {:ok, "content"} = Fil.read(disk(), "a.txt")
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt")
+      assert Enum.join(stream) == "content"
+
+      assert [
+               {[:fil, :op, :stop], %{bytes: 7}, %{op: :write, adapter: S3, error: nil}},
+               {[:fil, :op, :stop], %{bytes: 7}, %{op: :read, streaming: false}},
+               {[:fil, :op, :stop], stream_check, %{op: :read, streaming: true}},
+               {[:fil, :stream, :stop], %{bytes: 7}, %{op: :read, halted: false}}
+             ] = Fil.TelemetryHelper.events()
+
+      refute Map.has_key?(stream_check, :bytes)
+    end
+
+    test "a failed part halts the stream it reads and fails the write" do
+      :ok = Fil.Adapter.Memory.checkout()
+      source = Fil.disk(adapter: Fil.Adapter.Memory)
+      {:ok, _} = Fil.write(source, "a.bin", :binary.copy("a", @part + 1))
+      _ = Fil.TelemetryHelper.events()
+
+      stub([response(200, initiate_xml("UP")), response(500), response(503, error_xml("SlowDown")), response(204)])
+
+      assert {:ok, stream} = Fil.stream(source, "a.bin")
+      assert {:error, %Fil.UnavailableError{} = error} = Fil.write(parts_disk(), "a.bin", stream)
+
+      assert [
+               {[:fil, :op, :stop], _, %{op: :read, streaming: true}},
+               {[:fil, :stream, :stop], %{bytes: bytes}, %{op: :read, disk: ^source, halted: true}},
+               {[:fil, :op, :stop], write, %{op: :write, adapter: S3, error: ^error}}
+             ] = Fil.TelemetryHelper.events()
+
+      assert bytes > @part
+      refute Map.has_key?(write, :bytes)
+      assert_aborted(requests())
+    end
+  end
+
   ## ------------------------------------------------------------------
   ## Fixtures
   ## ------------------------------------------------------------------

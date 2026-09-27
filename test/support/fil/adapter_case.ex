@@ -838,6 +838,62 @@ defmodule Fil.AdapterCase do
       end
 
       ## ----------------------------------------------------------------
+      ## Telemetry
+      ## ----------------------------------------------------------------
+
+      test "emits the same events for every operation", %{disk: disk} do
+        :ok = Fil.TelemetryHelper.attach([[:fil, :op, :stop], [:fil, :stream, :stop]])
+
+        assert {:ok, _} = Fil.write(disk, "events/a.txt", "content")
+        assert {:ok, "content"} = Fil.read(disk, "events/a.txt")
+        assert {:ok, stream} = Fil.stream(disk, "events/a.txt")
+        assert Enum.join(stream) == "content"
+        assert {:ok, _} = Fil.stat(disk, "events/a.txt")
+        assert {:ok, _} = Fil.ls(disk, "events")
+        assert {:ok, _} = Fil.cp(disk, "events/a.txt", "events/b.txt")
+        assert {:ok, _} = Fil.rename(disk, "events/b.txt", "events/c.txt")
+        assert {:ok, _} = Fil.rm(disk, "events/c.txt")
+        assert {:ok, _} = Fil.url(disk, "events/a.txt")
+        assert {:ok, _} = Fil.signed_url(disk, "events/a.txt")
+        assert {:error, _} = Fil.read(disk, "events/nope.txt")
+        assert {:error, _} = Fil.read(disk, "../escape.txt")
+        assert {:ok, 1} = Fil.rm_rf(disk, "events")
+
+        events = Fil.TelemetryHelper.events()
+
+        assert Enum.map(events, fn {event, measurements, metadata} ->
+                 error = if metadata[:error], do: metadata.error.__struct__
+                 {Enum.at(event, 1), metadata.op, metadata.streaming, measurements[:bytes], error}
+               end) == [
+                 {:op, :write, false, 7, nil},
+                 {:op, :read, false, 7, nil},
+                 {:op, :read, true, nil, nil},
+                 {:stream, :read, true, 7, nil},
+                 {:op, :stat, false, nil, nil},
+                 {:op, :ls, false, nil, nil},
+                 {:op, :cp, false, nil, nil},
+                 {:op, :rename, false, nil, nil},
+                 {:op, :rm, false, nil, nil},
+                 {:op, :url, false, nil, nil},
+                 {:op, :signed_url, false, nil, nil},
+                 {:op, :read, false, nil, Fil.NotFoundError},
+                 {:op, :read, false, nil, Fil.InvalidRequestError},
+                 {:op, :rm_rf, false, nil, nil}
+               ]
+
+        adapter = Fil.Disk.adapter(disk)
+
+        for {[:fil, :op, :stop], _measurements, metadata} <- events do
+          assert %{disk: ^disk, adapter: ^adapter} = metadata
+
+          assert metadata
+                 |> Map.keys()
+                 |> Enum.sort() ==
+                   [:adapter, :dest, :dest_disk, :disk, :error, :op, :path, :streaming, :telemetry_span_context]
+        end
+      end
+
+      ## ----------------------------------------------------------------
       ## Argument forms
       ## ----------------------------------------------------------------
 
