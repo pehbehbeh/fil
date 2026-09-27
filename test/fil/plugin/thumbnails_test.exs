@@ -3,6 +3,7 @@ defmodule Fil.Plugin.ThumbnailsTest do
   alias Fil.Op
   alias Fil.Plugin.Thumbnails
   alias Vix.Vips.Image
+  alias Vix.Vips.MutableImage
   alias Vix.Vips.Operation
 
   use ExUnit.Case, async: true
@@ -29,15 +30,34 @@ defmodule Fil.Plugin.ThumbnailsTest do
     data
   end
 
+  # An image with EXIF data, an sRGB colour profile, and an orientation that says to turn it by 90 degrees.
+  defp photo(width, height, extension) do
+    {:ok, black} = Operation.black(width, height, bands: 3)
+    {:ok, profile} = Operation.profile_load("srgb")
+
+    {:ok, image} =
+      Image.mutate(black, fn mutable ->
+        :ok = MutableImage.set(mutable, "icc-profile-data", :VipsBlob, profile)
+        :ok = MutableImage.set(mutable, "orientation", :gint, 6)
+      end)
+
+    {:ok, data} = Image.write_to_buffer(image, extension)
+    data
+  end
+
   defp size(data) do
     {:ok, image} = Image.new_from_buffer(data)
     {Image.width(image), Image.height(image)}
   end
 
-  defp header_names(data) do
+  # The metadata libvips found, of the fields that a variant may leak.
+  defp metadata(data) do
     {:ok, image} = Image.new_from_buffer(data)
     {:ok, names} = Image.header_field_names(image)
+
     names
+    |> Enum.filter(&(&1 in ~w(exif-data icc-profile-data orientation xmp-data iptc-data)))
+    |> Enum.sort()
   end
 
   defp variant_size(disk, path, name) do
@@ -119,18 +139,19 @@ defmodule Fil.Plugin.ThumbnailsTest do
       end
     end
 
-    test "keep no metadata besides the colour profile" do
+    test "keep the colour profile of the metadata, and are rotated by the EXIF orientation" do
       disk = disk()
-      photo = image(400, 200, ".jpg")
-      Fil.write!(disk, "photo.jpg", photo)
 
-      assert "exif-data" in header_names(photo)
+      for extension <- ~w(.jpg .png .webp) do
+        photo = photo(400, 200, extension)
+        Fil.write!(disk, "photo" <> extension, photo)
+        variant = Thumbnails.variant(disk, "photo" <> extension, :small)
+        variant_data = Fil.read!(variant)
 
-      refute disk
-             |> Thumbnails.variant("photo.jpg", :small)
-             |> Fil.read!()
-             |> header_names()
-             |> Enum.any?(&String.starts_with?(&1, "exif"))
+        assert metadata(photo) == ["exif-data", "icc-profile-data", "orientation"]
+        assert metadata(variant_data) == ["icc-profile-data"]
+        assert size(variant_data) == {100, 200}
+      end
     end
 
     test "work on a stream" do
