@@ -36,6 +36,12 @@ defmodule Fil.Support.TmpServerTest do
     writer
   end
 
+  defp kill(pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+  end
+
   # Every file and directory under `dir`, `.fil-` files included.
   defp tree(dir) do
     dir
@@ -65,5 +71,43 @@ defmodule Fil.Support.TmpServerTest do
     assert_raise RuntimeError, fn -> Fil.write(disk, "other/a.txt", Stream.map([1], fn _ -> raise "failed" end)) end
 
     assert tree(tmp_dir) == ["new", "new/a.txt"]
+  end
+
+  # A second server stands in for the one the supervisor starts after a crash. The first one is suspended, so only the
+  # second one handles the `:DOWN`s.
+  test "a restarted server removes what the owners the tables name leave behind", %{disk: disk, tmp_dir: tmp_dir} do
+    writer = start_write(disk, "new/a.txt")
+
+    # An entry put while the server was down: the owner isn't in the owners table.
+    orphan_dir = Path.join(tmp_dir, "orphan")
+    orphan_file = Path.join(orphan_dir, ".fil-orphan")
+    File.mkdir!(orphan_dir)
+    File.write!(orphan_file, "")
+    test = self()
+
+    orphan =
+      spawn(fn ->
+        :ets.insert(Tmp, {{:file, orphan_file}, self(), [orphan_dir]})
+        send(test, :inserted)
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive :inserted
+
+    :ok = :sys.suspend(Tmp)
+    on_exit(fn -> :sys.resume(Tmp) end)
+    {:ok, restarted} = GenServer.start(Tmp, nil)
+    on_exit(fn -> Process.exit(restarted, :kill) end)
+
+    for owner <- [writer, orphan] do
+      assert {:monitored_by, monitors} = Process.info(owner, :monitored_by)
+      assert restarted in monitors
+    end
+
+    kill(writer)
+    kill(orphan)
+    Tmp.sync(restarted)
+
+    assert tree(tmp_dir) == []
   end
 end

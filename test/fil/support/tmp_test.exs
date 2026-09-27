@@ -98,21 +98,4 @@ defmodule Fil.Support.TmpTest do
 
     assert tree(tmp_dir) == ["kept"]
   end
-
-  test "a server crash keeps the entries, and the restarted server removes them", %{disk: disk, tmp_dir: tmp_dir} do
-    writer = start_write(disk, "new/a.txt")
-    [entry] = entries(writer)
-    server = Process.whereis(Tmp)
-
-    kill(server)
-    # The supervisor restarts the server before it answers the next call.
-    _children = Supervisor.which_children(Fil.Supervisor)
-    refute Process.whereis(Tmp) in [nil, server]
-    assert entries(writer) == [entry]
-
-    kill(writer)
-    Tmp.sync()
-
-    assert tree(tmp_dir) == ["kept"]
-  end
 end
