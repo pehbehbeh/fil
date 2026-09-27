@@ -347,7 +347,7 @@ defmodule Fil.Adapter.S3Test do
       assert header(request, "x-amz-content-sha256") == sha256("Hello, World")
     end
 
-    test "a stream with a checksum is collected, so the checksum goes first" do
+    test "a small stream with a checksum is sent as one PutObject" do
       stub([response(200)])
 
       assert {:ok, _} = Fil.write(disk(), "a.txt", Stream.map(["He", "llo"], & &1), size: 5, checksum: :crc32)
@@ -636,6 +636,72 @@ defmodule Fil.Adapter.S3Test do
                Fil.write(parts_disk(), "a.bin", stream, size: 5 * 1024 ** 4 + 1)
 
       assert requests() == []
+    end
+
+    test "a CRC32 covers the parts and the whole object" do
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(200, completed_xml())
+      ])
+
+      content = :crypto.strong_rand_bytes(@part + 1)
+      first_part = binary_part(content, 0, @part)
+
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), checksum: :crc32)
+
+      [create, first, second, complete] = requests()
+
+      assert header(create, "x-amz-checksum-algorithm") == "CRC32"
+      assert header(create, "x-amz-checksum-type") == "FULL_OBJECT"
+      assert header(first, "x-amz-checksum-crc32") == crc32(first_part)
+      assert header(second, "x-amz-checksum-crc32") == crc32(binary_part(content, @part, 1))
+      assert header(complete, "x-amz-checksum-crc32") == crc32(content)
+      assert header(complete, "x-amz-checksum-type") == "FULL_OBJECT"
+
+      assert completed_checksums(complete, "ChecksumCRC32") == [
+               crc32(first_part),
+               crc32(binary_part(content, @part, 1))
+             ]
+    end
+
+    test "a SHA-256 covers each part" do
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(200, completed_xml())
+      ])
+
+      content = :crypto.strong_rand_bytes(@part + 1)
+      digests = Enum.map([binary_part(content, 0, @part), binary_part(content, @part, 1)], &sha256_base64/1)
+
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), checksum: :sha256, size: @part + 1)
+
+      [create, first, second, complete] = requests()
+
+      assert header(create, "x-amz-checksum-algorithm") == "SHA256"
+      assert header(create, "x-amz-checksum-type") == nil
+      assert [header(first, "x-amz-checksum-sha256"), header(second, "x-amz-checksum-sha256")] == digests
+      assert completed_checksums(complete, "ChecksumSHA256") == digests
+      assert header(complete, "x-amz-checksum-sha256") == nil
+      assert header(complete, "x-amz-checksum-type") == nil
+    end
+
+    test "a completion whose content doesn't match its checksum is aborted" do
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(400, error_xml("BadDigest")),
+        response(204)
+      ])
+
+      assert {:error, %Fil.ChecksumMismatchError{reason: "BadDigest"}} =
+               Fil.write(parts_disk(), "a.bin", large_stream(), checksum: :crc32)
+
+      assert_aborted(requests())
     end
 
     test "the part size is at least 5 MiB" do
@@ -1343,6 +1409,21 @@ defmodule Fil.Adapter.S3Test do
     for part <- Fil.Support.XML.children(completion, "Part") do
       {Fil.Support.XML.text(part, "PartNumber"), Fil.Support.XML.text(part, "ETag")}
     end
+  end
+
+  defp crc32(content), do: Base.encode64(<<:erlang.crc32(content)::32>>)
+
+  defp sha256_base64(content) do
+    :sha256
+    |> :crypto.hash(content)
+    |> Base.encode64()
+  end
+
+  # The checksums named `element` of the parts of a CompleteMultipartUpload request, in order.
+  defp completed_checksums(request, element) do
+    {:ok, completion} = Fil.Support.XML.parse(request.assigns.body)
+
+    for part <- Fil.Support.XML.children(completion, "Part"), do: Fil.Support.XML.text(part, element)
   end
 
   defp sha256(content) do

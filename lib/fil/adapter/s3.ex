@@ -236,15 +236,13 @@ defmodule Fil.Adapter.S3 do
     case route(content, opts) do
       :put -> put_object(state, key, content, opts)
       :put_stream -> put_stream(state, key, content, opts)
-      :collect -> put_object(state, key, Content.to_binary(content), opts)
       {:parts, content, size} -> upload(state, key, content, size, opts)
       :too_large -> {:error, %Fil.InvalidRequestError{reason: "EntityTooLarge"}}
     end
   end
 
   # Content in memory is one PutObject, up to S3's limit of 5 GiB for one. So is a stream of known size without a
-  # checksum, sent as it's read. A stream with a checksum is collected, because the checksum goes before the content.
-  # Anything else is uploaded in parts (see `upload/5`).
+  # checksum, sent as it's read. Anything else is uploaded in parts (see `upload/5`).
   defp route(content, opts) do
     if Content.iodata?(content) do
       content
@@ -261,10 +259,8 @@ defmodule Fil.Adapter.S3 do
 
   # A size over S3's limit is refused before the stream is read.
   defp route_stream(_stream, size, _checksum) when is_integer(size) and size > @max_object, do: :too_large
-  defp route_stream(stream, size, _checksum) when is_integer(size) and size > @max_put, do: {:parts, stream, size}
-  defp route_stream(_stream, size, nil) when is_integer(size), do: :put_stream
-  defp route_stream(stream, size, nil), do: {:parts, stream, size}
-  defp route_stream(_stream, _size, _checksum), do: :collect
+  defp route_stream(_stream, size, nil) when is_integer(size) and size <= @max_put, do: :put_stream
+  defp route_stream(stream, size, _checksum), do: {:parts, stream, size}
 
   # One PutObject with content in memory, signed with its SHA-256.
   defp put_object(state, key, content, opts) do
@@ -530,17 +526,28 @@ defmodule Fil.Adapter.S3 do
   ## Uploads in parts
   ## ------------------------------------------------------------------
 
-  # A stream without a size, and content over 5 GiB, is read one part at a time (`Fil.Support.Parts`), in parts of
-  # `:part_size`, or larger ones for known sizes that would need more than 10,000. Content that ends within the first
-  # part goes out as one PutObject. Anything larger starts a multipart upload once the second part begins, uploads
-  # each part when it's full, and completes the upload after the content has ended, so nothing is written unless it
-  # ends.
+  # A stream without a size or with a checksum, and content over 5 GiB, is read one part at a time
+  # (`Fil.Support.Parts`), in parts of `:part_size`, or larger ones for known sizes that would need more than 10,000.
+  # Content that ends within the first part goes out as one PutObject. Anything larger starts a multipart upload once
+  # the second part begins, uploads each part when it's full, and completes the upload after the content has ended, so
+  # nothing is written unless it ends.
   #
   # A guard process (`start_guard/2`) creates the upload and is the only one that aborts it: when the write fails,
   # raises or is killed. The content is read and the parts are uploaded in the calling process.
   defp upload(state, key, content, size, opts) do
     guard = start_guard(state, key)
-    upload = %{key: key, guard: guard, id: nil, number: 0, parts: []}
+    algorithm = opts[:checksum]
+
+    upload = %{
+      key: key,
+      guard: guard,
+      id: nil,
+      number: 0,
+      parts: [],
+      algorithm: algorithm,
+      whole: if(algorithm == :crc32, do: Checksum.init(:crc32))
+    }
+
     part_size = Parts.size(size, state.part_size, state.max_parts)
 
     try do
@@ -583,16 +590,33 @@ defmodule Fil.Adapter.S3 do
     with {:ok, upload} <- upload_part(state, last, upload, opts), do: complete_upload(state, upload, opts)
   end
 
+  # With `checksum:`, every part is sent with its checksum, which S3 checks. A CRC32 is also computed over all of the
+  # content, which S3 checks when the upload completes and stores as the object's checksum.
   defp upload_part(state, part, upload, opts) do
+    checksum = upload.algorithm && Checksum.digest(upload.algorithm, part)
+    headers = part_checksum_header(upload.algorithm, checksum)
+
     with {:ok, upload} <- create_upload(upload, opts),
          number = upload.number + 1,
-         {:ok, etag} <- send_part(state, upload, number, part) do
-      {:ok, %{upload | number: number, parts: [{number, etag} | upload.parts]}}
+         {:ok, etag} <- send_part(state, upload, number, part, headers) do
+      {:ok,
+       %{
+         upload
+         | number: number,
+           parts: [{number, etag, checksum} | upload.parts],
+           whole: upload.whole && Checksum.update(upload.whole, part)
+       }}
     end
   end
 
+  defp part_checksum_header(nil, _checksum), do: []
+  defp part_checksum_header(algorithm, checksum), do: [{checksum_header(algorithm), checksum}]
+
+  # S3 only stores and checks the checksums of an upload in parts when the upload declares the algorithm up front.
+  # CRC32 can cover the whole object (`FULL_OBJECT`). SHA-1 and SHA-256 can't, so S3 stores a checksum of the parts'
+  # checksums (`COMPOSITE`, the default), which ends in `-` and the number of parts.
   defp create_upload(%{id: nil, guard: guard} = upload, opts) do
-    headers = [{"content-length", "0"} | content_type_header(opts)]
+    headers = [{"content-length", "0"} | content_type_header(opts)] ++ algorithm_headers(upload.algorithm)
 
     with {:ok, id} <- call_guard(guard, {:create, headers}), do: {:ok, %{upload | id: id}}
   end
@@ -601,18 +625,18 @@ defmodule Fil.Adapter.S3 do
 
   # A part is in memory and invisible until the upload completes, so a part that failed with `Fil.UnavailableError` is
   # sent once more. The ETag goes into the completion as S3 sent it, quotes included.
-  defp send_part(state, upload, number, part, retries \\ 1) do
+  defp send_part(state, upload, number, part, headers, retries \\ 1) do
     params = [{"partNumber", number}, {"uploadId", upload.id}]
 
     result =
-      case request(state, :put, upload.key, params: params, body: part) do
-        {:ok, %{status: 200, headers: headers}} -> etag(headers)
+      case request(state, :put, upload.key, params: params, headers: headers, body: part) do
+        {:ok, %{status: 200} = response} -> etag(response.headers)
         {:ok, response} -> {:error, error(response)}
         {:error, reason} -> {:error, reason}
       end
 
     case result do
-      {:error, %Fil.UnavailableError{}} when retries > 0 -> send_part(state, upload, number, part, retries - 1)
+      {:error, %Fil.UnavailableError{}} when retries > 0 -> send_part(state, upload, number, part, headers, retries - 1)
       result -> result
     end
   end
@@ -626,7 +650,7 @@ defmodule Fil.Adapter.S3 do
 
   # `if_exists: :error` can only be checked here: S3 takes `If-None-Match` on the completion, and not before.
   defp complete_upload(state, upload, opts) do
-    headers = put_if_exists([], opts)
+    headers = put_if_exists(whole_checksum_headers(upload), opts)
     params = [{"uploadId", upload.id}]
 
     case request(state, :post, upload.key, params: params, headers: headers, body: completion(upload)) do
@@ -636,15 +660,47 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  defp completion(%{parts: parts}) do
+  defp completion(%{parts: parts, algorithm: algorithm}) do
     parts =
       parts
       |> Enum.reverse()
-      |> Enum.map(fn {number, etag} ->
-        ["<Part><PartNumber>", Integer.to_string(number), "</PartNumber><ETag>", XML.escape(etag), "</ETag></Part>"]
-      end)
+      |> Enum.map(&completed_part(&1, algorithm))
 
     [~s(<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">), parts, "</CompleteMultipartUpload>"]
+  end
+
+  defp completed_part({number, etag, checksum}, algorithm) do
+    [
+      "<Part><PartNumber>",
+      Integer.to_string(number),
+      "</PartNumber><ETag>",
+      XML.escape(etag),
+      "</ETag>",
+      completed_checksum(algorithm, checksum),
+      "</Part>"
+    ]
+  end
+
+  defp completed_checksum(nil, _checksum), do: []
+
+  defp completed_checksum(algorithm, checksum) do
+    element = checksum_element(algorithm)
+    ["<", element, ">", checksum, "</", element, ">"]
+  end
+
+  defp algorithm_headers(nil), do: []
+  defp algorithm_headers(:crc32), do: [{"x-amz-checksum-algorithm", "CRC32"}, {"x-amz-checksum-type", "FULL_OBJECT"}]
+  defp algorithm_headers(:sha1), do: [{"x-amz-checksum-algorithm", "SHA1"}]
+  defp algorithm_headers(:sha256), do: [{"x-amz-checksum-algorithm", "SHA256"}]
+
+  defp checksum_element(:crc32), do: "ChecksumCRC32"
+  defp checksum_element(:sha1), do: "ChecksumSHA1"
+  defp checksum_element(:sha256), do: "ChecksumSHA256"
+
+  defp whole_checksum_headers(%{whole: nil}), do: []
+
+  defp whole_checksum_headers(%{whole: whole}) do
+    [{"x-amz-checksum-crc32", Checksum.final(whole)}, {"x-amz-checksum-type", "FULL_OBJECT"}]
   end
 
   ## Guard

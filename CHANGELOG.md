@@ -41,6 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- S3 reads a stream with `checksum:` one part at a time instead of collecting it into memory. A `:crc32` checksum
+  covers the whole file, however it's uploaded. A `:sha256` or `:sha1` checksum of an upload in parts covers each
+  part, S3 stores a checksum of those, and `Fil.stat/3` returns `nil` for it.
+  ([#N](https://github.com/pehbehbeh/fil/pull/N))
 - `Fil.Op.update_content/2` and `update_result/2` take `iodata:` instead of `binary:`, which now raises
   `ArgumentError` like any unknown transform. The function gets the same argument as before.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
