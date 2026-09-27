@@ -320,7 +320,6 @@ defmodule Fil.Adapter.Local do
     end
   end
 
-  # A parent that's a file is `:enotdir` on macOS and `:eexist` on Linux.
   # Creates the missing parents of a file one by one, top down, and returns the ones it created, deepest first, so a
   # failed write can remove them again. A directory another process created meanwhile isn't counted.
   defp make_parents(full) do
@@ -363,6 +362,8 @@ defmodule Fil.Adapter.Local do
     end)
   end
 
+  # Creates the parents of a copy's or a move's destination. A parent that's a file is `:enotdir` on macOS and
+  # `:eexist` on Linux, so both become `:enotdir`.
   defp ensure_parent(full) do
     parent = Path.dirname(full)
 
