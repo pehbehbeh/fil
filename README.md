@@ -221,8 +221,8 @@ end
 
 ## Development
 
-`mix test` runs the unit tests, which need no network. The integration tests run the conformance suite against
-SeaweedFS, started with Docker Compose:
+`mix test` runs the unit tests, which need no network. The integration tests run the conformance suite against RustFS,
+started with Docker Compose:
 
 ```bash
 docker compose up -d

@@ -8,15 +8,11 @@
 # runs.
 
 services:
-  seaweedfs:
-    image: chrislusf/seaweedfs:3.80
-    # Every recreated bucket gets new volumes. By default the number of volumes is free disk space divided by the volume
-    # size, which ran out on the CI runner after a few hundred, so the volumes are small and their number is fixed.
-    command: >-
-      server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json -s3.port=8333
-      -master.volumeSizeLimitMB=32 -volume.max=1000
+  rustfs:
+    image: rustfs/rustfs:1.0.0
+    # The credentials `Fil.Emulator` signs with. RustFS verifies SigV4, so the suite also tests the request signing.
+    environment:
+      RUSTFS_ACCESS_KEY: filaccesskey
+      RUSTFS_SECRET_KEY: filsecretkey
     ports:
-      - "8333:8333"
-      - "9333:9333"
-    volumes:
-      - .docker/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+      - "9000:9000"

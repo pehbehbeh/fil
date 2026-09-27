@@ -76,7 +76,7 @@ jobs:
       - run: mix test
 
   integration:
-    name: Integration (SeaweedFS)
+    name: Integration (RustFS)
     runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
@@ -95,25 +95,25 @@ jobs:
             _build
           key: integration-elixir-1.20-otp-29-${{ hashFiles('mix.lock') }}
 
-      # compose.yml instead of a service container: services can't set SeaweedFS's command or mount its S3 config.
+      # compose.yml instead of a service container, so CI and local runs use the same image and settings.
       - run: docker compose up -d
 
-      # SeaweedFS accepts connections before it answers S3 requests, so wait for an HTTP response.
-      - name: Wait for SeaweedFS
+      # The container is up before RustFS answers S3 requests, so wait for an HTTP response.
+      - name: Wait for RustFS
         run: |
           for _ in $(seq 1 60); do
-            curl -s -o /dev/null http://127.0.0.1:8333 && exit 0
+            curl -s -o /dev/null http://127.0.0.1:9000 && exit 0
             sleep 1
           done
-          echo "SeaweedFS didn't answer within 60 seconds"
+          echo "RustFS didn't answer within 60 seconds"
           exit 1
 
       - run: mix deps.get
       - run: mix test.integration
 
-      - name: SeaweedFS logs
+      - name: RustFS logs
         if: failure()
-        run: docker compose logs seaweedfs
+        run: docker compose logs rustfs
 
   # The one check the ruleset on `main` requires, so the ruleset doesn't change with the Elixir matrix. `always()`
   # keeps it running when a job it needs fails, because GitHub counts a skipped required check as passed.

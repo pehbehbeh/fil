@@ -72,7 +72,7 @@ The Hex package is `fil`.
 ```sh
 mix deps.get
 mix test                    # unit tests only (no network)
-docker compose up -d        # SeaweedFS (S3, verifies SigV4)
+docker compose up -d        # RustFS (S3, verifies SigV4)
 mix test.integration        # runs the @tag :integration suites against the compose.yml services
 mix format                  # 120 columns, Quokka plugin
 mix credo                   # strict, every check enabled (see .credo.exs)
@@ -83,7 +83,7 @@ bin/release 0.2.0           # releases main to Hex (see Releasing)
 
 `.github/workflows/ci.yml` checks formatting, `mix credo` and `mix docs --warnings-as-errors` on the latest Elixir, and
 runs `mix test` on every supported Elixir minor version, each with the newest OTP it supports (plus OTP 26 on Elixir
-1.16). The integration suite runs once, on the latest Elixir, against SeaweedFS started from `compose.yml`. When
+1.16). The integration suite runs once, on the latest Elixir, against RustFS started from `compose.yml`. When
 `elixir:` in `mix.exs` changes, update the matrix.
 
 The last job, `CI passed`, fails if any other job failed, was cancelled or was skipped. It's the only check the ruleset
