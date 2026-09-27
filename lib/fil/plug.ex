@@ -39,8 +39,8 @@ if Code.ensure_loaded?(Plug) do
                 default: 100 * 1024 * 1024,
                 doc: """
                 The largest upload in bytes, 100 MiB by default. A larger `PUT` gets a `413`, and nothing is written.
-                Uploads are streamed into the disk, so the limit is about storage, not memory (except on S3 without a
-                `content-length`, see `Fil.write/4`).
+                Uploads are streamed into the disk, so the limit is about storage, not memory. S3 keeps one part of an
+                upload without a `content-length` in memory (see `Fil.Adapter.S3`).
                 """
               ]
             )

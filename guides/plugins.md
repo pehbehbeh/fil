@@ -238,8 +238,8 @@ end
 chunk when there's no `iodata:`, so one function can cover both.
 
 A transform can change the size of the content, so `Fil.Op.update_content/2` drops the `:size` option of the write.
-On S3, a stream without a size is collected into memory before it's sent. A plugin that knows the new size declares
-it again with `Fil.Op.put_option(op, :size, size)`.
+On S3, a stream without a size is uploaded in parts. A plugin that knows the new size declares it again with
+`Fil.Op.put_option(op, :size, size)`, so S3 can send the stream in one request.
 
 ## Paths
 

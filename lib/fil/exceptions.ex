@@ -83,7 +83,9 @@ defmodule Fil.ConflictError do
   The file changed while the operation used it. Read it again and retry.
 
   `Fil` returns it with `reason: :size_changed` for a copy across disks whose source changed size while it was copied.
-  Retrying can help, as with `Fil.UnavailableError`, because the next attempt reads the file as it is then.
+  S3 returns it with `reason: "NoSuchUpload"` for an upload in parts that something else aborted while it ran, such as
+  a lifecycle rule. Retrying can help, as with `Fil.UnavailableError`, because the next attempt reads the file as it is
+  then, or starts a new upload.
   """
 
   defexception [:op, :path, :disk, :reason]
@@ -168,7 +170,8 @@ defmodule Fil.UnavailableError do
 
   Adapters return it for a timeout, a closed connection, a server error, throttling and too many open files. It's one of
   the two errors where retrying may help, with `Fil.ConflictError`. `Fil` doesn't retry (for now), because only the
-  caller knows whether a failed mutation is safe to repeat.
+  caller knows whether a failed mutation is safe to repeat. The one exception is a part of an S3 upload in parts, which
+  is sent once more: nobody sees it before the upload completes.
   """
 
   defexception [:op, :path, :disk, :reason]

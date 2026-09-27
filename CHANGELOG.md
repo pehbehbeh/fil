@@ -18,8 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   check the file right away and read it when the stream is enumerated.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `Fil.write/4` takes a stream as well as iodata, with its size in the new `size:` option if it's known. A stream that
-  raises writes nothing. S3 sends a stream with a size as it's read, and collects one without a size, or with
-  `checksum:`, into memory first.
+  raises writes nothing. S3 sends a stream with a size as it's read, and uploads one without a size in parts.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `Fil.Op.update_content/2` and `Fil.Op.update_result/2` take a `stream:` function, which transforms a stream lazily,
   chunk by chunk or with state across chunks. `op.streaming` marks a read from `Fil.stream/3`. A read transform that
@@ -53,7 +52,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   response, so neither has to fit in memory.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - A copy or a move across disks streams the file instead of reading it into memory, with the source's size, so S3
-  streams it too (unless a plugin on the source changes the content).
+  sends it in one request as it's read (in parts when a plugin on the source changes the content).
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `if_exists: :error` on a local disk writes to a temporary file and hard-links it into place, so a failed write no
   longer leaves a partial file behind.

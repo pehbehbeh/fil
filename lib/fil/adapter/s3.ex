@@ -55,10 +55,10 @@ defmodule Fil.Adapter.S3 do
               type: {:in, 5_242_880..5_368_709_120},
               default: 8_388_608,
               doc: """
-              The size in bytes of the parts a stream without `size:` is uploaded in, 8 MiB by default, and at least
-              5 MiB (S3's minimum). An upload holds one part in memory at a time. S3 allows 10,000 parts, so a stream
-              without a size can be at most 10,000 parts: 78 GiB at the default. Pass `size:` or raise `:part_size`
-              for larger ones.
+              The size in bytes of the parts a stream without `size:` is uploaded in, 8 MiB by default and at least
+              5 MiB (S3's minimum). An upload keeps one part in memory at a time. S3 allows 10,000 parts, so a stream
+              without a size can be at most 78 GiB at the default. Pass `size:` or raise `:part_size` for larger ones.
+              See [Uploads in parts](#module-uploads-in-parts).
               """
             ],
             req_options: [
@@ -68,7 +68,8 @@ defmodule Fil.Adapter.S3 do
               Options for every [Req](https://req.hexdocs.pm) request the disk makes, such as `:receive_timeout`,
               `:connect_options` or a shared `:finch` pool. The adapter always sets `:method`, `:url`, `:headers` and
               `:body`, plus `retry: false` (retrying is up to the caller) and `raw: true` (no decompression and no body
-              decoding, so a file reads back exactly as it was written). Streamed uploads need HTTP/1, see above.
+              decoding, so a file reads back exactly as it was written). A stream sent with its size needs HTTP/1,
+              see above.
               """
             ]
           )
@@ -91,11 +92,12 @@ defmodule Fil.Adapter.S3 do
   Requests are sent and signed (SigV4) by [Req](https://req.hexdocs.pm), configured with `:req_options`. Listings are
   parsed with OTP's `:xmerl_sax_parser`.
 
-  Streamed uploads need an HTTP/1 connection pool, which is what Req uses unless `:req_options` asks for HTTP/2 (for
-  example with `connect_options: [protocols: [:http2]]` or a `:finch` pool for HTTP/2). On HTTP/2, Finch reads a request
-  body in the pool's process instead of the caller's, and a stream that only the caller's process can read fails or
-  stalls there: a `Fil.Plug` upload, or a stream from another S3 disk in a copy across disks. Content in memory and
-  streams that any process can read, such as a `File.Stream`, are fine.
+  A stream written with `size:` is sent as it's read, and that needs an HTTP/1 connection pool, which is what Req uses
+  unless `:req_options` asks for HTTP/2 (for example with `connect_options: [protocols: [:http2]]` or a `:finch` pool
+  for HTTP/2). On HTTP/2, Finch reads a request body in the pool's process instead of the caller's, and a stream that
+  only the caller's process can read fails or stalls there: a `Fil.Plug` upload, or a stream from another S3 disk in a
+  copy across disks. Content in memory, [uploads in parts](#module-uploads-in-parts) and streams that any process can
+  read, such as a `File.Stream`, are fine.
 
   ## Options
 
@@ -107,22 +109,23 @@ defmodule Fil.Adapter.S3 do
   exist only as key prefixes, so there are no empty directories.
 
     * `Fil.read/3`: GetObject. Reading a directory is a `Fil.NotFoundError`. `verify_checksum: true` asks S3 for the
-      stored checksum (`x-amz-checksum-mode: ENABLED`) and compares it with the downloaded content. Objects stored with
-      another algorithm, or with none, are read without a check.
+      stored checksum (`x-amz-checksum-mode: ENABLED`) and compares it with the downloaded content, including the
+      composite checksum of an upload in parts (see [Checksums](#module-checksums)). Objects stored with another
+      algorithm, or with none, are read without a check.
     * `Fil.stream/3`: HeadObject, then GetObject each time the stream is read. The download runs in a process of its
       own and goes only as fast as the stream is read. `verify_checksum: true` computes the checksum while streaming.
-    * `Fil.write/4`: PutObject. A stream with `size:` is sent as it's read. A stream without a size, or with
-      `checksum:`, is collected into memory first, because a PutObject needs the length and the checksum before the
-      content; that will change once large streams are sent as multipart uploads. `if_exists: :error` sends
-      `If-None-Match: *`. `checksum:` (`:sha256`, `:sha1` or `:crc32`) sends the checksum of the content in
-      `x-amz-checksum-*`, S3 rejects the upload if what it received doesn't match, and stores the checksum with the
-      object. Writing to `report.txt/x` when `report.txt` is an object writes a second object and leaves the first
-      alone.
+    * `Fil.write/4`: PutObject for content in memory, and for a stream with `size:`, which is sent as it's read. A
+      stream without a size or with `checksum:`, and anything over 5 GiB, goes up in parts instead (see
+      [Uploads in parts](#module-uploads-in-parts)). `if_exists: :error` sends `If-None-Match: *`. `checksum:`
+      (`:sha256`, `:sha1` or `:crc32`) sends the checksum of the content in `x-amz-checksum-*`, S3 rejects the upload
+      if what it received doesn't match, and stores the checksum with the object. Writing to `report.txt/x` when
+      `report.txt` is an object writes a second object and leaves the first alone.
     * `Fil.rm/3`: DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error).
       Removing a directory succeeds and removes nothing.
     * `Fil.stat/3`: HeadObject, then a prefix probe if there's no object, so `Fil.dir?/1` works. `:etag` and
-      `:content_type` are the ones S3 returns. `checksum:` returns the checksum S3 stored if the write used the same
-      algorithm, and `nil` otherwise.
+      `:content_type` are the ones S3 returns, and the ETag of an upload in parts ends in `-` and the number of parts.
+      `checksum:` returns the checksum S3 stored if the write used the same algorithm, and `nil` otherwise, as well as
+      for the composite checksum of an upload in parts.
     * `Fil.ls/3`: ListObjectsV2, with `delimiter=/` unless recursive, paginated internally.
     * `Fil.cp/4`: CopyObject. Copying a directory is a `Fil.NotFoundError`.
     * `Fil.rename/4`: CopyObject, then DeleteObject.
@@ -130,6 +133,51 @@ defmodule Fil.Adapter.S3 do
     * `Fil.url/3`: the object URL, without a signature, so it works for public objects only.
     * `Fil.signed_url/3`: a presigned GET or PUT URL, with `response-content-disposition` for `disposition:`, and the
       `query:` parameters.
+
+  ## Uploads in parts
+
+  A stream without `size:`, a stream with `checksum:`, and content over 5 GiB (the largest PutObject) are read one part
+  at a time, `:part_size` bytes each, so an upload keeps about one part and one chunk in memory. Content that ends
+  within the first part goes out as one PutObject once it has ended. Anything longer is a multipart upload:
+
+    * CreateMultipartUpload once the second part begins, with the content type and the checksum algorithm
+    * UploadPart for each part as soon as it's full, signed with the part's SHA-256, which S3 checks. The parts go out
+      one after the other from the calling process, so this works on HTTP/2 too. A part that fails with
+      `Fil.UnavailableError` is sent once more, the only request `Fil` repeats: nobody sees a part before the upload
+      completes
+    * CompleteMultipartUpload after the stream has ended, so nothing is written unless it ends. `if_exists: :error`
+      sends `If-None-Match: *` with it (S3 takes it nowhere else), so a write that finds the file already there fails
+      only at the end
+
+  S3 allows 10,000 parts. A stream without a size that would need more fails with `Fil.InvalidRequestError`,
+  `reason: :too_many_parts`, before its last part goes out: that's 78 GiB at the default part size, so pass `size:` or
+  raise `:part_size` for larger ones. With `size:`, the parts are as large as the size needs, rounded up to a whole
+  MiB (525 MiB for 5 TiB, the largest object S3 stores). A `size:` over 5 TiB fails with `Fil.InvalidRequestError`,
+  `reason: "EntityTooLarge"`, before the stream is read.
+
+  Completing a large upload can take a while. AWS answers with a `200` right away and sends whitespace until it's
+  done, and `:receive_timeout` applies between packets, so it doesn't cut the completion off. An error that comes
+  after the `200` is read like any other. Whether RustFS keeps the connection alive the same way hasn't been checked.
+
+  Any failure aborts the upload (AbortMultipartUpload), and so does a stream that raises. When the writing process is
+  killed (a supervisor shutdown, or Cowboy stopping the request of a client that disconnected), a process of its own
+  that watches the writer aborts the upload. The abort can still be missed: when the node goes down, or when the
+  abort request fails. S3 doesn't list the parts of an incomplete upload, but bills them, so give the bucket a
+  lifecycle rule that aborts incomplete multipart uploads (`AbortIncompleteMultipartUpload`, for example after one day).
+  It also aborts uploads that are still running after that time.
+
+  ### Checksums
+
+  `checksum: :crc32` covers the whole file, however it's uploaded. Each part is sent with its CRC32, and the completion
+  with the CRC32 of all of the content (`FULL_OBJECT`), which S3 checks and stores as it does for a PutObject.
+
+  S3 can't compute a SHA-1 or SHA-256 over an upload in parts. With `:sha1` or `:sha256`, each part is sent with its
+  checksum, which S3 checks, and S3 stores a composite checksum: the checksum of the parts' checksums, followed by `-`
+  and the number of parts. `Fil.stat/3` returns `nil` for it, because it isn't the checksum of the file.
+  `verify_checksum: true` asks for the size of the first part (a HeadObject with `partNumber=1`), checksums the content
+  part by part and compares the result. That works for uploads whose parts all have one size but the last, as `Fil`'s
+  and those of AWS's tools do. Other objects, and objects on a server that ignores `partNumber` (RustFS 1.0.0 does),
+  are read without a check. Use `:crc32` for large streams if you need the checksum of the file later.
 
   ## Errors
 
@@ -144,16 +192,20 @@ defmodule Fil.Adapter.S3 do
   | a `400` for a copy whose source doesn't exist (checked with HeadObject) | `Fil.NotFoundError` |
   | `AccessDenied`, or `403` | `Fil.AccessDeniedError` |
   | `EntityTooLarge`, `KeyTooLongError` | `Fil.InvalidRequestError` |
+  | a `size:` over 5 TiB | `Fil.InvalidRequestError`, `reason: "EntityTooLarge"` |
+  | a stream without a size that needs more than 10,000 parts | `Fil.InvalidRequestError`, `reason: :too_many_parts` |
   | `PreconditionFailed`, `ConditionalRequestConflict` | `Fil.AlreadyExistsError` |
   | `412`, or a `409` without a code | `Fil.AlreadyExistsError` |
+  | `NoSuchUpload`: an upload in parts was aborted from outside, by a lifecycle rule, say | `Fil.ConflictError` |
   | `BadDigest` | `Fil.ChecksumMismatchError` |
   | a body that doesn't match its stored checksum | `Fil.ChecksumMismatchError`, `reason: :checksum_mismatch` |
   | a signed URL on a disk without credentials | `Fil.UnsupportedError`, `reason: :missing_credentials` |
   | `301`, or a `400` that gives another region | `Fil.ConfigurationError`, `reason: {:wrong_region, region}` |
   | `SlowDown`, `OperationAborted`, `InternalError`, `ServiceUnavailable` | `Fil.UnavailableError` |
   | `429`, `5xx` | `Fil.UnavailableError` |
-  | timeouts, failed connections, an unreadable listing | `Fil.UnavailableError` |
-  | anything else, including an error inside the `200` of a CopyObject | `Fil.UnknownError` |
+  | timeouts, failed connections, an unreadable listing or upload ID | `Fil.UnavailableError` |
+  | an uploaded part without an ETag | `Fil.UnknownError`, `reason: :missing_etag` |
+  | anything else, such as an unmapped code inside the `200` of a CopyObject or a completion | `Fil.UnknownError` |
   """
 
   @behaviour Fil.Adapter
