@@ -269,6 +269,82 @@ defmodule Fil.PlugTest do
     end
   end
 
+  describe "streaming" do
+    test "PUT streams the body into the write, with the content-length as its size", %{memory: disk} do
+      test = self()
+
+      recording =
+        Fil.attach(disk, :record, fn op, next, _opts ->
+          send(test, {:size, Fil.Op.get_option(op, :size)})
+
+          op
+          |> Fil.Op.update_content(
+            chunk: fn chunk ->
+              send(test, {:chunk, byte_size(chunk)})
+              chunk
+            end
+          )
+          |> next.()
+        end)
+
+      content = :crypto.strong_rand_bytes(2_500_000)
+      {:ok, url} = Fil.signed_url(recording, "big.bin", method: :put)
+
+      conn =
+        url
+        |> put(content, [{"content-length", "2500000"}])
+        |> call(recording)
+
+      assert conn.status == 200
+      assert Fil.read(disk, "big.bin") == {:ok, content}
+      assert_received {:size, 2_500_000}
+      assert_received {:chunk, 1_048_576}
+      assert_received {:chunk, 1_048_576}
+      assert_received {:chunk, 402_848}
+    end
+
+    test "a body over :max_body_size leaves nothing behind on a local disk", %{local: disk, tmp_dir: tmp_dir} do
+      {:ok, url} = Fil.signed_url(disk, "inbox/big.bin", method: :put)
+      body = :crypto.strong_rand_bytes(3_000_000)
+
+      conn =
+        url
+        |> put(body)
+        |> call(disk, max_body_size: 2_000_000)
+
+      inbox = Path.join(tmp_dir, "inbox")
+
+      assert conn.status == 413
+      assert File.ls!(inbox) == []
+    end
+
+    test "a body longer than its content-length is a 400", %{memory: disk} do
+      {:ok, url} = Fil.signed_url(disk, "a.txt", method: :put)
+
+      conn =
+        url
+        |> put("0123456789", [{"content-length", "5"}])
+        |> call(disk)
+
+      assert conn.status == 400
+      assert conn.resp_body == "the request body could not be read"
+      refute Fil.exists?(disk, "a.txt")
+    end
+
+    test "GET streams the file as a chunked response", %{memory: disk} do
+      content = :crypto.strong_rand_bytes(300_000)
+      {:ok, _} = Fil.write(disk, "big.bin", content)
+      {:ok, url} = Fil.signed_url(disk, "big.bin")
+
+      conn = request(:get, url, disk)
+
+      assert conn.status == 200
+      assert conn.state == :chunked
+      assert conn.resp_body == content
+      assert get_resp_header(conn, "content-type") == ["application/octet-stream"]
+    end
+  end
+
   test "resolves the disk from a function or an MFA", %{memory: disk} do
     {:ok, _} = Fil.write(disk, "a.txt", "a")
     {:ok, url} = Fil.signed_url(disk, "a.txt")
@@ -293,13 +369,19 @@ defmodule Fil.PlugTest do
 
         "PUT" ->
           {:ok, body, conn} = read_body(conn)
-          send(test, {:put, request_url(conn), body})
+          send(test, {:put, request_url(conn), body, get_req_header(conn, "x-amz-content-sha256")})
           send_resp(conn, 200, "")
       end
     end)
 
     disk =
-      [adapter: Fil.Adapter.S3, bucket: "bucket", req_options: [plug: {Req.Test, __MODULE__}]]
+      [
+        adapter: Fil.Adapter.S3,
+        bucket: "bucket",
+        access_key_id: "AKIDEXAMPLE",
+        secret_access_key: "secret",
+        req_options: [plug: {Req.Test, __MODULE__}]
+      ]
       |> Fil.disk()
       |> URL.attach(base_url: @base_url, secret: "s3-secret")
 
@@ -313,7 +395,15 @@ defmodule Fil.PlugTest do
 
     {:ok, put_url} = Fil.signed_url(disk, "inbox/new.bin", method: :put)
     assert request(:put, put_url, disk, "uploaded").status == 200
-    assert_received {:put, "https://bucket.s3.us-east-1.amazonaws.com/inbox/new.bin", "uploaded"}
+    # Without a content-length, the upload is collected and signed with its hash. With one, it goes to S3 as it's read.
+    assert_received {:put, "https://bucket.s3.us-east-1.amazonaws.com/inbox/new.bin", "uploaded", [hash]}
+    assert hash =~ ~r/^[0-9a-f]{64}$/
+
+    assert (put_url
+            |> put("streamed", [{"content-length", "8"}])
+            |> call(disk)).status == 200
+
+    assert_received {:put, "https://bucket.s3.us-east-1.amazonaws.com/inbox/new.bin", "streamed", ["UNSIGNED-PAYLOAD"]}
   end
 
   test "passes requests for a disk that doesn't sign URLs through", %{tmp_dir: tmp_dir} do
