@@ -623,6 +623,35 @@ defmodule Fil.Adapter.S3Test do
     end
   end
 
+  describe "public_endpoint" do
+    setup do
+      {:ok, disk: disk(endpoint: "http://s3mock:9090", public_endpoint: "http://localhost:9090/")}
+    end
+
+    test "builds public and signed URLs", %{disk: disk} do
+      assert Fil.url(disk, "cv.pdf") == {:ok, "http://localhost:9090/bucket/cv.pdf"}
+      assert {:ok, "http://localhost:9090/bucket/cv.pdf?" <> _query} = Fil.signed_url(disk, "cv.pdf")
+    end
+
+    test "leaves the requests on the endpoint", %{disk: disk} do
+      stub([response(200, "content")])
+
+      assert Fil.read(disk, "cv.pdf") == {:ok, "content"}
+      assert String.starts_with?(request!().url, "http://s3mock:9090/bucket/cv.pdf")
+    end
+
+    test "follows path_style" do
+      disk = disk(public_endpoint: "https://bucket.cdn.example.com", path_style: false)
+
+      assert Fil.url(disk, "cv.pdf") == {:ok, "https://bucket.cdn.example.com/cv.pdf"}
+    end
+
+    test "must be a URL" do
+      assert {:error, {:invalid_option, {:public_endpoint, "localhost:9090"}}} =
+               S3.init(bucket: "b", public_endpoint: "localhost:9090")
+    end
+  end
+
   ## ------------------------------------------------------------------
   ## Fixtures
   ## ------------------------------------------------------------------
