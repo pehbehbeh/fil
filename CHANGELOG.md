@@ -9,6 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Fil.stream/1,2,3` and `Fil.stream!/1,2,3` return a file's content as a stream of binaries, on every disk. They
+  check the file right away and read it when the stream is enumerated.
+  ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
+- `Fil.write/4` takes a stream as well as iodata, with its size in the new `size:` option if it's known. A stream that
+  raises writes nothing. S3 sends a stream with a size as it's read, and collects one without a size, or with
+  `checksum:`, into memory first.
+  ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
+- `Fil.Op.update_content/2` and `Fil.Op.update_result/2` transform streams lazily with `chunk:`, and take a `stream:`
+  function for transforms that keep state across chunks. `op.streaming` marks a read from `Fil.stream/3`. The plugins
+  guide describes what a plugin can rely on.
+  ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
+- `stream/3` is an optional adapter callback. Adapters without it stream the result of `read/3` as one chunk.
+  ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
 - `disposition:` on `Fil.signed_url/3` sets the `content-disposition` of the download (`:inline`, `:attachment` or
   `{:attachment, filename}`), on S3 as `response-content-disposition` and on Local and Memory through `Fil.Plug`.
   ([#1](https://github.com/pehbehbeh/fil/pull/1))
@@ -20,6 +33,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `Fil.Plug` streams uploads into `Fil.write/4`, with the `content-length` as `size:`, and sends downloads as a chunked
+  response, so neither is held in memory whole.
+  ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
+- A copy or a move across disks streams the file instead of reading it into memory.
+  ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
+- `if_exists: :error` on a local disk writes to a temporary file and hard-links it into place, so a failed write no
+  longer leaves a partial file behind.
+  ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
 - `Fil.Plug` refuses a signed URL with a query parameter that wasn't signed, as S3 does. URLs signed by 0.1 still work.
   ([#1](https://github.com/pehbehbeh/fil/pull/1))
 

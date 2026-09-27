@@ -121,6 +121,8 @@ def call(%Fil.Op{name: :read} = op, next, opts) do
 end
 ```
 
+The answer can be whole content on a read from `Fil.stream/3` too. The caller then gets it as a stream of one chunk.
+
 ## Errors
 
 Errors come back through the chain like any other result, so a callback matches on `op.result` after `next` and can
@@ -144,9 +146,72 @@ own errors. A callback that returns something other than a `Fil.Op`, leaves the 
 ## Content
 
 Change the content of a write with `Fil.Op.update_content/2` and the content of a read with `Fil.Op.update_result/2`,
-instead of setting `op.content` or `op.result` directly. Both take a `binary:` function for the whole content and a
-`chunk:` function for a piece of it. Content is always whole for now, but streaming is planned, and plugins that use
-these functions will keep working when it lands.
+instead of setting `op.content` or `op.result` directly. Content is whole (iodata) or a stream, and these functions
+handle both:
+
+```elixir
+def call(%Fil.Op{name: :write} = op, next, _opts) do
+  op
+  |> Fil.Op.update_content(binary: &String.upcase/1, chunk: &String.upcase/1)
+  |> next.()
+end
+```
+
+`binary:` gets the whole content, `chunk:` one chunk of a stream, and `stream:` the whole stream. A plugin with only
+`binary:` still works on streams: `Fil` collects the stream into memory first, which costs memory for large files.
+`Fil.Op.materialize/1` does the same for plugins that need the whole content for something else, such as a signature.
+
+A write is a stream when the caller passes one to `Fil.write/4`, and a read is one when it comes from `Fil.stream/3`
+(`op.streaming` is `true` then). Both are still `:write` and `:read` operations, so a plugin that transforms content
+sees every read and write.
+
+### Streams
+
+A stream is an enumerable of binaries. What a plugin can rely on:
+
+  * chunks come in order, and none is empty
+  * their size depends on where the stream comes from (the caller's stream, an upload, the adapter, the network), so a
+    chunk isn't a line, a record or a multiple of a block size. A transform that needs whole lines or blocks buffers
+    them itself
+  * a transform returns iodata of any size, including none, so it may change the chunk boundaries. `Fil` drops empty
+    chunks before the adapter or the caller sees them
+  * the functions run lazily: on a write when the adapter reads the content, on a read when the caller reads the
+    stream. A stream from `Fil.stream/3` can be read more than once, and then the functions run again from the start
+  * an exception in a transform propagates to whoever reads the stream, and a write that raises leaves nothing behind
+
+`chunk:` suits transforms that treat every chunk on its own. A transform that keeps state from one chunk to the next,
+or adds something after the last one (compression, encryption), takes the whole stream with `stream:` and builds a new
+one with `Stream.transform/5`, whose start function runs each time the stream is read:
+
+```elixir
+def call(%Fil.Op{} = op, next, _opts) do
+  op
+  |> Fil.Op.update_content(binary: &:zlib.gzip/1, stream: &gzip/1)
+  |> next.()
+  |> Fil.Op.update_result(binary: &:zlib.gunzip/1, stream: &gunzip/1)
+end
+
+defp gzip(chunks) do
+  Stream.transform(
+    chunks,
+    fn ->
+      z = :zlib.open()
+      :ok = :zlib.deflateInit(z, :default, :deflated, 31, 8, :default)
+      z
+    end,
+    fn chunk, z -> {[:zlib.deflate(z, chunk)], z} end,
+    fn z -> {[:zlib.deflate(z, [], :finish)], z} end,
+    &:zlib.close/1
+  )
+end
+```
+
+`gunzip/1` is the same with `inflateInit/2` and `inflate/2`. Whole content goes to `stream:` as a stream of one chunk
+when there's no `binary:`, so one function can cover both.
+
+A transform can change the size of the content, so transforming a stream drops the `:size` option of the write. On
+S3, a stream without a size is collected into memory before it's sent. A plugin that knows the new size can set it
+again with `Fil.Op.put_option/3`.
 
 ## Paths
 
@@ -157,5 +222,5 @@ before the adapter sees it, so a rewritten path can't escape the disk root eithe
 ## Copies and renames
 
 A `Fil.cp/3` or `Fil.rename/3` within one disk is a single `:cp` or `:rename` operation, with the destination in
-`op.dest`. Across two disks, `Fil` reads from the source disk and writes to the destination disk (and deletes the
-source after a rename), so each disk's plugins see ordinary reads, writes and deletes.
+`op.dest`. Across two disks, `Fil` streams from the source disk and writes the stream to the destination disk (and
+deletes the source after a rename), so each disk's plugins see ordinary reads, writes and deletes.

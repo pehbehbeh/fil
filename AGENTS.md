@@ -8,10 +8,10 @@ The Hex package is `fil`.
 - **Return values:** every function that can fail returns `{:ok, result} | {:error, exception}`. Actions on files
   return `{:ok, %Fil.Ref{}}`. Bang variants raise the same exception.
 - **Names and semantics:** the API, the adapter callbacks and the `Fil.Op` names use `File`'s vocabulary (`read`,
-  `write`, `stat`, `ls`, `cp`, `rename`, `rm`, `rm_rf`, `exists?`, `dir?`), but the semantics follow the object store
-  model on every adapter: `rm` is idempotent, `write` creates parents, paths are jailed to the disk root. Every
-  difference from `File` is a row in the contract table in `Fil.Adapter`. Keep that table current, and link to it
-  instead of repeating it.
+  `write`, `stream`, `stat`, `ls`, `cp`, `rename`, `rm`, `rm_rf`, `exists?`, `dir?`), but the semantics follow the
+  object store model on every adapter: `rm` is idempotent, `write` creates parents, paths are jailed to the disk root.
+  Every difference from `File` is a row in the contract table in `Fil.Adapter`. Keep that table current, and link to
+  it instead of repeating it.
 - **Refs:** every public function accepts `disk, path` or a `%Fil.Ref{}`, built with `Fil.ref/2`. There's
   no tuple form and no other input union type, so there are exactly two ways to name a file.
 - **Plugins:** a plugin is a callback `(op, next, opts)` attached with `Fil.attach/4`, with no behaviour. The
@@ -21,12 +21,13 @@ The Hex package is `fil`.
   config skip `attach/2`.
 - Options come only from `attach`; there are no registered or global options. Callbacks
   match on `op.name` and change content only through the `Fil.Op` helpers (`update_content/2`, `update_result/2`),
-  so they keep working once streaming lands. Every operation goes through `Fil.Op.run/1`. Plugin docs live in
-  `guides/plugins.md` only, not in the README. A new plugin goes into the list of shipped plugins at the top of that
-  guide, by hand.
-- **Same behaviour on every adapter:** critical behaviour (read, write, list, copy, checksums, public and signed URLs)
-  works on every disk. When the storage lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.URL` builds and
-  signs URLs for Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with a
+  so they work on whole content and streams alike. `Fil.stream/3` runs as a `:read` with `op.streaming: true`, so a
+  plugin that transforms reads covers it without knowing. Every operation goes through `Fil.Op.run/1`. Plugin docs
+  live in `guides/plugins.md` only, not in the README. A new plugin goes into the list of shipped plugins at the top of
+  that guide, by hand.
+- **Same behaviour on every adapter:** critical behaviour (read, write, stream, list, copy, checksums, public and signed
+  URLs) works on every disk. When the storage lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.URL`
+  builds and signs URLs for Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with a
   `Fil.UnsupportedError`. Differences that remain are edge cases, documented on the adapter's own page and nowhere
   else. A table with a column per adapter stops fitting on a page once there are many adapters, and readers usually
   care about one or two. New behaviour gets a conformance test in
