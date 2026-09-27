@@ -171,7 +171,7 @@ defmodule Fil.UnavailableError do
   Adapters return it for a timeout, a closed connection, a server error, throttling and too many open files. It's one of
   the two errors where retrying may help, with `Fil.ConflictError`. `Fil` doesn't retry (for now), because only the
   caller knows whether a failed mutation is safe to repeat. The one exception is a part of an S3 upload in parts, which
-  is sent once more: nobody sees it before the upload completes.
+  is sent once more, a second later: nobody sees it before the upload completes.
   """
 
   defexception [:op, :path, :disk, :reason]

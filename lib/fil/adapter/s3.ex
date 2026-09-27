@@ -141,10 +141,10 @@ defmodule Fil.Adapter.S3 do
   within the first part goes out as one PutObject once it has ended. Anything longer is a multipart upload:
 
     * CreateMultipartUpload once the second part begins, with the content type and the checksum algorithm
-    * UploadPart for each part as soon as it's full, signed with the part's SHA-256, which S3 checks. The parts go out
-      one after the other from the calling process, so this works on HTTP/2 too. A part that fails with
-      `Fil.UnavailableError` is sent once more, the only request `Fil` repeats: nobody sees a part before the upload
-      completes
+    * UploadPart for each part once more content has arrived after it, signed with its SHA-256, which S3 checks.
+      The parts go out one after the other from the calling process, so this works on HTTP/2 too. A part that fails
+      with `Fil.UnavailableError` (throttling such as `SlowDown` included) is sent once more, a second later. It's the
+      only request `Fil` repeats: nobody sees a part before the upload completes
     * CompleteMultipartUpload after the stream has ended, so nothing is written unless it ends. `if_exists: :error`
       sends `If-None-Match: *` with it (S3 takes it nowhere else), so a write that finds the file already there fails
       only at the end
@@ -227,6 +227,10 @@ defmodule Fil.Adapter.S3 do
   @max_object 5 * 1024 ** 4
   @max_parts 10_000
 
+  # How long a failed part waits before it's sent again, in milliseconds, so a storage that asked to slow down gets a
+  # moment.
+  @retry_delay 1_000
+
   @derive {Inspect, only: [:bucket, :region, :prefix, :endpoint, :public_endpoint, :path_style]}
   defstruct [
     :bucket,
@@ -240,7 +244,8 @@ defmodule Fil.Adapter.S3 do
     :session_token,
     :part_size,
     :req_options,
-    max_parts: @max_parts
+    max_parts: @max_parts,
+    retry_delay: @retry_delay
   ]
 
   @type t :: %__MODULE__{}
@@ -709,7 +714,8 @@ defmodule Fil.Adapter.S3 do
   defp create_upload(upload, _opts), do: {:ok, upload}
 
   # A part is in memory and invisible until the upload completes, so a part that failed with `Fil.UnavailableError` is
-  # sent once more. The ETag goes into the completion as S3 sent it, quotes included.
+  # sent once more, a second later (`SlowDown` and `503` are unavailable too). The ETag goes into the completion as S3
+  # sent it, quotes included.
   defp send_part(state, upload, number, part, headers, retries \\ 1) do
     params = [{"partNumber", number}, {"uploadId", upload.id}]
 
@@ -721,8 +727,12 @@ defmodule Fil.Adapter.S3 do
       end
 
     case result do
-      {:error, %Fil.UnavailableError{}} when retries > 0 -> send_part(state, upload, number, part, headers, retries - 1)
-      result -> result
+      {:error, %Fil.UnavailableError{}} when retries > 0 ->
+        Process.sleep(state.retry_delay)
+        send_part(state, upload, number, part, headers, retries - 1)
+
+      result ->
+        result
     end
   end
 

@@ -489,6 +489,33 @@ defmodule Fil.Adapter.S3Test do
       assert completed_parts(complete) == [{"1", ~s("e1")}, {"2", ~s("e2")}]
     end
 
+    test "a failed part waits before it's sent again" do
+      test = self()
+      disk = put_state(parts_disk(), retry_delay: 50)
+
+      Req.Test.verify!(__MODULE__)
+      Req.Test.expect(__MODULE__, &respond(&1, response(200, initiate_xml("UP")), test))
+
+      Req.Test.expect(__MODULE__, fn conn ->
+        send(test, {:sent, System.monotonic_time(:millisecond)})
+        respond(conn, response(503, error_xml("SlowDown")), test)
+      end)
+
+      Req.Test.expect(__MODULE__, fn conn ->
+        send(test, {:sent, System.monotonic_time(:millisecond)})
+        respond(conn, part_response("e1"), test)
+      end)
+
+      for response <- [part_response("e2"), response(200, completed_xml())] do
+        Req.Test.expect(__MODULE__, &respond(&1, response, test))
+      end
+
+      assert {:ok, _} = Fil.write(disk, "a.bin", large_stream())
+      assert_received {:sent, failed}
+      assert_received {:sent, retried}
+      assert retried - failed >= 50
+    end
+
     test "a stream that raises after a part aborts the upload" do
       stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
 
@@ -1442,12 +1469,18 @@ defmodule Fil.Adapter.S3Test do
     |> Fil.disk()
   end
 
-  defp parts_disk(opts \\ []), do: disk([part_size: @part] ++ opts)
+  # A failed part is sent again without the second's wait.
+  defp parts_disk(opts \\ []) do
+    [part_size: @part]
+    |> Kernel.++(opts)
+    |> disk()
+    |> put_state(retry_delay: 0)
+  end
 
   # The adapter's limit of 10,000 parts can't be reached in a unit test, so the tests lower it in the disk's state.
-  defp max_parts(%Fil.Disk{adapter: {S3, state}} = disk, max_parts) do
-    %{disk | adapter: {S3, %{state | max_parts: max_parts}}}
-  end
+  defp max_parts(disk, max_parts), do: put_state(disk, max_parts: max_parts)
+
+  defp put_state(%Fil.Disk{adapter: {S3, state}} = disk, fields), do: %{disk | adapter: {S3, struct!(state, fields)}}
 
   # Two parts: a whole one and a byte.
   defp large_stream do
