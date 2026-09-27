@@ -12,14 +12,6 @@ defmodule Fil.AdapterCase do
               Extra module tags. They're passed as an option because ExUnit needs module tags before the tests are
               registered, and this macro registers the suite.
               """
-            ],
-            unsupported: [
-              type: {:list, {:in, [:if_exists, :checksum, :rm_directory]}},
-              default: [],
-              doc: """
-              Parts of the contract the storage under test doesn't implement. The matching test is then skipped instead
-              of failing. This is meant for emulators with known gaps, not for adapters that cut corners.
-              """
             ]
           )
 
@@ -55,97 +47,6 @@ defmodule Fil.AdapterCase do
   @doc "Builds the second disk, used by the cross-disk tests."
   @callback fil_other_disk(map()) :: Fil.Disk.t()
 
-  # Generated at compile time instead of branching at runtime, so each suite only contains the variant for its storage.
-  defp if_exists_test(false) do
-    quote do
-      test "if_exists: :error never replaces a file", %{disk: disk} do
-        assert {:ok, _} = Fil.write(disk, "once.txt", "first", if_exists: :error)
-
-        assert {:error, %Fil.AlreadyExistsError{}} =
-                 Fil.write(disk, "once.txt", "second", if_exists: :error)
-
-        assert Fil.read(disk, "once.txt") == {:ok, "first"}
-      end
-    end
-  end
-
-  defp if_exists_test(true) do
-    quote do
-      @tag :skip
-      test "if_exists: :error never replaces a file", %{disk: disk} do
-        # The storage under test declares `if_exists: :error` unsupported. The test stays in as skipped, so the gap
-        # shows up in the test output.
-        assert {:error, %Fil.AlreadyExistsError{}} =
-                 Fil.write(disk, "once.txt", "second", if_exists: :error)
-      end
-    end
-  end
-
-  defp checksum_test(false) do
-    quote do
-      test "stores and reports checksums", %{disk: disk} do
-        content = "0123456789"
-
-        expected = [
-          sha256:
-            :sha256
-            |> :crypto.hash(content)
-            |> Base.encode64(),
-          sha1:
-            :sha
-            |> :crypto.hash(content)
-            |> Base.encode64(),
-          crc32: Base.encode64(<<:erlang.crc32(content)::32>>)
-        ]
-
-        for {algorithm, checksum} <- expected do
-          path = "checksum-#{algorithm}.txt"
-
-          assert {:ok, _} = Fil.write(disk, path, content, checksum: algorithm)
-          assert Fil.read(disk, path, verify_checksum: true) == {:ok, content}
-          assert {:ok, %Fil.Stat{checksum: {^algorithm, ^checksum}}} = Fil.stat(disk, path, checksum: algorithm)
-        end
-
-        assert {:ok, %Fil.Stat{checksum: nil}} = Fil.stat(disk, "checksum-sha256.txt")
-      end
-    end
-  end
-
-  defp checksum_test(true) do
-    quote do
-      @tag :skip
-      test "stores and reports checksums", %{disk: disk} do
-        # The storage under test declares checksums unsupported. The test stays in as skipped, so the gap shows up in
-        # the test output.
-        assert {:ok, _} = Fil.write(disk, "checksum.txt", "content", checksum: :sha256)
-      end
-    end
-  end
-
-  defp rm_directory_test(false) do
-    quote do
-      test "deleting a directory removes nothing", %{disk: disk} do
-        assert {:ok, _} = Fil.write(disk, "tree/leaf.txt", "leaf")
-
-        # Local refuses, object stores have nothing to delete under that exact key.
-        result = Fil.rm(disk, "tree")
-        assert match?({:ok, _}, result) or match?({:error, %Fil.InvalidRequestError{reason: :eisdir}}, result)
-        assert Fil.read(disk, "tree/leaf.txt") == {:ok, "leaf"}
-      end
-    end
-  end
-
-  defp rm_directory_test(true) do
-    quote do
-      @tag :skip
-      test "deleting a directory removes nothing", %{disk: disk} do
-        # The storage under test declares deleting a directory unsupported. The test stays in as skipped, so the gap
-        # shows up in the test output.
-        assert {:ok, _} = Fil.rm(disk, "tree")
-      end
-    end
-  end
-
   defmacro __using__(opts) do
     opts = NimbleOptions.validate!(opts, @schema)
 
@@ -153,9 +54,6 @@ defmodule Fil.AdapterCase do
     # `use Fil.AdapterCase, tags: [:integration]`.
     moduletags = for tag <- [:tmp_dir | opts[:tags]], do: quote(do: @moduletag(unquote(tag)))
     case_opts = [async: opts[:async]]
-    if_exists = if_exists_test(:if_exists in opts[:unsupported])
-    checksum = checksum_test(:checksum in opts[:unsupported])
-    rm_directory = rm_directory_test(:rm_directory in opts[:unsupported])
 
     # This quote block contains every test of the suite, which is why it's long.
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
@@ -288,7 +186,14 @@ defmodule Fil.AdapterCase do
         assert {:ok, 0} = Fil.rm_rf(disk, "never/existed")
       end
 
-      unquote(rm_directory)
+      test "deleting a directory removes nothing", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "tree/leaf.txt", "leaf")
+
+        # Local refuses, object stores have nothing to delete under that exact key.
+        result = Fil.rm(disk, "tree")
+        assert match?({:ok, _}, result) or match?({:error, %Fil.InvalidRequestError{reason: :eisdir}}, result)
+        assert Fil.read(disk, "tree/leaf.txt") == {:ok, "leaf"}
+      end
 
       ## ----------------------------------------------------------------
       ## Predicates and metadata
@@ -441,13 +346,44 @@ defmodule Fil.AdapterCase do
       ## Exclusive writes
       ## ----------------------------------------------------------------
 
-      unquote(if_exists)
+      test "if_exists: :error never replaces a file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "once.txt", "first", if_exists: :error)
+
+        assert {:error, %Fil.AlreadyExistsError{}} =
+                 Fil.write(disk, "once.txt", "second", if_exists: :error)
+
+        assert Fil.read(disk, "once.txt") == {:ok, "first"}
+      end
 
       ## ----------------------------------------------------------------
       ## Checksums
       ## ----------------------------------------------------------------
 
-      unquote(checksum)
+      test "stores and reports checksums", %{disk: disk} do
+        content = "0123456789"
+
+        expected = [
+          sha256:
+            :sha256
+            |> :crypto.hash(content)
+            |> Base.encode64(),
+          sha1:
+            :sha
+            |> :crypto.hash(content)
+            |> Base.encode64(),
+          crc32: Base.encode64(<<:erlang.crc32(content)::32>>)
+        ]
+
+        for {algorithm, checksum} <- expected do
+          path = "checksum-#{algorithm}.txt"
+
+          assert {:ok, _} = Fil.write(disk, path, content, checksum: algorithm)
+          assert Fil.read(disk, path, verify_checksum: true) == {:ok, content}
+          assert {:ok, %Fil.Stat{checksum: {^algorithm, ^checksum}}} = Fil.stat(disk, path, checksum: algorithm)
+        end
+
+        assert {:ok, %Fil.Stat{checksum: nil}} = Fil.stat(disk, "checksum-sha256.txt")
+      end
 
       ## ----------------------------------------------------------------
       ## URLs
