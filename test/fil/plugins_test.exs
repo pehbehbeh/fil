@@ -374,6 +374,28 @@ defmodule Fil.PluginsTest do
       end
     end
 
+    test "a plugin that replaces a stream drops the size Fil found for it", %{disk: disk, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "a.txt")
+      File.write!(path, "content")
+      test = self()
+
+      # The plugin sets the content itself and leaves the options alone, so it sees the size of the file.
+      replacing =
+        Fil.attach(disk, :replace, fn op, next, _opts ->
+          send(test, {:size, Op.get_option(op, :size)})
+          next.(%{op | content: Stream.map(["replaced"], & &1)})
+        end)
+
+      assert {:ok, _} = Fil.write(replacing, "a.txt", File.stream!(path, 2))
+      assert_received {:size, 7}
+      assert Fil.read(disk, "a.txt") == {:ok, "replaced"}
+
+      # A size the caller declared stays, and the replaced stream is checked against it.
+      assert_raise ArgumentError, "the content has more than 7 bytes, but the :size option is 7", fn ->
+        Fil.write(replacing, "b.txt", File.stream!(path, 2), size: 7)
+      end
+    end
+
     test "a Fil error a read transform raises is the read's error", %{disk: disk, tmp_dir: tmp_dir} do
       tampered = fn _content -> raise %Fil.ChecksumMismatchError{reason: :tampered} end
 

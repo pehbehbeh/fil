@@ -18,6 +18,7 @@ defmodule Fil do
   alias Fil.Stat
   alias Fil.Support.Checksum
   alias Fil.Support.Content
+  alias Fil.Support.Sized
   alias Fil.Support.Telemetry
 
   @typedoc """
@@ -1009,9 +1010,10 @@ defmodule Fil do
   # hide bad content or a wrong size. Iodata is measured once, here, and its size is also the `:bytes` of the write's
   # events. A stream is checked against `:size` while it's read (`Fil.Support.Content.sized/3`). Without `:size`, a
   # stream whose size is known before it's read gets it (`Fil.Support.Content.known_size/1`), so S3 can send it in one
-  # request, and one that turns out to have another size is a conflict instead of a bad argument: the file changed.
-  # Returns the content, the options and the size, if it's known. `size: :unknown` only turns off finding the size, so
-  # it's dropped here, and plugins and adapters never see it.
+  # request, and one that turns out to have another size is a conflict instead of a bad argument: the file changed. A
+  # size found this way stays with the stream (`Fil.Support.Sized`), so `Fil.Op` can tell it from one a caller or a
+  # plugin declared. Returns the content, the options and the size, if it's known. `size: :unknown` only turns off
+  # finding the size, so it's dropped here, and plugins and adapters never see it.
   defp check_content!(content, opts) do
     case Keyword.pop(opts, :size) do
       {:unknown, without_size} -> check_content!(content, without_size, :unknown)
@@ -1047,8 +1049,12 @@ defmodule Fil do
 
   defp check_known_size(stream, opts) do
     case Content.known_size(stream) do
-      {size, mismatch} -> {Content.sized(stream, size, mismatch), Keyword.put(opts, :size, size), size}
-      nil -> {stream, opts, nil}
+      {size, mismatch} ->
+        sized = %Sized{stream: Content.sized(stream, size, mismatch), size: size}
+        {sized, Keyword.put(opts, :size, size), size}
+
+      nil ->
+        {stream, opts, nil}
     end
   end
 

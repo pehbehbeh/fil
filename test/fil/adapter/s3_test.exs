@@ -397,6 +397,22 @@ defmodule Fil.Adapter.S3Test do
     end
 
     @tag :tmp_dir
+    test "a stream a plugin put in place of a file stream is sent without the file's size", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "a.txt")
+      File.write!(path, "content")
+      stub([response(200)])
+
+      replacing =
+        Fil.attach(disk(), :replace, fn op, next, _opts -> next.(%{op | content: Stream.map(["replaced"], & &1)}) end)
+
+      assert {:ok, _} = Fil.write(replacing, "a.txt", File.stream!(path, 2))
+
+      request = request!()
+      assert request.assigns.body == "replaced"
+      assert header(request, "x-amz-content-sha256") == sha256("replaced")
+    end
+
+    @tag :tmp_dir
     test "an empty file stream has no size, and is one PutObject", %{tmp_dir: tmp_dir} do
       path = Path.join(tmp_dir, "empty.txt")
       File.write!(path, "")
