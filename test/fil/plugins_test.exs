@@ -410,6 +410,51 @@ defmodule Fil.PluginsTest do
       refute Fil.exists?(other, "a.txt")
     end
 
+    test "a Fil error a plugin raises in its callback propagates, on a write as on a read", %{disk: disk} do
+      denying =
+        Fil.attach(disk, :deny, fn _op, _next, _opts -> raise %Fil.AccessDeniedError{reason: :read_only} end)
+
+      assert_raise Fil.AccessDeniedError, fn -> Fil.write(denying, "a.txt", "content") end
+      assert_raise Fil.AccessDeniedError, fn -> Fil.write(denying, "a.txt", Stream.map(["content"], & &1)) end
+      assert_raise Fil.AccessDeniedError, fn -> Fil.read(denying, "a.txt") end
+    end
+
+    test "a Fil error a write transform raises is the write's result", %{disk: disk} do
+      rejected = fn _content -> raise %Fil.InvalidRequestError{reason: :rejected} end
+
+      rejecting =
+        Fil.attach(disk, :reject, fn
+          %Op{name: :write} = op, next, _opts ->
+            op
+            |> Op.update_content(iodata: rejected, stream: rejected)
+            |> next.()
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      materializing =
+        Fil.attach(disk, :materialize, fn
+          %Op{name: :write} = op, next, _opts ->
+            op
+            |> Op.materialize()
+            |> next.()
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      assert {:error, %Fil.InvalidRequestError{op: :write, path: "a.txt", reason: :rejected}} =
+               Fil.write(rejecting, "a.txt", "content")
+
+      failing = Stream.map([1], fn _chunk -> raise %Fil.UnavailableError{reason: :timeout} end)
+
+      assert {:error, %Fil.UnavailableError{op: :write, path: "a.txt", reason: :timeout}} =
+               Fil.write(materializing, "a.txt", failing)
+
+      refute Fil.exists?(disk, "a.txt")
+    end
+
     test "other exceptions in a read transform propagate", %{disk: disk} do
       failing =
         Fil.attach(disk, :fail, fn

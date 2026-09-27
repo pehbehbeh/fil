@@ -24,6 +24,9 @@ defmodule Fil.Op do
   alias Fil.Support.Content
   alias Fil.Support.Sized
 
+  # Tags a `Fil` error raised while a write's content is read, on its way to `run_chain/2`.
+  @content_error {__MODULE__, :content_error}
+
   @enforce_keys [:disk, :name, :path]
   defstruct [:disk, :name, :path, :dest, :content, :result, streaming: false, options: [], private: %{}]
 
@@ -149,7 +152,10 @@ defmodule Fil.Op do
   def update_content(%__MODULE__{name: :write, content: content} = op, funs) do
     funs = validate_transform!(funs)
 
-    content = if Content.iodata?(content), do: transform_iodata(content, funs), else: transform_stream(content, funs)
+    content =
+      reading_content(fn ->
+        if Content.iodata?(content), do: transform_iodata(content, funs), else: transform_stream(content, funs)
+      end)
 
     drop_size(%{op | content: content})
   end
@@ -211,7 +217,7 @@ defmodule Fil.Op do
   """
   @spec materialize(t()) :: t()
   def materialize(%__MODULE__{name: :write, content: content} = op) do
-    %{op | content: Content.to_binary(content)}
+    %{op | content: reading_content(fn -> Content.to_binary(content) end)}
   end
 
   def materialize(%__MODULE__{} = op), do: op
@@ -259,6 +265,31 @@ defmodule Fil.Op do
     |> fun.()
     |> IO.iodata_to_binary()
   end
+
+  # Reads a write's content (collecting it, or transforming content in memory), turning `Fil`'s errors into the write's
+  # result (see `run_chain/2`).
+  defp reading_content(fun) do
+    fun.()
+  rescue
+    error -> content_error(error, __STACKTRACE__)
+  end
+
+  # The content as the adapter reads it, with the same treatment of `Fil`'s errors.
+  defp read_content(stream) do
+    fn acc, fun -> reduce_content(&Enumerable.reduce(stream, &1, fun), acc) end
+  end
+
+  defp reduce_content(continuation, acc) do
+    case continuation.(acc) do
+      {:suspended, acc, continuation} -> {:suspended, acc, &reduce_content(continuation, &1)}
+      result -> result
+    end
+  rescue
+    error -> content_error(error, __STACKTRACE__)
+  end
+
+  defp content_error(%{op: _, path: _, disk: _} = error, _stacktrace), do: throw({@content_error, error})
+  defp content_error(error, stacktrace), do: reraise(error, stacktrace)
 
   # `Fil`'s errors are the exceptions with an operation, a path and a disk. Anything else is a bug in the transform.
   defp transform_error(%{op: _, path: _, disk: _} = error, _stacktrace), do: {:error, error}
@@ -315,14 +346,14 @@ defmodule Fil.Op do
     |> put_stream_context(caller)
   end
 
-  # A write reads its content during the chain, and a `Fil` error raised meanwhile (by a stream from `Fil.stream/3`, or
-  # by a plugin's transform) is the write's result. An error from a source stream keeps the source's context, one
-  # without context gets the write's. Anything else propagates.
+  # A `Fil` error raised while a write's content is read (by a stream from `Fil.stream/3`, or by a plugin's transform)
+  # is the write's result. It's thrown past the plugins and the adapter from where the content is read
+  # (`reading_content/1` and `read_content/1`), so an error a plugin raises in its callback propagates, the same as on
+  # a read. An error from a source stream keeps the source's context, one without context gets the write's.
   defp run_chain(%__MODULE__{name: :write} = caller, chain) do
     chain.(caller).result
-  rescue
-    error ->
-      with {:error, error} <- transform_error(error, __STACKTRACE__), do: {:error, put_context(error, caller)}
+  catch
+    :throw, {@content_error, error} -> {:error, put_context(error, caller)}
   end
 
   defp run_chain(caller, chain), do: chain.(caller).result
@@ -386,9 +417,7 @@ defmodule Fil.Op do
 
   # A stream reaches the adapter as non-empty binaries, checked against the `:size` the caller declared.
   defp call_adapter(%__MODULE__{name: :write, content: content} = op, module, state) do
-    content = if Content.iodata?(content), do: content, else: Content.sized(content, op.options[:size])
-
-    module.write(state, op.path, content, op.options)
+    module.write(state, op.path, adapter_content(content, op.options[:size]), op.options)
   end
 
   # `stream/3` is optional. Without it, the adapter reads the whole file and the stream is that one chunk.
@@ -415,6 +444,16 @@ defmodule Fil.Op do
 
   # read, stat, ls, rm and rm_rf all take (state, path, opts).
   defp call_adapter(%__MODULE__{name: name} = op, module, state), do: apply(module, name, [state, op.path, op.options])
+
+  defp adapter_content(content, size) do
+    if Content.iodata?(content) do
+      content
+    else
+      content
+      |> Content.sized(size)
+      |> read_content()
+    end
+  end
 
   # Adapters return a bare `:ok` for mutations. The result is the ref the operation acted on.
   defp to_result(:ok, %__MODULE__{name: name, dest: dest} = op, _caller) when name in [:cp, :rename] do
