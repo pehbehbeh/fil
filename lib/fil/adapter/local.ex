@@ -203,7 +203,10 @@ defmodule Fil.Adapter.Local do
   end
 
   defp full_path(%__MODULE__{root: root}, path) do
-    full = Path.expand(Path.join(root, path))
+    full =
+      root
+      |> Path.join(path)
+      |> Path.expand()
 
     if full == root or String.starts_with?(full, root <> "/") do
       {:ok, full}
@@ -214,7 +217,9 @@ defmodule Fil.Adapter.Local do
 
   # A parent that's a file is `:enotdir` on macOS and `:eexist` on Linux.
   defp ensure_parent(full) do
-    case File.mkdir_p(Path.dirname(full)) do
+    parent = Path.dirname(full)
+
+    case File.mkdir_p(parent) do
       :ok -> :ok
       {:error, :eexist} -> {:error, :enotdir}
       {:error, reason} -> {:error, reason}
@@ -268,8 +273,17 @@ defmodule Fil.Adapter.Local do
   end
 
   defp unique do
-    Integer.to_string(System.unique_integer([:positive]), 36) <>
-      "-" <> Integer.to_string(System.system_time(:microsecond), 36)
+    counter =
+      [:positive]
+      |> System.unique_integer()
+      |> Integer.to_string(36)
+
+    time =
+      :microsecond
+      |> System.system_time()
+      |> Integer.to_string(36)
+
+    counter <> "-" <> time
   end
 
   ## ------------------------------------------------------------------

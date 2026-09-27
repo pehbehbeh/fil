@@ -343,7 +343,10 @@ defmodule Fil.PlugTest do
     end
 
     test "keeps paths inside the disk root", %{tmp_dir: tmp_dir} do
-      File.write!(Path.join(tmp_dir, "secret.txt"), "secret")
+      tmp_dir
+      |> Path.join("secret.txt")
+      |> File.write!("secret")
+
       disk = Fil.disk(adapter: Fil.Adapter.Local, root: Path.join(tmp_dir, "public"))
 
       assert public_request(:get, "/storage/../secret.txt", disk).status == 404
@@ -391,13 +394,19 @@ defmodule Fil.PlugTest do
       opts = Fil.Plug.init(at: "/storage", disk: disk)
       uri = URI.parse(url)
 
-      served = Fil.Plug.call(conn(:get, uri.path <> "?" <> uri.query), opts)
+      served =
+        :get
+        |> conn(uri.path <> "?" <> uri.query)
+        |> Fil.Plug.call(opts)
 
       assert served.status == 200
       assert served.halted
       assert served.path_info == ["storage", "a.txt"]
 
-      passed = Fil.Plug.call(conn(:get, "/other/a.txt"), opts)
+      passed =
+        :get
+        |> conn("/other/a.txt")
+        |> Fil.Plug.call(opts)
 
       refute passed.halted
       assert passed.state == :unset

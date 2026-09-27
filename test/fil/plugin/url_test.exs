@@ -109,7 +109,10 @@ defmodule Fil.Plugin.URLTest do
 
     assert URL.secret(disk) == "secret"
     assert URL.secret(plain) == nil
-    assert URL.secret(URL.attach(plain, base_url: "http://localhost")) == nil
+
+    assert plain
+           |> URL.attach(base_url: "http://localhost")
+           |> URL.secret() == nil
   end
 
   test "doesn't show the secret", %{disk: disk} do

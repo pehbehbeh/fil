@@ -40,9 +40,14 @@ defmodule Fil.Emulator do
   @doc "Whether the emulator is listening. Gives up after 500 ms instead of waiting for a request timeout."
   @spec reachable?(atom()) :: boolean()
   def reachable?(kind) do
-    uri = URI.parse(url(kind))
+    uri =
+      kind
+      |> url()
+      |> URI.parse()
 
-    case :gen_tcp.connect(String.to_charlist(uri.host), uri.port, [:binary, active: false], 500) do
+    host = String.to_charlist(uri.host)
+
+    case :gen_tcp.connect(host, uri.port, [:binary, active: false], 500) do
       {:ok, socket} ->
         :gen_tcp.close(socket)
         true

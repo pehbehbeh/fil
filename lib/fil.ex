@@ -891,7 +891,9 @@ defmodule Fil do
 
   defp run(ref, name, opts, fields \\ []) do
     with {:ok, %Ref{disk: disk, path: path}} <- resolve(ref, name) do
-      Op.run(struct!(%Op{disk: disk, name: name, path: path, options: opts}, fields))
+      %Op{disk: disk, name: name, path: path, options: opts}
+      |> struct!(fields)
+      |> Op.run()
     end
   end
 

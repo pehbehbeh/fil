@@ -172,7 +172,11 @@ if Code.ensure_loaded?(Plug) do
 
     defp authorize(conn, method, secret, _public?) do
       with :ok <- Fil.Plugin.URL.verify(secret, method, conn.request_path, conn.query_params) do
-        {:ok, Enum.map(List.wrap(conn.query_params["disposition"]), &{"content-disposition", &1})}
+        # `verify/4` accepts only a string disposition, or none.
+        case conn.query_params["disposition"] do
+          nil -> {:ok, []}
+          disposition -> {:ok, [{"content-disposition", disposition}]}
+        end
       end
     end
 

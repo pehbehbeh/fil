@@ -99,7 +99,8 @@ defmodule Fil.Plugin.URL do
     with {:ok, expires} <- expires(params),
          {:ok, signature} when is_binary(signature) <- Map.fetch(params, "signature"),
          disposition when is_binary(disposition) or is_nil(disposition) <- params["disposition"],
-         true <- :crypto.hash_equals(signature(secret, method, request_path, expires, disposition), signature) do
+         expected = signature(secret, method, request_path, expires, disposition),
+         true <- :crypto.hash_equals(expected, signature) do
       if expires >= System.os_time(:second), do: :ok, else: {:error, :expired}
     else
       _invalid -> {:error, :invalid_signature}
@@ -156,10 +157,17 @@ defmodule Fil.Plugin.URL do
 
   # URLs without a disposition sign the same payload as before it existed, so they stay valid.
   defp signature(secret, method, url_path, expires, disposition) do
-    payload = Enum.join([String.upcase(Atom.to_string(method)), url_path, expires] ++ List.wrap(disposition), "\n")
+    payload = Enum.join([http_method(method), url_path, expires | List.wrap(disposition)], "\n")
 
     :hmac
     |> :crypto.mac(:sha256, secret, payload)
     |> Base.url_encode64(padding: false)
+  end
+
+  # The method as HTTP sends it, e.g. `"GET"`.
+  defp http_method(method) do
+    method
+    |> Atom.to_string()
+    |> String.upcase()
   end
 end

@@ -87,8 +87,14 @@ defmodule Fil.AdapterCase do
         content = "0123456789"
 
         expected = [
-          sha256: Base.encode64(:crypto.hash(:sha256, content)),
-          sha1: Base.encode64(:crypto.hash(:sha, content)),
+          sha256:
+            :sha256
+            |> :crypto.hash(content)
+            |> Base.encode64(),
+          sha1:
+            :sha
+            |> :crypto.hash(content)
+            |> Base.encode64(),
           crc32: Base.encode64(<<:erlang.crc32(content)::32>>)
         ]
 
@@ -473,12 +479,21 @@ defmodule Fil.AdapterCase do
         assert {:ok, renamed} = Fil.signed_url(disk, "cv.pdf", disposition: {:attachment, "Lebenslauf.pdf"})
 
         # S3 names the parameter `response-content-disposition`, `Fil.Plugin.URL` just `disposition`.
-        query_values = fn url -> Map.values(URI.decode_query(URI.parse(url).query)) end
+        query_values = fn url ->
+          url
+          |> URI.parse()
+          |> Map.fetch!(:query)
+          |> URI.decode_query()
+          |> Map.values()
+        end
 
         assert "inline" in query_values.(inline)
         assert ~s(attachment; filename="cv.pdf") in query_values.(attachment)
         assert ~s(attachment; filename="Lebenslauf.pdf") in query_values.(renamed)
-        refute Enum.any?(query_values.(plain), &String.contains?(&1, "attachment"))
+
+        refute plain
+               |> query_values.()
+               |> Enum.any?(&String.contains?(&1, "attachment"))
 
         assert_raise ArgumentError, ~r/disposition/, fn ->
           Fil.signed_url(disk, "cv.pdf", method: :put, disposition: :attachment)
@@ -524,10 +539,18 @@ defmodule Fil.AdapterCase do
         ref = Fil.ref(disk, "forms.txt")
 
         assert {:ok, _} = Fil.write(disk, "forms.txt", "one")
-        assert Fil.read(Fil.ref(disk, "forms.txt")) == {:ok, "one"}
+
+        assert disk
+               |> Fil.ref("forms.txt")
+               |> Fil.read() == {:ok, "one"}
+
         assert Fil.read(ref) == {:ok, "one"}
 
-        assert {:ok, _} = Fil.write(Fil.ref(disk, "forms.txt"), "two")
+        assert {:ok, _} =
+                 disk
+                 |> Fil.ref("forms.txt")
+                 |> Fil.write("two")
+
         assert Fil.read(disk, "forms.txt") == {:ok, "two"}
 
         assert {:ok, _} = Fil.write(ref, "three", [])
@@ -539,9 +562,19 @@ defmodule Fil.AdapterCase do
         assert {:ok, _} = Fil.rename(ref, "forms-renamed.txt")
         assert Fil.read(disk, "forms-renamed.txt") == {:ok, "three"}
 
-        assert Fil.exists?(Fil.ref(disk, "forms-renamed.txt"))
-        assert {:ok, %Fil.Stat{}} = Fil.stat(Fil.ref(disk, "forms-copy.txt"))
-        assert {:ok, _} = Fil.ls(Fil.ref(disk, "."))
+        assert disk
+               |> Fil.ref("forms-renamed.txt")
+               |> Fil.exists?()
+
+        assert {:ok, %Fil.Stat{}} =
+                 disk
+                 |> Fil.ref("forms-copy.txt")
+                 |> Fil.stat()
+
+        assert {:ok, _} =
+                 disk
+                 |> Fil.ref(".")
+                 |> Fil.ls()
       end
 
       ## ----------------------------------------------------------------
@@ -567,7 +600,12 @@ defmodule Fil.AdapterCase do
         assert error.disk == disk
         assert Exception.message(error) =~ ~s|could not read "nope.txt" on #{inspect(disk)}|
 
-        assert_raise Fil.InvalidRequestError, fn -> Fil.read!(Fil.ref(disk, "../escape.txt")) end
+        assert_raise Fil.InvalidRequestError, fn ->
+          disk
+          |> Fil.ref("../escape.txt")
+          |> Fil.read!()
+        end
+
         assert_raise Fil.NotFoundError, fn -> Fil.stat!(disk, "nope.txt") end
         assert_raise Fil.NotFoundError, fn -> Fil.cp!(disk, "nope.txt", "target.txt") end
       end

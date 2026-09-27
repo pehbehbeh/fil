@@ -92,7 +92,8 @@ defmodule Fil.Adapter.MemoryTest do
       {:ok, agent} = Agent.start_link(fn -> nil end, name: :fil_memory_test_agent)
 
       assert :ok = Memory.allow(self(), :fil_memory_test_agent)
-      assert_raise ArgumentError, ~r/has no memory store/, fn -> Memory.allow(spawn(fn -> nil end), agent) end
+      storeless = spawn(fn -> nil end)
+      assert_raise ArgumentError, ~r/has no memory store/, fn -> Memory.allow(storeless, agent) end
       assert_raise ArgumentError, ~r/no process is registered/, fn -> Memory.allow(self(), :nobody) end
     end
 
@@ -131,7 +132,10 @@ defmodule Fil.Adapter.MemoryTest do
     end
 
     test "returns the stored checksum, like S3", %{disk: disk} do
-      checksum = Base.encode64(:crypto.hash(:sha256, "hello"))
+      checksum =
+        :sha256
+        |> :crypto.hash("hello")
+        |> Base.encode64()
 
       assert {:ok, _} = Fil.write(disk, "a.txt", "hello", checksum: :sha256)
       assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}}} = Fil.stat(disk, "a.txt", checksum: :sha256)

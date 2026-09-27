@@ -36,7 +36,9 @@ defmodule Fil.Plugin.ContentTypeTest do
   test "falls back to the default for an unknown extension" do
     assert sent_content_type(fn -> Fil.write(disk(), "notes.unknownext", "x") end) == "application/octet-stream"
     assert sent_content_type(fn -> Fil.write(disk(), "Makefile", "x") end) == "application/octet-stream"
-    assert sent_content_type(fn -> Fil.write(disk(default: "text/plain"), "Makefile", "x") end) == "text/plain"
+
+    text = disk(default: "text/plain")
+    assert sent_content_type(fn -> Fil.write(text, "Makefile", "x") end) == "text/plain"
   end
 
   test "a content type given to the call wins" do

@@ -112,9 +112,16 @@ defmodule Fil.Adapter.Memory do
   """
   @spec allow(pid() | atom(), pid() | atom()) :: :ok
   def allow(owner, allowed) do
-    case MemoryStores.lookup(whereis!(owner)) do
-      {:ok, store, real_owner} -> MemoryStores.put(whereis!(allowed), store, real_owner)
-      :error -> raise ArgumentError, "#{inspect(owner)} has no memory store, call Fil.Adapter.Memory.checkout/0 first"
+    owner_pid = whereis!(owner)
+
+    case MemoryStores.lookup(owner_pid) do
+      {:ok, store, real_owner} ->
+        allowed
+        |> whereis!()
+        |> MemoryStores.put(store, real_owner)
+
+      :error ->
+        raise ArgumentError, "#{inspect(owner)} has no memory store, call Fil.Adapter.Memory.checkout/0 first"
     end
   end
 
@@ -270,7 +277,7 @@ defmodule Fil.Adapter.Memory do
 
     store
     |> :ets.tab2list()
-    |> Enum.filter(&String.starts_with?(elem(&1, 0), prefix))
+    |> Enum.filter(fn {key, _content, _content_type, _mtime, _checksum} -> String.starts_with?(key, prefix) end)
   end
 
   ## ------------------------------------------------------------------
@@ -284,7 +291,9 @@ defmodule Fil.Adapter.Memory do
     |> Enum.map(fn entry ->
       key = elem(entry, 0)
 
-      case String.split(String.replace_prefix(key, dir, ""), "/", parts: 2) do
+      relative_key = String.replace_prefix(key, dir, "")
+
+      case String.split(relative_key, "/", parts: 2) do
         [_name] -> {relative(state, key), file_stat(entry, nil)}
         [name, _rest] -> {Fil.Support.Path.join(prefix, name), %Stat{type: :directory}}
       end
@@ -306,7 +315,10 @@ defmodule Fil.Adapter.Memory do
       size: byte_size(content),
       type: :regular,
       mtime: mtime,
-      etag: Base.encode16(:crypto.hash(:md5, content), case: :lower),
+      etag:
+        :md5
+        |> :crypto.hash(content)
+        |> Base.encode16(case: :lower),
       content_type: content_type,
       checksum: stored_checksum(checksum, algorithm)
     }
@@ -337,5 +349,9 @@ defmodule Fil.Adapter.Memory do
 
   defp verify(content, nil, _opts), do: {:ok, content}
 
-  defp now, do: DateTime.from_unix!(System.os_time(:second))
+  defp now do
+    :second
+    |> System.os_time()
+    |> DateTime.from_unix!()
+  end
 end

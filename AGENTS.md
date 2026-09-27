@@ -54,6 +54,10 @@ The Hex package is `fil`.
   `mix format` left unchanged files alone here.
 - **`do:` one-liners:** only for bodies that fit on one line without a pipe chain. Quokka puts each pipe on its own
   line, which turns a piped `do:` body into a multi-line `do:` block; write those as `do ... end` instead.
+- **Nested calls:** `f(g(x))` is a credo error (`NestedFunctionCalls`), in tests too. Pipe it, bind a variable, or give
+  the step a function of its own. Credo doesn't see calls nested inside a list literal, so watch for those by hand. Bind
+  a variable before a `case` rather than writing `case x |> g() do`: Quokka turns that into `|> case do`, which credo
+  rejects as well.
 - **Docs:** operation functions have `@doc section: :operations` (and so on). The ExDoc groups are built from these
   tags, so never maintain function lists by hand.
 - **HTTP:** cloud adapters call Req directly, with a `req_options:` adapter option that's merged into every request.

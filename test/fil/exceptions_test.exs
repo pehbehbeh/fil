@@ -59,5 +59,9 @@ defmodule Fil.ExceptionsTest do
     end
   end
 
-  defp message(module, reason), do: Exception.message(struct(module, op: :read, path: "a.txt", reason: reason))
+  defp message(module, reason) do
+    module
+    |> struct(op: :read, path: "a.txt", reason: reason)
+    |> Exception.message()
+  end
 end

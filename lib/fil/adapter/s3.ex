@@ -513,7 +513,13 @@ defmodule Fil.Adapter.S3 do
 
   defp list_all(state, prefix, delimiter, token \\ nil, contents \\ [], prefixes \\ []) do
     with {:ok, result} <- list_page(state, prefix, delimiter, token) do
-      contents = contents ++ Enum.reject(XML.children(result, "Contents"), &marker?(&1, prefix))
+      page_contents =
+        result
+        |> XML.children("Contents")
+        |> Enum.reject(&marker?(&1, prefix))
+
+      contents = contents ++ page_contents
+
       prefixes = prefixes ++ XML.children(result, "CommonPrefixes")
 
       case next_token(result) do

@@ -43,13 +43,22 @@ defmodule Fil.Adapter.LocalTest do
 
       assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Local.read(state, "../../etc/passwd", [])
       assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Local.write(state, "../escape.txt", "x", [])
-      refute File.exists?(Path.join(tmp_dir, "../escape.txt"))
+
+      refute tmp_dir
+             |> Path.join("../escape.txt")
+             |> File.exists?()
     end
 
     test "does not confuse a sibling directory with the root", %{tmp_dir: tmp_dir} do
       {:ok, state} = Local.init(root: Path.join(tmp_dir, "root"))
-      File.mkdir_p!(Path.join(tmp_dir, "root-sibling"))
-      File.write!(Path.join(tmp_dir, "root-sibling/secret.txt"), "secret")
+
+      tmp_dir
+      |> Path.join("root-sibling")
+      |> File.mkdir_p!()
+
+      tmp_dir
+      |> Path.join("root-sibling/secret.txt")
+      |> File.write!("secret")
 
       assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Local.read(state, "../root-sibling/secret.txt", [])
     end
@@ -97,7 +106,11 @@ defmodule Fil.Adapter.LocalTest do
 
     test "computes a checksum from the file and ignores the option on writes and reads", %{disk: disk} do
       content = :crypto.strong_rand_bytes(200_000)
-      checksum = Base.encode64(:crypto.hash(:sha256, content))
+
+      checksum =
+        :sha256
+        |> :crypto.hash(content)
+        |> Base.encode64()
 
       assert {:ok, _} = Fil.write(disk, "big.bin", content, checksum: :sha256)
       assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}}} = Fil.stat(disk, "big.bin", checksum: :sha256)
