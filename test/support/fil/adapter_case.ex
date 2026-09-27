@@ -815,6 +815,34 @@ defmodule Fil.AdapterCase do
         assert Fil.read(other_disk, "taken.txt") == {:ok, "other"}
       end
 
+      test "if_exists: :error lets one of several concurrent copies and moves win", %{disk: disk} do
+        for i <- 1..8, do: assert({:ok, _} = Fil.write(disk, "sources/#{i}.txt", "#{i}"))
+
+        results =
+          1..8
+          |> Task.async_stream(
+            fn
+              i when rem(i, 2) == 0 -> Fil.cp(disk, "sources/#{i}.txt", "target.txt", if_exists: :error)
+              i -> Fil.rename(disk, "sources/#{i}.txt", "target.txt", if_exists: :error)
+            end,
+            max_concurrency: 8
+          )
+          |> Enum.map(fn {:ok, result} -> result end)
+
+        {won, lost} = Enum.split_with(results, &match?({:ok, _}, &1))
+
+        assert [_winner] = won
+        assert Enum.all?(lost, &match?({:error, %Fil.AlreadyExistsError{}}, &1))
+
+        assert {:ok, content} = Fil.read(disk, "target.txt")
+        winner = String.to_integer(content)
+
+        for i <- 1..8 do
+          moved? = i == winner and rem(i, 2) == 1
+          assert Fil.exists?(disk, "sources/#{i}.txt") == not moved?
+        end
+      end
+
       test "if_exists: :error copies and moves onto a missing file", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "source.txt", "source")
 

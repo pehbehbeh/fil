@@ -235,6 +235,18 @@ defmodule Fil.Adapter.LocalTest do
       refute Fil.exists?(disk, "b.txt")
     end
 
+    test "that run at the same time leave no temporary files behind", %{disk: disk, tmp_dir: tmp_dir} do
+      for i <- 1..8, do: assert({:ok, _} = Fil.write(disk, "sources/#{i}.txt", "#{i}"))
+
+      1..8
+      |> Task.async_stream(fn i -> Fil.cp(disk, "sources/#{i}.txt", "target/a.txt", if_exists: :error) end)
+      |> Stream.run()
+
+      assert tmp_dir
+             |> Path.join("primary/target")
+             |> File.ls!() == ["a.txt"]
+    end
+
     test "keep the source's permissions, like File.cp/2", %{disk: disk, tmp_dir: tmp_dir} do
       assert {:ok, _} = Fil.write(disk, "run.sh", "echo")
 

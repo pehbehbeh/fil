@@ -65,11 +65,18 @@ end
 
 defmodule Fil.AlreadyExistsError do
   @moduledoc """
-  A write with `if_exists: :error` found a file already there. Read that file and decide again.
+  A write, a copy or a move with `if_exists: :error` found a file already there. Read that file and decide again.
+
+  For a copy or a move, `:path` is the destination, and neither file changed: a move leaves the source where it was.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> Fil.write!(disk, "once.txt", "first")
       iex> {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "once.txt", "second", if_exists: :error)
+      iex> Fil.write!(disk, "draft.txt", "second")
+      iex> {:error, %Fil.AlreadyExistsError{path: "once.txt"}} =
+      ...>   Fil.rename(disk, "draft.txt", "once.txt", if_exists: :error)
+      iex> Fil.read(disk, "draft.txt")
+      {:ok, "second"}
   """
 
   defexception [:op, :path, :disk, :reason]
