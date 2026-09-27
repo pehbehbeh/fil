@@ -150,8 +150,9 @@ defmodule Fil.UnavailableError do
   @moduledoc """
   The storage didn't answer, or asked to wait. Try again later.
 
-  Adapters return it for a timeout, a closed connection, a server error, throttling and too many open files. It's the
-  only error where retrying may help. `Fil` doesn't retry (for now), because only the caller knows whether a failed
+  Adapters return it for a timeout, a closed connection, a server error, throttling and too many open files. `Fil`
+  returns it with `reason: :size_changed` for a copy across disks whose source changed size while it was copied. It's
+  the only error where retrying may help. `Fil` doesn't retry (for now), because only the caller knows whether a failed
   mutation is safe to repeat.
   """
 

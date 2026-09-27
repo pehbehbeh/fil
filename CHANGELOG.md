@@ -37,7 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.Plug` streams uploads into `Fil.write/4`, with the `content-length` as `size:`, and sends downloads as a chunked
   response, so neither is held in memory whole.
   ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
-- A copy or a move across disks streams the file instead of reading it into memory.
+- A copy or a move across disks streams the file instead of reading it into memory, with the source's size, so S3
+  streams it too (unless a plugin on the source changes the content).
   ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
 - `if_exists: :error` on a local disk writes to a temporary file and hard-links it into place, so a failed write no
   longer leaves a partial file behind.

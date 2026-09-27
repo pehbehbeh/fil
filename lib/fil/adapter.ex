@@ -109,12 +109,17 @@ defmodule Fil.Adapter do
 
   Optional. Without it, `Fil.stream/3` calls `c:read/3` and streams the whole content as one chunk.
 
+  Returns `{:ok, stream, size}` when the check found the size of the file, `{:ok, stream}` otherwise. `Fil` passes the
+  size on when it copies the file to another disk, so storage that needs the size before the content (S3) can stream
+  the copy too.
+
   The stream is lazy: it reads the file only when it's enumerated, and again each time it is, in whatever process
   enumerates it. It yields binaries of any size and raises an error struct when reading fails (`Fil` fills in its
   context). `opts` are those of `c:read/3`, and a `verify_checksum: true` mismatch raises `Fil.ChecksumMismatchError`
   at the latest after the last chunk.
   """
-  @callback stream(state(), path(), opts()) :: {:ok, Enumerable.t()} | error()
+  @callback stream(state(), path(), opts()) ::
+              {:ok, Enumerable.t()} | {:ok, Enumerable.t(), non_neg_integer()} | error()
 
   @doc """
   Writes `content`, creating parent directories as needed.

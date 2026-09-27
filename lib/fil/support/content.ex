@@ -1,6 +1,8 @@
 defmodule Fil.Support.Content do
   @moduledoc false
 
+  alias Fil.Support.Sized
+
   # Content is whole (iodata) or a stream (any other enumerable of iodata). These helpers turn a stream into what
   # adapters, plugins and callers get: non-empty binaries, in order.
 
@@ -52,10 +54,12 @@ defmodule Fil.Support.Content do
   as soon as it has all of it, so a stream that turns out longer raises before the last chunk goes out, and one that
   ends short raises instead of ending.
   """
-  @spec sized(Enumerable.t(), non_neg_integer() | nil) :: Enumerable.t()
-  def sized(stream, nil), do: chunks(stream)
+  @spec sized(Enumerable.t(), non_neg_integer() | nil, (String.t() -> Exception.t())) :: Enumerable.t()
+  def sized(stream, size, mismatch \\ &ArgumentError.exception/1)
 
-  def sized(stream, size) do
+  def sized(stream, nil, _mismatch), do: chunks(stream)
+
+  def sized(stream, size, mismatch) do
     stream
     |> chunks()
     |> Stream.transform(
@@ -64,14 +68,14 @@ defmodule Fil.Support.Content do
         count = count + byte_size(chunk)
 
         if count > size do
-          raise ArgumentError, "the content has more than #{size} bytes, but the :size option is #{size}"
+          raise mismatch.("the content has more than #{size} bytes, but the :size option is #{size}")
         end
 
         {held, {[chunk], count}}
       end,
       fn
         {held, ^size} -> {held, {[], size}}
-        {_held, count} -> raise ArgumentError, "the content has #{count} bytes, but the :size option is #{size}"
+        {_held, count} -> raise mismatch.("the content has #{count} bytes, but the :size option is #{size}")
       end,
       fn _state -> :ok end
     )
@@ -83,6 +87,8 @@ defmodule Fil.Support.Content do
   unchanged, so an error of the destination isn't reported as one of the source.
   """
   @spec put_context(Enumerable.t(), keyword()) :: Enumerable.t()
+  def put_context(%Sized{stream: stream} = sized, context), do: %{sized | stream: put_context(stream, context)}
+
   def put_context(stream, context) do
     fn acc, fun ->
       ref = make_ref()

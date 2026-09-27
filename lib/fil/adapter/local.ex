@@ -144,9 +144,10 @@ defmodule Fil.Adapter.Local do
   defp stream_file(state, path) do
     with {:ok, full} <- full_path(state, path),
          {:ok, io} <- open_read(full) do
+      {:ok, size} = :file.position(io, :eof)
       :ok = :file.close(io)
 
-      {:ok, Stream.resource(fn -> open_read!(full) end, &read_chunk/1, &:file.close/1)}
+      {:ok, Stream.resource(fn -> open_read!(full) end, &read_chunk/1, &:file.close/1), size}
     end
   end
 

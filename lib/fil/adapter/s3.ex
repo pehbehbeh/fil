@@ -247,12 +247,18 @@ defmodule Fil.Adapter.S3 do
     headers = if verify?, do: [@checksum_mode], else: []
 
     case request(state, :head, key(state, path), headers: headers) do
-      {:ok, %{status: 200} = response} -> {:ok, download(state, key(state, path), if(verify?, do: algorithm(response)))}
-      {:ok, %{status: 404}} -> with {:ok, content} <- read(state, path, opts), do: {:ok, [content]}
+      {:ok, %{status: 200} = response} -> {:ok, download(state, path, response, verify?), content_length(response)}
+      {:ok, %{status: 404}} -> with {:ok, content} <- read(state, path, opts), do: {:ok, [content], byte_size(content)}
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp download(state, path, response, verify?) do
+    download(state, key(state, path), if(verify?, do: algorithm(response)))
+  end
+
+  defp content_length(%{headers: headers}), do: integer(header(headers, "content-length"))
 
   # The algorithm of the checksum stored with the object, so the download can compute it as it goes.
   defp algorithm(%{headers: headers}) do

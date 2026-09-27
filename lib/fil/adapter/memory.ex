@@ -189,10 +189,12 @@ defmodule Fil.Adapter.Memory do
   # The file is looked up again when the stream is read, like on the other adapters.
   @impl Fil.Adapter
   def stream(state, path, opts) do
-    if :ets.member(store!(), key(state, path)) do
-      {:ok, Stream.flat_map([path], &read_chunks!(state, &1, opts))}
-    else
-      {:error, %Fil.NotFoundError{reason: :enoent}}
+    case :ets.lookup(store!(), key(state, path)) do
+      [{_key, content, _content_type, _mtime, _checksum}] ->
+        {:ok, Stream.flat_map([path], &read_chunks!(state, &1, opts)), byte_size(content)}
+
+      [] ->
+        {:error, %Fil.NotFoundError{reason: :enoent}}
     end
   end
 

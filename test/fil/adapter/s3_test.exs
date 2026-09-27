@@ -364,6 +364,45 @@ defmodule Fil.Adapter.S3Test do
     end
   end
 
+  describe "copies from another disk" do
+    setup do
+      Fil.Adapter.Memory.checkout()
+      {:ok, memory: Fil.disk(adapter: Fil.Adapter.Memory)}
+    end
+
+    test "stream with the source's size", %{memory: memory} do
+      stub([response(200)])
+      {:ok, source} = Fil.write(memory, "a.txt", "Hello, World")
+
+      assert {:ok, _} = Fil.cp(source, Fil.ref(disk(), "b.txt"))
+
+      request = request!()
+
+      assert request.assigns.body == "Hello, World"
+      assert header(request, "content-length") == "12"
+      assert header(request, "x-amz-content-sha256") == "UNSIGNED-PAYLOAD"
+    end
+
+    test "are collected when a plugin on the source changes the content", %{memory: memory} do
+      stub([response(200)])
+      {:ok, _} = Fil.write(memory, "a.txt", "Hello")
+
+      shouting =
+        Fil.attach(memory, :shout, fn op, next, _opts ->
+          op
+          |> next.()
+          |> Fil.Op.update_result(chunk: &String.upcase/1)
+        end)
+
+      assert {:ok, _} = Fil.cp(shouting, "a.txt", Fil.ref(disk(), "b.txt"))
+
+      request = request!()
+
+      assert request.assigns.body == "HELLO"
+      assert header(request, "x-amz-content-sha256") == sha256("HELLO")
+    end
+  end
+
   describe "stream/2" do
     test "checks with HeadObject and downloads with GetObject when the stream is read" do
       stub([response(200), response(200, ["Hel", "lo"])])

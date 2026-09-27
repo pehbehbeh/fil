@@ -22,6 +22,7 @@ defmodule Fil.Op do
   alias Fil.Disk
   alias Fil.Ref
   alias Fil.Support.Content
+  alias Fil.Support.Sized
 
   @enforce_keys [:disk, :name, :path]
   defstruct [:disk, :name, :path, :dest, :content, :result, streaming: false, options: [], private: %{}]
@@ -413,7 +414,7 @@ defmodule Fil.Op do
     if Code.ensure_loaded?(module) and function_exported?(module, :stream, 3) do
       module.stream(state, op.path, op.options)
     else
-      with {:ok, content} <- module.read(state, op.path, op.options), do: {:ok, [content]}
+      with {:ok, content} <- module.read(state, op.path, op.options), do: {:ok, [content], byte_size(content)}
     end
   end
 
@@ -444,7 +445,16 @@ defmodule Fil.Op do
     {:ok, Enum.map(listed, fn {path, stat} -> %Ref{disk: disk, path: path, stat: stat} end)}
   end
 
-  # Errors raised while the caller reads the stream get the same context as returned ones.
+  # Errors raised while the caller reads the stream get the same context as returned ones. A size the adapter found
+  # stays with its stream (`Fil.Support.Sized`).
+  defp to_result({:ok, stream, size}, %__MODULE__{name: :read, streaming: true} = op, caller) when is_integer(size) do
+    to_result({:ok, %Sized{stream: stream, size: size}}, op, caller)
+  end
+
+  defp to_result({:ok, stream, nil}, %__MODULE__{name: :read, streaming: true} = op, caller) do
+    to_result({:ok, stream}, op, caller)
+  end
+
   defp to_result({:ok, stream}, %__MODULE__{name: :read, streaming: true}, caller) do
     {:ok, Content.put_context(stream, context(caller))}
   end

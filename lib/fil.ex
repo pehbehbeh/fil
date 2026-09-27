@@ -18,6 +18,7 @@ defmodule Fil do
   alias Fil.Stat
   alias Fil.Support.Checksum
   alias Fil.Support.Content
+  alias Fil.Support.Sized
 
   @typedoc """
   An error from an adapter or from `Fil` itself. Each struct stands for what the caller can do about it, and means the
@@ -603,7 +604,10 @@ defmodule Fil do
   Copies a file and returns the destination ref.
 
   Within one disk, `Fil` uses the adapter's native copy. Across disks, it streams the file from the source to the
-  destination (see `stream/3`). The destination may be a ref, or a bare path on the source's disk.
+  destination (see `stream/3`), with the size the source's adapter found, so S3 streams the upload too. When a plugin
+  on the source changes the content, or the adapter doesn't know the size, S3 collects the file into memory first. A
+  source that changes size while it's copied fails the copy with a `Fil.UnavailableError`. The destination may be a
+  ref, or a bare path on the source's disk.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
@@ -1060,9 +1064,19 @@ defmodule Fil do
   defp name_op({:error, %{op: _} = error}, name), do: {:error, %{error | op: name}}
   defp name_op(result, _name), do: result
 
-  # An error the source raises while it's streamed comes back from the write with the source's context.
+  # An error the source raises while it's streamed comes back from the write with the source's context. When the
+  # source's adapter found the size and no plugin changed the content, the write gets the size, so S3 can stream too.
+  # A source that changes size while it's copied fails the copy as unavailable, because trying again can help.
   defp cross_disk(:cp, src, dest, opts) do
-    with {:ok, content} <- stream(src), do: write(dest, content, opts)
+    with {:ok, content} <- run(src, :read, validate!([], @read_schema), streaming: true) do
+      case content do
+        %Sized{stream: stream, size: size} ->
+          write(dest, Content.sized(stream, size, &size_changed(&1, src)), Keyword.put(opts, :size, size))
+
+        content ->
+          write(dest, Content.chunks(content), opts)
+      end
+    end
   end
 
   defp cross_disk(:rename, src, dest, opts) do
@@ -1070,6 +1084,10 @@ defmodule Fil do
          {:ok, _} <- rm(src) do
       {:ok, dest_ref}
     end
+  end
+
+  defp size_changed(_message, %Ref{disk: disk, path: path}) do
+    %Fil.UnavailableError{reason: :size_changed, op: :read, path: path, disk: disk}
   end
 
   defp resolve(%Ref{} = ref, name) do
