@@ -29,6 +29,7 @@ defmodule Fil do
           | Fil.AccessDeniedError.t()
           | Fil.InvalidRequestError.t()
           | Fil.AlreadyExistsError.t()
+          | Fil.ConflictError.t()
           | Fil.ChecksumMismatchError.t()
           | Fil.StorageFullError.t()
           | Fil.UnsupportedError.t()
@@ -606,7 +607,7 @@ defmodule Fil do
   Within one disk, `Fil` uses the adapter's native copy. Across disks, it streams the file from the source to the
   destination (see `stream/3`), with the size the source's adapter found, so S3 streams the upload too. When a plugin
   on the source changes the content, or the adapter doesn't know the size, S3 collects the file into memory first. A
-  source that changes size while it's copied fails the copy with a `Fil.UnavailableError`. The destination may be a
+  source that changes size while it's copied fails the copy with a `Fil.ConflictError`. The destination may be a
   ref, or a bare path on the source's disk.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
@@ -1066,7 +1067,7 @@ defmodule Fil do
 
   # An error the source raises while it's streamed comes back from the write with the source's context. When the
   # source's adapter found the size and no plugin changed the content, the write gets the size, so S3 can stream too.
-  # A source that changes size while it's copied fails the copy as unavailable, because trying again can help.
+  # A source that changes size while it's copied fails the copy with a conflict.
   defp cross_disk(:cp, src, dest, opts) do
     with {:ok, content} <- run(src, :read, validate!([], @read_schema), streaming: true) do
       case content do
@@ -1087,7 +1088,7 @@ defmodule Fil do
   end
 
   defp size_changed(_message, %Ref{disk: disk, path: path}) do
-    %Fil.UnavailableError{reason: :size_changed, op: :read, path: path, disk: disk}
+    %Fil.ConflictError{reason: :size_changed, op: :read, path: path, disk: disk}
   end
 
   defp resolve(%Ref{} = ref, name) do

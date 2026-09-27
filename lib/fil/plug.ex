@@ -121,8 +121,8 @@ if Code.ensure_loaded?(Plug) do
         [Mounting](#module-mounting)) a `400`. Neither writes anything
       * a missing file gets a `404`, and so does a file the storage denies access to, so a client can't tell which
         files exist
-      * a failed write gets a `409` if the file already exists, `507` if the storage is full and `503` if it's
-        unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
+      * a failed write gets a `409` if the file already exists or changed meanwhile, `507` if the storage is full and
+        `503` if it's unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
     """
 
     @behaviour Plug
@@ -350,6 +350,7 @@ if Code.ensure_loaded?(Plug) do
          do: send_error(conn, 404, "not found")
 
     defp send_fil_error(conn, %Fil.AlreadyExistsError{}), do: send_error(conn, 409, "the file already exists")
+    defp send_fil_error(conn, %Fil.ConflictError{}), do: send_error(conn, 409, "the file changed, try again")
     defp send_fil_error(conn, %Fil.StorageFullError{}), do: send_error(conn, 507, "no space left")
     defp send_fil_error(conn, %Fil.UnavailableError{}), do: send_error(conn, 503, "the storage is unavailable")
     # The message contains the path, the disk and what the storage reported, so it goes to the log and the client

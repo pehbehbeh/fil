@@ -174,6 +174,7 @@ defmodule Fil.PlugTest do
     test "a failed write gets the status of its error", %{memory: disk} do
       for {error, status} <- [
             {%Fil.AlreadyExistsError{reason: :eexist}, 409},
+            {%Fil.ConflictError{reason: :size_changed}, 409},
             {%Fil.StorageFullError{reason: :enospc}, 507},
             {%Fil.UnavailableError{reason: :timeout}, 503}
           ] do

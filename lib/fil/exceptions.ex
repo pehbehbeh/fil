@@ -78,6 +78,22 @@ defmodule Fil.AlreadyExistsError do
   def message(error), do: Fil.Support.Error.message(error, "the file already exists")
 end
 
+defmodule Fil.ConflictError do
+  @moduledoc """
+  The file changed while the operation used it. Read it again and retry.
+
+  `Fil` returns it with `reason: :size_changed` for a copy across disks whose source changed size while it was copied.
+  Retrying can help, as with `Fil.UnavailableError`, because the next attempt reads the file as it is then.
+  """
+
+  defexception [:op, :path, :disk, :reason]
+
+  @type t :: %__MODULE__{op: Fil.Op.name() | nil, path: String.t() | nil, disk: Fil.Disk.t() | nil, reason: term()}
+
+  @impl Exception
+  def message(error), do: Fil.Support.Error.message(error, "the file changed meanwhile")
+end
+
 defmodule Fil.ChecksumMismatchError do
   @moduledoc """
   The content doesn't match its checksum. Upload or download it again.
@@ -150,10 +166,9 @@ defmodule Fil.UnavailableError do
   @moduledoc """
   The storage didn't answer, or asked to wait. Try again later.
 
-  Adapters return it for a timeout, a closed connection, a server error, throttling and too many open files. `Fil`
-  returns it with `reason: :size_changed` for a copy across disks whose source changed size while it was copied. It's
-  the only error where retrying may help. `Fil` doesn't retry (for now), because only the caller knows whether a failed
-  mutation is safe to repeat.
+  Adapters return it for a timeout, a closed connection, a server error, throttling and too many open files. It's one of
+  the two errors where retrying may help, with `Fil.ConflictError`. `Fil` doesn't retry (for now), because only the
+  caller knows whether a failed mutation is safe to repeat.
   """
 
   defexception [:op, :path, :disk, :reason]

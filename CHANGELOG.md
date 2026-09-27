@@ -21,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   transform that raises one of `Fil`'s errors turns the read into that error. The plugins guide describes what a
   plugin can rely on.
   ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
+- `Fil.ConflictError`: the file changed while the operation used it, so reading it again and retrying can help. A copy
+  across disks returns it when the source changes size while it's copied, and `Fil.Plug` answers it with a `409`.
+  ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
 - `stream/3` is an optional adapter callback. Adapters without it stream the result of `read/3` as one chunk.
   ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
 - `disposition:` on `Fil.signed_url/3` sets the `content-disposition` of the download (`:inline`, `:attachment` or

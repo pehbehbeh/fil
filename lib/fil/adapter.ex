@@ -60,7 +60,7 @@ defmodule Fil.Adapter do
 
   Every error is an exception struct, listed under Errors in the sidebar. Which struct you get tells you what to do
   next, and it's the same on every adapter: a missing file is a `Fil.NotFoundError` on the local disk and on S3.
-  `Fil.UnavailableError` is the only one where retrying can help.
+  `Fil.UnavailableError` and `Fil.ConflictError` are the ones where retrying can help.
 
   Every error has the same fields:
 

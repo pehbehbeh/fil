@@ -165,7 +165,7 @@ defmodule FilTest do
       refute Fil.exists?(disk, "b.txt")
     end
 
-    test "a source that changes size while it's copied fails the copy as unavailable", %{disk: disk} do
+    test "a source that changes size while it's copied fails the copy with a conflict", %{disk: disk} do
       other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
       {:ok, _} = Fil.write(disk, "a.txt", "content")
 
@@ -177,7 +177,7 @@ defmodule FilTest do
           op
         end)
 
-      assert {:error, %Fil.UnavailableError{op: :cp, path: "a.txt", reason: :size_changed} = error} =
+      assert {:error, %Fil.ConflictError{op: :cp, path: "a.txt", reason: :size_changed} = error} =
                Fil.cp(growing, "a.txt", Fil.ref(other, "a.txt"))
 
       assert error.disk == growing
