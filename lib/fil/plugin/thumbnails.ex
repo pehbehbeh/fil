@@ -109,7 +109,8 @@ defmodule Fil.Plugin.Thumbnails do
   Every variant fits into its `:width` and `:height`, keeping the image's aspect ratio (or crops to exactly that size
   with `:crop`). Images are never enlarged. A variant is rotated by the image's EXIF orientation and keeps only the
   colour profile of the metadata, so no GPS position ends up in a public thumbnail. That needs libvips 8.15 or later
-  (Vix 0.42 comes with 8.18).
+  (Vix 0.42 comes with 8.18). On an older libvips, which would keep all of the metadata, the plugin raises instead of
+  running.
 
   A write of an image (by its extension, see `:extensions`) makes every variant in memory, then writes the image, then
   the variants, each as a `Fil.write/3` with its content type. The variant writes go through the disk's plugins too,
@@ -144,10 +145,9 @@ defmodule Fil.Plugin.Thumbnails do
 
   ## Errors
 
-    * content libvips can't decode is refused before anything is written, with a `Fil.InvalidRequestError` whose
-      `:reason` is `{:not_an_image, message}`. The same goes for an image over `:max_pixels`, with
-      `{:too_many_pixels, pixels}`. A libvips that can't encode the variant also returns `:not_an_image` (a libvips
-      older than 8.15, say)
+    * content libvips can't decode, or encode as a variant, is refused before anything is written, with a
+      `Fil.InvalidRequestError` whose `:reason` is `{:not_an_image, message}`. The same goes for an image over
+      `:max_pixels`, with `{:too_many_pixels, pixels}`
     * when the image can't be written, no variant is written either
     * when a variant can't be written, the image stays written and the write returns the variant's error, with the
       variant's path. The same goes for a variant that can't be deleted, copied or renamed
@@ -162,7 +162,7 @@ defmodule Fil.Plugin.Thumbnails do
   alias Vix.Vips.Operation
 
   # Vix is optional, so its modules may be missing when `fil` compiles.
-  @compile {:no_warn_undefined, [Image, Operation]}
+  @compile {:no_warn_undefined, [Vix.Vips, Image, Operation]}
 
   # libvips' largest image dimension, the height of a box that only the width limits.
   @max_coordinate 10_000_000
@@ -483,9 +483,16 @@ defmodule Fil.Plugin.Thumbnails do
     opts
   end
 
+  # libvips before 8.15 ignores `keep:`, so the variants would keep the image's EXIF data, GPS position included.
   defp vix! do
     if not Code.ensure_loaded?(Operation) do
       raise "Fil.Plugin.Thumbnails needs the optional dependency Vix: add {:vix, \"~> 0.33\"} to your deps"
+    end
+
+    version = Vix.Vips.version()
+
+    if Version.compare(version, "8.15.0") == :lt do
+      raise "Fil.Plugin.Thumbnails needs libvips 8.15 or later to strip the metadata from variants, Vix has #{version}"
     end
   end
 end
