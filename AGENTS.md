@@ -99,9 +99,9 @@ bin/release 0.2.0           # releases main to Hex (see Releasing)
 ## CI
 
 `.github/workflows/ci.yml` checks formatting, `mix credo`, `mix docs --warnings-as-errors` and `bin/check-changelog` on
-the latest Elixir, and runs `mix test` on every supported Elixir minor version, each with the newest OTP it supports
-(plus OTP 26 on Elixir 1.16). The integration suite runs once, on the latest Elixir, against RustFS started from
-`compose.yml`. When `elixir:` in `mix.exs` changes, update the matrix.
+the latest Elixir, and runs `mix test` on every supported Elixir minor version (1.18 and later), each with the newest
+OTP it supports. The integration suite runs once, on the latest Elixir, against RustFS started from `compose.yml`. When
+`elixir:` in `mix.exs` changes, update the matrix.
 
 The last job, `CI passed`, fails if any other job failed, was cancelled or was skipped. It's the only check the ruleset
 on `main` requires, so the ruleset stays the same when the matrix changes. A new job goes into its `needs:`.

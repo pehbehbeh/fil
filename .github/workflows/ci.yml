@@ -42,14 +42,9 @@ jobs:
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
-      # Every supported Elixir minor version (`elixir:` in mix.exs), each with the newest OTP it supports, plus the
-      # oldest supported OTP on the oldest Elixir.
+      # Every supported Elixir minor version (`elixir:` in mix.exs), each with the newest OTP it supports.
       matrix:
         include:
-          - elixir: "1.16"
-            otp: "26"
-          - elixir: "1.17"
-            otp: "27"
           - elixir: "1.18"
             otp: "27"
           - elixir: "1.19"

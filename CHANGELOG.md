@@ -88,6 +88,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 
+- Elixir 1.16 and 1.17 are no longer supported; Fil needs Elixir 1.18 or later.
+  ([#15](https://github.com/pehbehbeh/fil/pull/15))
 - `chunk:` in `Fil.Op.update_content/2` and `update_result/2`: use `stream:` with `Stream.map/2`.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 
