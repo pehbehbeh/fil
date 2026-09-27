@@ -407,6 +407,55 @@ defmodule Fil.PlugTest do
     assert_received {:put, "https://bucket.s3.us-east-1.amazonaws.com/inbox/new.bin", "streamed", ["UNSIGNED-PAYLOAD"]}
   end
 
+  test "an upload over :max_body_size into an S3 disk aborts the upload in parts" do
+    # A stubbed S3 that starts an upload, takes part 1 and records the abort.
+    test = self()
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      body = "<InitiateMultipartUploadResult><UploadId>UP</UploadId></InitiateMultipartUploadResult>"
+      send_resp(conn, 200, body)
+    end)
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      {:ok, body, conn} = read_body(conn, length: 10_000_000)
+      send(test, {:part, conn.query_params["partNumber"], byte_size(body)})
+
+      conn
+      |> put_resp_header("etag", ~s("e1"))
+      |> send_resp(200, "")
+    end)
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      send(test, {:abort, conn.method, conn.query_string})
+      send_resp(conn, 204, "")
+    end)
+
+    disk =
+      [
+        adapter: Fil.Adapter.S3,
+        bucket: "bucket",
+        access_key_id: "AKIDEXAMPLE",
+        secret_access_key: "secret",
+        part_size: 5_242_880,
+        req_options: [plug: {Req.Test, __MODULE__}]
+      ]
+      |> Fil.disk()
+      |> URL.attach(base_url: @base_url, secret: "s3-secret")
+
+    {:ok, url} = Fil.signed_url(disk, "big.bin", method: :put)
+
+    # Without a content-length, the size is only known once the body has been read.
+    conn =
+      url
+      |> put(:binary.copy("a", 7_000_000))
+      |> call(disk, max_body_size: 6_500_000)
+
+    assert conn.status == 413
+    assert_received {:part, "1", 5_242_880}
+    assert_received {:abort, "DELETE", "uploadId=UP"}
+    Req.Test.verify!(__MODULE__)
+  end
+
   test "passes requests for a disk that doesn't sign URLs through", %{tmp_dir: tmp_dir} do
     local = Fil.disk(adapter: Fil.Adapter.Local, root: tmp_dir)
     s3 = Fil.disk(adapter: Fil.Adapter.S3, bucket: "bucket")

@@ -1,6 +1,7 @@
 defmodule Fil.Emulator do
   @moduledoc false
 
+  alias Fil.Support.URL
   alias Fil.Support.XML
 
   # Setup for the local emulators the integration suites run against: a reachability check with an error message that
@@ -118,22 +119,61 @@ defmodule Fil.Emulator do
   def create_s3_bucket(bucket), do: s3_request(:put, "/" <> bucket, [200, {409, "BucketAlreadyOwnedByYou"}])
 
   # S3 and RustFS refuse to delete a bucket that isn't empty, so the objects go first. A bucket that doesn't exist
-  # counts as deleted, but a 409 (`BucketNotEmpty`) doesn't: it means `Fil.rm_rf/2` left something behind.
+  # counts as deleted, but a 409 (`BucketNotEmpty`) doesn't: it means `Fil.rm_rf/2` left something behind. Multipart
+  # uploads a test left behind are aborted too (RustFS 1.0.0 deletes a bucket with uploads, but they cost on AWS).
   @spec delete_s3_bucket(String.t()) :: :ok | {:error, term()}
   def delete_s3_bucket(bucket) do
     disk = Fil.disk([adapter: Fil.Adapter.S3, bucket: bucket, endpoint: url(:s3), path_style: true] ++ s3_credentials())
 
     case Fil.rm_rf(disk, ".") do
-      {:ok, _count} -> s3_request(:delete, "/" <> bucket, [200, 204, 404])
+      {:ok, _count} -> abort_s3_uploads_and_delete(bucket)
       {:error, %Fil.ConfigurationError{reason: "NoSuchBucket"}} -> :ok
       {:error, error} -> {:error, error}
     end
   end
 
+  defp abort_s3_uploads_and_delete(bucket) do
+    with {:ok, uploads} <- list_s3_uploads(bucket) do
+      for {key, upload_id} <- uploads do
+        path = "/#{bucket}/" <> URL.encode_path(key) <> URL.encode_query([{"uploadId", upload_id}])
+        :ok = s3_request(:delete, path, [204, 404])
+      end
+
+      s3_request(:delete, "/" <> bucket, [200, 204, 404])
+    end
+  end
+
+  @doc "The multipart uploads in `bucket` that were neither completed nor aborted, as `{key, upload_id}` pairs."
+  @spec list_s3_uploads(String.t()) :: {:ok, [{String.t(), String.t()}]} | {:error, term()}
+  def list_s3_uploads(bucket) do
+    case send_s3_request(:get, "/#{bucket}?uploads=") do
+      {:ok, %{status: 200, body: body}} ->
+        {:ok, result} = XML.parse(body)
+
+        {:ok,
+         for(upload <- XML.children(result, "Upload"), do: {XML.text(upload, "Key"), XML.text(upload, "UploadId")})}
+
+      {:ok, %{status: 404}} ->
+        {:ok, []}
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:unexpected_status, status, error_code(body)}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp s3_request(method, path, allowed) do
+    method
+    |> send_s3_request(path)
+    |> accept(allowed)
+  end
+
+  defp send_s3_request(method, path) do
     credentials = s3_credentials()
 
-    [
+    Req.request(
       method: method,
       url: url(:s3) <> path,
       aws_sigv4: [
@@ -144,9 +184,7 @@ defmodule Fil.Emulator do
       ],
       retry: false,
       raw: true
-    ]
-    |> Req.request()
-    |> accept(allowed)
+    )
   end
 
   # `allowed` holds statuses, and `{status, code}` pairs that accept a status only with that S3 error code.
