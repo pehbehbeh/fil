@@ -47,7 +47,8 @@ defmodule Fil.Adapter.Local do
       files of writes aren't. The disk reserves that prefix, so a file of your own whose name starts with `.fil-` is
       skipped as well. A path that isn't a directory lists nothing, the same as a missing one.
     * `Fil.cp/4`: `File.cp/2`. `if_exists: :error` copies to a `.fil-` temporary file instead and hard-links it to the
-      destination, like a write. Copying a directory is a `Fil.InvalidRequestError`.
+      destination, like a write. A copy or a move that fails removes the directories it created, like a write. Copying
+      a directory is a `Fil.InvalidRequestError`.
     * `Fil.rename/4`: `File.rename/2`, which moves directories too. `if_exists: :error` hard-links the file to the
       destination and then removes the source. Where the link fails with `:eperm` or `:enotsup` (a filesystem without
       hard links, or on Linux a file of another user with `fs.protected_hardlinks` on), it creates the destination with
@@ -194,8 +195,7 @@ defmodule Fil.Adapter.Local do
       write_into(full, {tmp, io}, created, fill, opts)
     else
       {:error, reason, created} ->
-        remove_dirs(created)
-        {:error, reason}
+        undo_parents({:error, reason}, created)
 
       {:error, reason} ->
         {:error, reason}
@@ -374,15 +374,30 @@ defmodule Fil.Adapter.Local do
 
   defp at_dest(result, _dest), do: result
 
+  # The destination's missing parents are created first, and removed again when the copy or move fails, like a write's.
   # A destination under a file fails on the destination side, so the error has that path.
   defp transfer(fun, state, src, dest) do
     with {:ok, from} <- full_path(state, src),
          {:ok, to} <- full_path(state, dest) do
-      case ensure_parent(to) do
-        :ok -> missing(fun.(from, to))
-        {:error, reason} -> {:error, %{to_struct(reason) | path: dest}}
+      case make_parents(to) do
+        {:ok, created} ->
+          result = fun.(from, to)
+
+          result
+          |> missing()
+          |> undo_parents(created)
+
+        {:error, reason, created} ->
+          undo_parents({:error, %{to_struct(reason) | path: dest}}, created)
       end
     end
+  end
+
+  defp undo_parents(:ok, _created), do: :ok
+
+  defp undo_parents(error, created) do
+    remove_dirs(created)
+    error
   end
 
   defp rm_tree(state, prefix) do
@@ -478,20 +493,8 @@ defmodule Fil.Adapter.Local do
     end)
   end
 
-  # Creates the parents of a copy's or a move's destination. A parent that's a file is `:enotdir` on macOS and
-  # `:eexist` on Linux, so both become `:enotdir`.
-  defp ensure_parent(full) do
-    parent = Path.dirname(full)
-
-    case File.mkdir_p(parent) do
-      :ok -> :ok
-      {:error, :eexist} -> {:error, :enotdir}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   # A path through a file (`report.txt/x`) is `:enotdir` to the filesystem, but that file doesn't exist, which
-  # is what an object store says too. `cp/4` and `rename/4` call it after `ensure_parent/1`, so there it can only be the
+  # is what an object store says too. `cp/4` and `rename/4` call it after `make_parents/1`, so there it can only be the
   # source, and a destination under a file stays `:enotdir`.
   defp missing({:error, :enotdir}), do: {:error, :enoent}
   defp missing(result), do: result

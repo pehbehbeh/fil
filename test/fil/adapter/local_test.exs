@@ -122,6 +122,25 @@ defmodule Fil.Adapter.LocalTest do
              |> File.ls!() == ["x.txt"]
     end
 
+    test "copies and moves that fail remove the directories they created", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "kept/x.txt", "x")
+
+      assert {:error, %Fil.NotFoundError{}} = Fil.cp(disk, "nope.txt", "kept/new/a.txt")
+      assert {:error, %Fil.NotFoundError{}} = Fil.rename(disk, "nope.txt", "fresh/deeper/a.txt")
+      assert {:error, %Fil.NotFoundError{}} = Fil.cp(disk, "nope.txt", "fresh/a.txt", if_exists: :error)
+      assert {:error, %Fil.NotFoundError{}} = Fil.rename(disk, "nope.txt", "fresh/a.txt", if_exists: :error)
+
+      root = Path.join(tmp_dir, "primary")
+
+      assert root
+             |> File.ls!()
+             |> Enum.sort() == ["kept"]
+
+      assert root
+             |> Path.join("kept")
+             |> File.ls!() == ["x.txt"]
+    end
+
     test "under a file create no directories", %{disk: disk, tmp_dir: tmp_dir} do
       assert {:ok, _} = Fil.write(disk, "file.txt", "content")
 
