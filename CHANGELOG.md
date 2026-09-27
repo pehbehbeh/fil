@@ -16,10 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   raises writes nothing. S3 sends a stream with a size as it's read, and collects one without a size, or with
   `checksum:`, into memory first.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
-- `Fil.Op.update_content/2` and `Fil.Op.update_result/2` transform streams lazily with `chunk:`, and take a `stream:`
-  function for transforms that keep state across chunks. `op.streaming` marks a read from `Fil.stream/3`. A read
-  transform that raises one of `Fil`'s errors turns the read into that error. The plugins guide describes what a
-  plugin can rely on.
+- `Fil.Op.update_content/2` and `Fil.Op.update_result/2` take a `stream:` function, which transforms a stream lazily,
+  chunk by chunk or with state across chunks. `op.streaming` marks a read from `Fil.stream/3`. A read transform that
+  raises one of `Fil`'s errors turns the read into that error. The plugins guide describes what a plugin can rely on.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `Fil.ConflictError`: the file changed while the operation used it, so reading it again and retrying can help. A copy
   across disks returns it when the source changes size while it's copied, and `Fil.Plug` answers it with a `409`.
@@ -54,6 +53,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `Fil.Plug` refuses a signed URL with a query parameter that wasn't signed, as S3 does. URLs signed by 0.1 still work.
   ([#1](https://github.com/pehbehbeh/fil/pull/1))
+
+### Removed
+
+- `chunk:` in `Fil.Op.update_content/2` and `update_result/2`: use `stream:` with `Stream.map/2`.
+  ([#10](https://github.com/pehbehbeh/fil/pull/10))
 
 ### Fixed
 

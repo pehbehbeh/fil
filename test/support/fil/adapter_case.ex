@@ -350,17 +350,18 @@ defmodule Fil.AdapterCase do
             %Fil.Op{name: :write} = op, next, _opts ->
               op
               |> Fil.Op.update_content(
-                chunk: fn chunk ->
-                  send(test, {:chunk, chunk})
-                  String.upcase(chunk)
-                end
+                stream:
+                  &Stream.map(&1, fn chunk ->
+                    send(test, {:chunk, chunk})
+                    String.upcase(chunk)
+                  end)
               )
               |> next.()
 
             %Fil.Op{name: :read} = op, next, _opts ->
               op
               |> next.()
-              |> Fil.Op.update_result(chunk: &String.downcase/1)
+              |> Fil.Op.update_result(stream: &Stream.map(&1, fn chunk -> String.downcase(chunk) end))
 
             op, next, _opts ->
               next.(op)

@@ -280,10 +280,11 @@ defmodule Fil.PlugTest do
 
           op
           |> Fil.Op.update_content(
-            chunk: fn chunk ->
-              send(test, {:chunk, byte_size(chunk)})
-              chunk
-            end
+            stream:
+              &Stream.map(&1, fn chunk ->
+                send(test, {:chunk, byte_size(chunk)})
+                chunk
+              end)
           )
           |> next.()
         end)

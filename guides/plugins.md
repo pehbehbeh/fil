@@ -159,14 +159,19 @@ functions handle both:
 ```elixir
 def call(%Fil.Op{name: :write} = op, next, _opts) do
   op
-  |> Fil.Op.update_content(iodata: &String.upcase/1, chunk: &String.upcase/1)
+  |> Fil.Op.update_content(iodata: &String.upcase/1, stream: &Stream.map(&1, fn chunk -> String.upcase(chunk) end))
   |> next.()
 end
 ```
 
-`iodata:` gets all of the content as one binary, `chunk:` one chunk of a stream, and `stream:` the stream. A plugin
-with only `iodata:` still works on streams: `Fil` collects the stream into memory first, which costs memory for large
-files. `Fil.Op.materialize/1` does the same for plugins that need all of the content for something else, such as a
+`iodata:` gets content in memory as one binary, and `stream:` gets a stream. Each also covers the other kind when it's
+alone:
+
+  * a plugin with only `iodata:` still works on streams: `Fil` collects the stream into memory first (on a read, when
+    the caller reads it), which costs memory for large files
+  * a plugin with only `stream:` gets content in memory as a stream of one chunk, and `Fil` collects the result again
+
+`Fil.Op.materialize/1` collects a stream too, for plugins that need all of the content for something else, such as a
 signature.
 
 A write is a stream when the caller passes one to `Fil.write/4`, and a read is one when it comes from `Fil.stream/3`
@@ -195,9 +200,9 @@ A stream is an enumerable of binaries. What a plugin can rely on:
     in memory, a transform that raises one turns the read into `{:error, error}`. On a stream, it's raised to whoever
     reads the stream, with the operation, the path and the disk filled in. A write that raises leaves nothing behind
 
-`chunk:` suits transforms that treat every chunk on its own. A transform that keeps state from one chunk to the next,
-or adds something after the last one (compression, encryption), takes the whole stream with `stream:` and builds a new
-one with `Stream.transform/5`, whose start function runs each time the stream is read:
+A transform of each chunk on its own is `Stream.map/2`, as in the example above. A transform that keeps state from one
+chunk to the next, or adds something after the last one (compression, encryption), builds a new stream with
+`Stream.transform/5`, whose start function runs each time the stream is read:
 
 ```elixir
 def call(%Fil.Op{name: :write} = op, next, _opts) do

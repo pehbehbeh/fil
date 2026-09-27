@@ -392,7 +392,7 @@ defmodule Fil.Adapter.S3Test do
           %Fil.Op{name: :read} = op, next, _opts ->
             op
             |> next.()
-            |> Fil.Op.update_result(chunk: &String.upcase/1)
+            |> Fil.Op.update_result(stream: &Stream.map(&1, fn chunk -> String.upcase(chunk) end))
 
           op, next, _opts ->
             next.(op)

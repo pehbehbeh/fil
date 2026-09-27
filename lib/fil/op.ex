@@ -41,11 +41,7 @@ defmodule Fil.Op do
           private: map()
         }
 
-  @type transform :: [
-          iodata: (binary() -> iodata()),
-          chunk: (binary() -> iodata()),
-          stream: (Enumerable.t() -> Enumerable.t())
-        ]
+  @type transform :: [iodata: (binary() -> iodata()), stream: (Enumerable.t() -> Enumerable.t())]
 
   ## ------------------------------------------------------------------
   ## Options, results and private data
@@ -135,22 +131,19 @@ defmodule Fil.Op do
   @doc """
   Transforms the content of a `:write`. Other operations are returned unchanged.
 
-  The content is iodata or a stream. Pass `iodata:` to transform iodata, and `chunk:` or `stream:` to transform a
-  stream without collecting it:
+  The content is iodata or a stream, and each has its transform:
 
       Fil.Op.update_content(op, iodata: &:zlib.gzip/1, stream: &MyApp.Gzip.stream/1)
 
-    * `iodata:` gets all of the content as one binary and returns iodata. A stream is collected into memory first when
-      there's no `chunk:` or `stream:`
-    * `chunk:` gets one chunk of a stream as a binary and returns iodata, once per chunk, when the adapter reads it.
-      Without `iodata:`, it also gets content that isn't a stream, as a single chunk, and nothing if that's empty
-    * `stream:` gets the stream (an enumerable of binaries) and returns an enumerable of iodata, for transforms that
-      keep state from one chunk to the next or add something at the end. Without `iodata:`, it also gets content that
-      isn't a stream, as a stream of one chunk (none if it's empty), and the result is collected again
+    * `iodata:` gets all of the content as one binary and returns iodata. Without `stream:`, it gets a stream too:
+      `Fil` collects the stream into memory first
+    * `stream:` gets the stream, an enumerable of binaries, and returns an enumerable of iodata. A transform of each
+      chunk on its own is `&Stream.map(&1, fun)`. Without `iodata:`, it gets content in memory too, as a stream of one
+      chunk (none if it's empty), and the result is collected again
 
-  A stream prefers `stream:` over `chunk:`. The [Plugins guide](plugins.md#streams) describes what a chunk is.
-  A transform drops the `:size` option of the write, because the size can change. A plugin that knows the new size
-  declares it again with `put_option(op, :size, size)`.
+  The [Plugins guide](plugins.md#streams) describes what a chunk is. A transform drops the `:size` option of the
+  write, because the size can change. A plugin that knows the new size declares it again with
+  `put_option(op, :size, size)`.
   """
   @spec update_content(t(), transform()) :: t()
   def update_content(%__MODULE__{name: :write, content: content} = op, funs) do
@@ -169,8 +162,8 @@ defmodule Fil.Op do
   @doc """
   Transforms the content returned by a successful `:read`. Other operations and errors are returned unchanged.
 
-  Takes the same `iodata:`, `chunk:` and `stream:` functions as `update_content/2`. The result of `Fil.stream/3` is a
-  stream, and the transforms run when the caller reads it; a stream with only `iodata:` is collected then too.
+  Takes the same `iodata:` and `stream:` functions as `update_content/2`. The result of `Fil.stream/3` is a stream, and
+  the transforms run when the caller reads it. With only `iodata:`, the stream is collected then too.
 
   A transform that raises one of `Fil`'s errors, such as `Fil.ChecksumMismatchError` for content that fails a check,
   turns a read that returns a binary into that error. On a stream, the error is raised when the caller reads it, with
@@ -235,13 +228,6 @@ defmodule Fil.Op do
         |> Content.chunks()
         |> fun.()
         |> Enum.to_list()
-
-      # Like a stream, empty content has no chunks.
-      %{chunk: _fun} when binary == "" ->
-        ""
-
-      %{chunk: fun} ->
-        fun.(binary)
     end
   end
 
@@ -251,9 +237,6 @@ defmodule Fil.Op do
     case funs do
       %{stream: fun} ->
         fun.(chunks)
-
-      %{chunk: fun} ->
-        Stream.map(chunks, fun)
 
       %{iodata: fun} ->
         chunks
@@ -266,7 +249,6 @@ defmodule Fil.Op do
   defp transform_result_stream(stream, funs) do
     case funs do
       %{stream: _fun} -> transform_stream(stream, funs)
-      %{chunk: _fun} -> transform_stream(stream, funs)
       %{iodata: fun} -> Stream.flat_map([stream], &[collect(&1, fun)])
     end
   end
@@ -285,7 +267,7 @@ defmodule Fil.Op do
   defp drop_size(%__MODULE__{options: options} = op), do: %{op | options: Keyword.delete(options, :size)}
 
   defp validate_transform!(funs) when is_list(funs) do
-    case Keyword.split(funs, [:iodata, :chunk, :stream]) do
+    case Keyword.split(funs, [:iodata, :stream]) do
       {[_ | _] = valid, []} ->
         Enum.each(valid, fn
           {_key, fun} when is_function(fun, 1) ->
@@ -298,11 +280,11 @@ defmodule Fil.Op do
         Map.new(valid)
 
       {[], []} ->
-        raise ArgumentError, "expected at least one of :iodata, :chunk or :stream"
+        raise ArgumentError, "expected at least one of :iodata or :stream"
 
       {_valid, unknown} ->
         raise ArgumentError,
-              "unknown transforms #{inspect(Keyword.keys(unknown))}, expected :iodata, :chunk or :stream"
+              "unknown transforms #{inspect(Keyword.keys(unknown))}, expected :iodata or :stream"
     end
   end
 

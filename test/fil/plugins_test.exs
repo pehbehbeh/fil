@@ -297,15 +297,24 @@ defmodule Fil.PluginsTest do
              |> Fil.read("a.txt") == {:ok, :zlib.gzip("Hello, World")}
     end
 
-    test "chunk: alone gets the content as a single chunk", %{disk: disk} do
+    test "stream: alone gets content in memory as a stream of one chunk", %{disk: disk} do
+      test = self()
+
       disk =
         Fil.attach(disk, :upcase, fn op, next, _opts ->
           op
-          |> Op.update_content(chunk: &String.upcase/1)
+          |> Op.update_content(
+            stream:
+              &Stream.map(&1, fn chunk ->
+                send(test, {:chunk, chunk})
+                String.upcase(chunk)
+              end)
+          )
           |> next.()
         end)
 
       assert {:ok, _} = Fil.write(disk, "a.txt", ["ab", "c"])
+      assert_received {:chunk, "abc"}
       assert Fil.read(disk, "a.txt") == {:ok, "ABC"}
     end
 
@@ -320,7 +329,7 @@ defmodule Fil.PluginsTest do
 
       op = %Op{disk: disk, name: :write, path: "a.txt", content: stream, options: [size: 4, content_type: "x"]}
 
-      chunked = Op.update_content(op, chunk: &String.upcase/1)
+      chunked = Op.update_content(op, stream: &Stream.map(&1, fn chunk -> String.upcase(chunk) end))
       refute_received {:pulled, _chunk}
       assert chunked.options == [content_type: "x"]
       assert Enum.to_list(chunked.content) == ["AB", "CD"]
@@ -344,7 +353,7 @@ defmodule Fil.PluginsTest do
     test "a stream of another size than :size raises, whatever the plugins do with it", %{disk: disk} do
       stream = Stream.map(["he", "llo"], & &1)
 
-      updates = [materialized: &Op.materialize/1, chunked: &Op.update_content(&1, chunk: fn chunk -> chunk end)]
+      updates = [materialized: &Op.materialize/1, streamed: &Op.update_content(&1, stream: fn chunks -> chunks end)]
 
       for {name, update} <- updates do
         plugged =
@@ -437,7 +446,7 @@ defmodule Fil.PluginsTest do
 
       op = %Op{disk: disk, name: :read, path: "a.txt", streaming: true, result: {:ok, stream}}
 
-      assert {:ok, chunked} = Op.update_result(op, chunk: &String.upcase/1).result
+      assert {:ok, chunked} = Op.update_result(op, stream: &Stream.map(&1, fn chunk -> String.upcase(chunk) end)).result
       assert {:ok, collected} = Op.update_result(op, iodata: &String.reverse/1).result
       refute_received {:pulled, _chunk}
 
@@ -446,25 +455,29 @@ defmodule Fil.PluginsTest do
       assert_received {:pulled, "ab"}
     end
 
-    test "chunk: gets no call for empty content, iodata or a stream", %{disk: disk} do
-      marking = &[&1, "!"]
+    test "stream: gets no chunks for empty content, in memory or a stream", %{disk: disk} do
+      marking = &Stream.map(&1, fn chunk -> [chunk, "!"] end)
 
       for content <- ["", [], Stream.map([""], & &1)] do
         op = %Op{disk: disk, name: :write, path: "a.txt", content: content}
-        written = Op.update_content(op, chunk: marking)
+        written = Op.update_content(op, stream: marking)
         assert Fil.Support.Content.to_binary(written.content) == ""
 
         read = %Op{disk: disk, name: :read, path: "a.txt", streaming: true, result: {:ok, content}}
-        assert {:ok, result} = Op.update_result(read, chunk: marking).result
+        assert {:ok, result} = Op.update_result(read, stream: marking).result
         assert Fil.Support.Content.to_binary(result) == ""
       end
     end
 
-    test "binary:, the name of iodata: in 0.1, is an unknown transform", %{disk: disk} do
+    test "binary: and chunk: from 0.1 are unknown transforms", %{disk: disk} do
       op = %Op{disk: disk, name: :write, path: "a.txt", content: "abc"}
 
-      assert_raise ArgumentError, "unknown transforms [:binary], expected :iodata, :chunk or :stream", fn ->
+      assert_raise ArgumentError, "unknown transforms [:binary], expected :iodata or :stream", fn ->
         Op.update_content(op, binary: &String.upcase/1)
+      end
+
+      assert_raise ArgumentError, "unknown transforms [:chunk], expected :iodata or :stream", fn ->
+        Op.update_content(op, chunk: &String.upcase/1)
       end
     end
 
@@ -475,7 +488,7 @@ defmodule Fil.PluginsTest do
       assert Op.update_result(op, iodata: &String.upcase/1) == op
       assert Op.materialize(op) == op
 
-      assert_raise ArgumentError, ~r/at least one of :iodata, :chunk or :stream/, fn -> Op.update_content(op, []) end
+      assert_raise ArgumentError, ~r/at least one of :iodata or :stream/, fn -> Op.update_content(op, []) end
       assert_raise ArgumentError, ~r/unknown transforms \[:lines\]/, fn -> Op.update_content(op, lines: & &1) end
       assert_raise ArgumentError, ~r/1-arity function/, fn -> Op.update_result(op, iodata: :nope) end
     end

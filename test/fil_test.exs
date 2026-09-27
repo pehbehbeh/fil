@@ -136,7 +136,9 @@ defmodule FilTest do
       rejecting =
         Fil.attach(other, :reject, fn op, next, _opts ->
           op
-          |> Fil.Op.update_content(chunk: fn _chunk -> raise %Fil.InvalidRequestError{reason: :rejected} end)
+          |> Fil.Op.update_content(
+            stream: &Stream.map(&1, fn _chunk -> raise %Fil.InvalidRequestError{reason: :rejected} end)
+          )
           |> next.()
         end)
 
