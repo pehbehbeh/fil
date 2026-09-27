@@ -45,7 +45,9 @@ defmodule Fil.InvalidRequestError do
 
   `Fil` returns it with `reason: :ebadpath` for a path that escapes the disk root, before any adapter or plugin sees
   it. Adapters return it for a file operation on a directory (`:eisdir`), a path under a file (`:enotdir`), a name
-  that's too long, and content over the storage's size limit.
+  that's too long, and content over the storage's size limit. Plugins return it for content they refuse, such as
+  `Fil.Plugin.Thumbnails` for a file that isn't an image (`{:not_an_image, message}`). `Fil.Plug` answers an upload
+  that fails with it with a `422`, or a `404` when the path is the problem.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> {:error, %Fil.InvalidRequestError{} = error} = Fil.read(disk, "../escape.txt")

@@ -175,6 +175,9 @@ defmodule Fil.PlugTest do
       for {error, status} <- [
             {%Fil.AlreadyExistsError{reason: :eexist}, 409},
             {%Fil.ConflictError{reason: :size_changed}, 409},
+            {%Fil.InvalidRequestError{reason: {:not_an_image, "not a PNG"}}, 422},
+            {%Fil.InvalidRequestError{reason: "EntityTooLarge"}, 422},
+            {%Fil.InvalidRequestError{reason: :enotdir}, 404},
             {%Fil.StorageFullError{reason: :enospc}, 507},
             {%Fil.UnavailableError{reason: :timeout}, 503}
           ] do

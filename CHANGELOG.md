@@ -47,6 +47,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `Fil.Plug` answers an upload that the disk refuses for its content, a `Fil.InvalidRequestError` that isn't about the
+  path, with a `422` instead of a `404`.
+  ([#N](https://github.com/pehbehbeh/fil/pull/N))
 - `Fil.write/4` raises `ArgumentError` for a list that isn't iodata, such as `[70_000]`, before any plugin sees it.
   Before, a plugin that replaced the content or answered the call itself hid it.
   ([#12](https://github.com/pehbehbeh/fil/pull/12))
