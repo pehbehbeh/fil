@@ -1011,8 +1011,9 @@ defmodule Fil.Adapter.S3 do
   # A composite checksum can only be checked with the size of the parts, which S3 doesn't store with it, but a
   # HeadObject for part 1 returns. Every part but the last has that size in uploads from `Fil` and from AWS's tools,
   # which is all the check assumes. Parts that don't add up to the object, and a server that ignores `partNumber`
-  # (RustFS answers with the whole object), give `nil`, and the content is read without a check. `If-Match` makes sure
-  # part 1 belongs to the object that was read, and an object replaced or removed since then is read without a check.
+  # (RustFS answers with the whole object), give `nil`, and the content is read without a check. So does a server that
+  # refuses `partNumber` (`400`, `501`). `If-Match` makes sure part 1 belongs to the object that was read, and an object
+  # replaced or removed since then is read without a check. A failed connection or a `5xx` fails the read.
   defp part_size(state, key, response, size, parts) do
     headers = Enum.map(response.headers["etag"] || [], &{"if-match", &1})
 
@@ -1020,7 +1021,7 @@ defmodule Fil.Adapter.S3 do
       {:ok, %{status: status} = part} when status in [200, 206] ->
         {:ok, uniform_part_size(content_length(part), size, parts)}
 
-      {:ok, %{status: status}} when status in [404, 412] ->
+      {:ok, %{status: status}} when status in [400, 404, 412, 501] ->
         {:ok, nil}
 
       {:ok, response} ->

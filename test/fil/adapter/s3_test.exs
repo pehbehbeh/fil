@@ -1361,13 +1361,15 @@ defmodule Fil.Adapter.S3Test do
     test "a composite checksum whose parts can't be found is read without a check" do
       headers = [{"x-amz-checksum-sha256", composite(:sha256, ["Hello", ", Wor", "ld"])}]
 
-      # A server that ignores partNumber answers with the whole object, parts of other sizes don't add up, and an
-      # object replaced or removed since the read has no part 1 of its own.
+      # A server that ignores partNumber answers with the whole object, parts of other sizes don't add up, an object
+      # replaced or removed since the read has no part 1 of its own, and a server may refuse partNumber.
       for head <- [
             response(200, "", [{"content-length", "12"}]),
             response(206, "", [{"content-length", "4"}]),
             response(412),
-            response(404)
+            response(404),
+            response(400),
+            response(501)
           ] do
         stub([response(200, "Hellø, World", headers), head])
 
@@ -1381,6 +1383,11 @@ defmodule Fil.Adapter.S3Test do
       stub([response(200, "Hello, World", headers), {:error, :timeout}])
 
       assert {:error, %Fil.UnavailableError{reason: :timeout}} = Fil.read(disk(), "a.txt", verify_checksum: true)
+
+      stub([response(200, "Hello, World", headers), response(503)])
+
+      assert {:error, %Fil.UnavailableError{reason: {:http_status, 503}}} =
+               Fil.read(disk(), "a.txt", verify_checksum: true)
     end
 
     test "a stream checks a composite checksum while it's read" do
