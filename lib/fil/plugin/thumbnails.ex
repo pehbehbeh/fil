@@ -201,7 +201,7 @@ defmodule Fil.Plugin.Thumbnails do
 
   @doc "Returns the ref of a variant of an image. See `variant/2`."
   @spec variant(Fil.Disk.t(), Path.t(), atom()) :: Fil.Ref.t()
-  def variant(%Fil.Disk{} = disk, path, name) when is_binary(path) and is_atom(name) do
+  def variant(%Fil.Disk{} = disk, path, name) when is_binary(path) do
     opts = opts!(disk)
     names = Keyword.keys(opts[:variants])
 
@@ -226,7 +226,8 @@ defmodule Fil.Plugin.Thumbnails do
   bypasses the plugins, so it gets its variants this way too.
 
   Returns the errors of `Fil.read/1` and those of a write of the image (see [Errors](#module-errors)). Raises
-  `ArgumentError` when the plugin isn't attached to the disk or the path isn't an image by `:extensions`.
+  `ArgumentError` when the plugin isn't attached to the disk, or the path isn't an image by `:extensions` or is under
+  `:prefix`.
   """
   @spec generate(Fil.Ref.t()) :: {:ok, keyword(Fil.Ref.t())} | {:error, Fil.error()}
   def generate(%Fil.Ref{disk: disk, path: path}), do: generate(disk, path)
@@ -238,7 +239,7 @@ defmodule Fil.Plugin.Thumbnails do
     original = Fil.ref(disk, path)
 
     if not image?(original.path, opts) do
-      raise ArgumentError, "#{inspect(path)} isn't an image, its extension isn't in :extensions"
+      raise ArgumentError, "#{inspect(path)} isn't an image: its extension isn't in :extensions, or it's under :prefix"
     end
 
     with {:ok, content} <- Fil.read(original),

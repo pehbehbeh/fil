@@ -358,6 +358,7 @@ defmodule Fil.Plugin.ThumbnailsTest do
 
     test "raises for a path that isn't an image" do
       assert_raise ArgumentError, ~r/isn't an image/, fn -> Thumbnails.generate(disk(), "notes.txt") end
+      assert_raise ArgumentError, ~r/under :prefix/, fn -> Thumbnails.generate(disk(), "thumbnails/small/a.png") end
     end
   end
 
@@ -374,6 +375,7 @@ defmodule Fil.Plugin.ThumbnailsTest do
       end
 
       assert_raise ArgumentError, ~r/unknown variant :large/, fn -> Thumbnails.variant(disk(), "a.jpg", :large) end
+      assert_raise ArgumentError, ~r/unknown variant "small"/, fn -> Thumbnails.variant(disk(), "a.jpg", "small") end
       assert_raise ArgumentError, ~r/escapes/, fn -> Thumbnails.variant(disk(), "../a.jpg", :small) end
     end
   end
