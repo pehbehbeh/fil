@@ -42,7 +42,7 @@ defmodule Fil.Support.Tmp do
 
   @doc """
   Puts an entry for the calling process, so it's removed when the process exits. Putting the same key again replaces
-  the entry's data.
+  the entry's data. Without the tables (the application isn't running) it does nothing, so nothing is removed.
   """
   @spec put(term(), term()) :: :ok
   def put(key, data) do
@@ -53,6 +53,9 @@ defmodule Fil.Support.Tmp do
     :ets.insert(@entries, {key, self(), data})
     if !monitored, do: monitor_self()
     :ok
+  rescue
+    # The table doesn't exist.
+    ArgumentError -> :ok
   end
 
   @doc "Deletes an entry of the calling process, once it removed what the entry stands for itself."
@@ -60,6 +63,8 @@ defmodule Fil.Support.Tmp do
   def delete(key) do
     :ets.delete(@entries, key)
     :ok
+  rescue
+    ArgumentError -> :ok
   end
 
   @doc """
