@@ -143,6 +143,11 @@ A callback that answers with an error puts an exception in the result: one of `F
 own errors. A callback that returns something other than a `Fil.Op`, leaves the result empty or puts anything else in
 `{:error, _}` raises `ArgumentError`, because that's a bug in the plugin.
 
+A content transform can fail with one of `Fil`'s errors too, such as `Fil.ChecksumMismatchError` from a check that
+finds the content tampered with. On a read of whole content, a transform passed to `Fil.Op.update_result/2` that
+raises one turns the read into `{:error, error}`, with the operation, the path and the disk filled in. On a stream, the
+error is raised to whoever reads it (see [Streams](#streams)). Any other exception propagates as it is.
+
 ## Content
 
 Change the content of a write with `Fil.Op.update_content/2` and the content of a read with `Fil.Op.update_result/2`,
