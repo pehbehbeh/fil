@@ -163,6 +163,20 @@ defmodule Fil.AdapterCase do
         end
       end
 
+      test "writes a file whose name is near the filesystem's limit", %{disk: disk} do
+        # 244 bytes: a local temporary file named after it would be too long for most filesystems (255 bytes).
+        overwritten = String.duplicate("o", 240) <> ".txt"
+        exclusive = String.duplicate("e", 240) <> ".txt"
+        streamed = Stream.map(["long", " name"], & &1)
+
+        assert {:ok, _} = Fil.write(disk, overwritten, "long name")
+        assert {:ok, _} = Fil.write(disk, overwritten, streamed)
+        assert {:ok, _} = Fil.write(disk, exclusive, streamed, if_exists: :error)
+
+        assert Fil.read(disk, overwritten) == {:ok, "long name"}
+        assert Fil.read(disk, exclusive) == {:ok, "long name"}
+      end
+
       test "reading a missing file is not found", %{disk: disk} do
         assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "nope.txt")
         assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "missing/nope.txt")
