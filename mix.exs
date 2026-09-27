@@ -42,6 +42,8 @@ defmodule Fil.MixProject do
 
       # Optional: Fil.Plug serves signed URLs of Local and Memory disks, and Req.Test stubs are plugs.
       {:plug, "~> 1.14", optional: true},
+      # Optional: Fil.Plugin.Thumbnails resizes images with libvips.
+      {:vix, "~> 0.33", optional: true},
 
       # Development
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},

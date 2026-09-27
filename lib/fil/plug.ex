@@ -121,8 +121,10 @@ if Code.ensure_loaded?(Plug) do
         [Mounting](#module-mounting)) a `400`. Neither writes anything
       * a missing file gets a `404`, and so does a file the storage denies access to, so a client can't tell which
         files exist
-      * a failed write gets a `409` if the file already exists or changed meanwhile, `507` if the storage is full and
-        `503` if it's unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
+      * a failed write gets a `409` if the file already exists or changed meanwhile, `422` if the disk refuses the
+        content (a `Fil.InvalidRequestError` about the content, such as from `Fil.Plugin.Thumbnails` for a file that
+        isn't an image), `507` if the storage is full and `503` if it's unavailable. Any other error is a `500` with a
+        generic body, and its message goes to the `Logger`
     """
 
     @behaviour Plug
@@ -133,6 +135,9 @@ if Code.ensure_loaded?(Plug) do
 
     # The most an upload is read at a time.
     @read_length 1_048_576
+
+    # The reasons of a `Fil.InvalidRequestError` that are about the path, not the content (see the adapters' tables).
+    @path_reasons [:ebadpath, :eisdir, :enotdir, :enametoolong, :eloop, "KeyTooLongError"]
 
     @impl Plug
     def init(opts) do
@@ -273,7 +278,7 @@ if Code.ensure_loaded?(Plug) do
 
       case result do
         {:ok, _ref} -> send_resp(conn, 200, "")
-        {:error, error} -> send_fil_error(conn, error)
+        {:error, error} -> send_write_error(conn, error)
         {:body_error, reason} -> body_error(conn, reason, elem(limits, 1))
       end
     end
@@ -343,6 +348,12 @@ if Code.ensure_loaded?(Plug) do
     defp body_error(conn, :already_read, _max_body_size) do
       send_error(conn, 400, "the request body was already read, probably by Plug.Parsers")
     end
+
+    # An upload the disk refuses for its content is a 422. One refused for its path is a 404, as on a download.
+    defp send_write_error(conn, %Fil.InvalidRequestError{reason: reason}) when reason not in @path_reasons,
+      do: send_error(conn, 422, "the content can't be stored here")
+
+    defp send_write_error(conn, error), do: send_fil_error(conn, error)
 
     # A denied file is a 404 too, so a client can't tell which files exist.
     defp send_fil_error(conn, %error{})

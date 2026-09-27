@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Fil.Plugin.Thumbnails` writes smaller copies of images when they're written, sized per variant, and deletes, copies
+  and renames them with the image. They go under `thumbnails/`, or wherever a `:variant_path` function puts them, such
+  as next to the image. `generate/1` makes them later, with `mode: :manual` or for images stored before. It needs the
+  optional Vix dependency.
+  ([#14](https://github.com/pehbehbeh/fil/pull/14))
 - Telemetry events for every operation on every disk, `[:fil, :op, :start]`, `[:fil, :op, :stop]` and
   `[:fil, :op, :exception]`, with the operation, the disk, the path, the error and the bytes read or written. Each read
   of a stream from `Fil.stream/3` is a `[:fil, :stream, ...]` span of its own, with the bytes read. See
@@ -47,6 +52,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `Fil.Plug` answers an upload that the disk refuses for its content, a `Fil.InvalidRequestError` that isn't about the
+  path, with a `422` instead of a `404`.
+  ([#14](https://github.com/pehbehbeh/fil/pull/14))
 - `Fil.write/4` raises `ArgumentError` for a list that isn't iodata, such as `[70_000]`, before any plugin sees it.
   Before, a plugin that replaced the content or answered the call itself hid it.
   ([#12](https://github.com/pehbehbeh/fil/pull/12))
