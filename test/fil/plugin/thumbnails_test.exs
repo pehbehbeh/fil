@@ -305,6 +305,41 @@ defmodule Fil.Plugin.ThumbnailsTest do
     end
   end
 
+  describe "generate/2" do
+    test "makes the variants of a stored image, as mode: :manual leaves them to it" do
+      disk = disk(mode: :manual, variants: [small: [width: 100], large: [width: 200]])
+      Fil.write!(disk, "cats/tom.png", image(400, 200))
+      refute Fil.exists?(disk, "thumbnails/small/cats/tom.png")
+
+      assert {:ok, [small: small, large: large]} = Thumbnails.generate(disk, "cats/tom.png")
+
+      assert small == Thumbnails.variant(disk, "cats/tom.png", :small)
+
+      assert large
+             |> Fil.read!()
+             |> size() == {200, 100}
+    end
+
+    test "returns the errors of the read and of the image" do
+      disk = disk()
+      # The same store, without the plugin.
+      [adapter: Memory]
+      |> Fil.disk()
+      |> Fil.write!("fake.png", "not a png")
+
+      assert {:error, %Fil.NotFoundError{path: "missing.png"}} = Thumbnails.generate(disk, "missing.png")
+
+      assert {:error, %Fil.InvalidRequestError{reason: {:not_an_image, _}, path: "fake.png"}} =
+               disk
+               |> Fil.ref("fake.png")
+               |> Thumbnails.generate()
+    end
+
+    test "raises for a path that isn't an image" do
+      assert_raise ArgumentError, ~r/isn't an image/, fn -> Thumbnails.generate(disk(), "notes.txt") end
+    end
+  end
+
   describe "variant/3" do
     test "normalizes the path" do
       assert Thumbnails.variant(disk(), "/cats//tom.jpg", :small).path == "thumbnails/small/cats/tom.jpg"

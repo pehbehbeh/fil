@@ -56,6 +56,14 @@ defmodule Fil.Plugin.Thumbnails do
               `photo.JPG` is an image too.
               """
             ],
+            mode: [
+              type: {:in, [:on_write, :manual]},
+              default: :on_write,
+              doc: """
+              `:on_write` makes the variants when an image is written. `:manual` doesn't, and your code calls
+              `generate/1` instead, such as from a background job. Deletes, copies and renames follow in both modes.
+              """
+            ],
             max_pixels: [
               type: :pos_integer,
               default: 100_000_000,
@@ -103,7 +111,8 @@ defmodule Fil.Plugin.Thumbnails do
   which Vix's precompiled build is.
 
   A write of an image (by its extension, see `:extensions`) makes every variant in memory, then writes the image, then
-  the variants, each as a `Fil.write/3` with its content type. The variants are written with the disk's plugins, and
+  the variants, each as a `Fil.write/3` with its content type. With `mode: :manual`, it writes only the image, and
+  `generate/1` makes the variants later. The variants are written with the disk's plugins, and
   the plugin passes on its own writes because they're under `:prefix`. So `Fil.Telemetry` counts an image write as
   one `:write` plus one per variant, nested in it (see
   [Nested operations](Fil.Telemetry.html#module-nested-operations)).
@@ -205,12 +214,45 @@ defmodule Fil.Plugin.Thumbnails do
     end
   end
 
+  @doc """
+  Makes the variants of an image that's already stored, and returns their refs by variant name.
+
+      {:ok, [small: small, square: square]} = Fil.Plugin.Thumbnails.generate(disk, "cats/tom.jpg")
+
+  It reads the image with `Fil.read/1`, through the disk's plugins, and writes every variant, replacing what's there.
+  Call it with `mode: :manual`, for images written before the plugin was attached or before a variant was added, and
+  to repair the variants after a write returned a variant's error. An image uploaded to S3 with a presigned URL
+  bypasses the plugins, so it gets its variants this way too.
+
+  Returns the errors of `Fil.read/1` and those of a write of the image (see [Errors](#module-errors)). Raises
+  `ArgumentError` when the plugin isn't attached to the disk or the path isn't an image by `:extensions`.
+  """
+  @spec generate(Fil.Ref.t()) :: {:ok, keyword(Fil.Ref.t())} | {:error, Fil.error()}
+  def generate(%Fil.Ref{disk: disk, path: path}), do: generate(disk, path)
+
+  @doc "Makes the variants of an image that's already stored. See `generate/1`."
+  @spec generate(Fil.Disk.t(), Path.t()) :: {:ok, keyword(Fil.Ref.t())} | {:error, Fil.error()}
+  def generate(%Fil.Disk{} = disk, path) when is_binary(path) do
+    opts = opts!(disk)
+    original = Fil.ref(disk, path)
+
+    if not image?(original.path, opts) do
+      raise ArgumentError, "#{inspect(path)} isn't an image, its extension isn't in :extensions"
+    end
+
+    with {:ok, content} <- Fil.read(original),
+         {:ok, thumbnails} <- thumbnails(content, original, opts),
+         :ok <- write_all(thumbnails) do
+      {:ok, for({name, variant, _data} <- thumbnails, do: {name, variant})}
+    end
+  end
+
   @doc false
   @spec call(Op.t(), (Op.t() -> Op.t()), keyword()) :: Op.t()
   def call(%Op{name: :write} = op, next, opts) do
     opts = validate!(opts)
 
-    if image?(op.path, opts) do
+    if opts[:mode] == :on_write and image?(op.path, opts) do
       vix!()
       op = Op.materialize(op)
       original = Fil.ref(op.disk, op.path)
@@ -298,6 +340,15 @@ defmodule Fil.Plugin.Thumbnails do
   defp write_variant({_name, variant, data}) do
     content_type = MIME.from_path(variant.path)
     Fil.write(variant, data, content_type: content_type)
+  end
+
+  defp write_all(thumbnails) do
+    Enum.reduce_while(thumbnails, :ok, fn thumbnail, :ok ->
+      case write_variant(thumbnail) do
+        {:ok, _variant} -> {:cont, :ok}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
   end
 
   # An image by its extension, outside the prefix, so the plugin's own operations pass through.
