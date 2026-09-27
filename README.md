@@ -49,8 +49,8 @@ With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes t
   script or a Livebook with `Mix.install/1`.
 - **Pluggable.** Anything that isn't about where files are stored is a [plugin](https://fil.hexdocs.pm/plugins.html),
   such as setting content types or logging.
-- **Few dependencies.** Req, NimbleOptions and MIME, plus Plug if you serve files. Cloud adapters use Req instead of
-  their own SDKs.
+- **Few dependencies.** Req, NimbleOptions, MIME and Telemetry, plus Plug if you serve files. Cloud adapters use Req
+  instead of their own SDKs.
 - **Streaming.** Files can be read and written as streams on every disk, so large files don't have to fit in memory.
 - **URLs on every disk.** Public and signed GET and PUT URLs, from S3 itself or from `Fil.Plugin.URL` and `Fil.Plug`.
 - **Safe by default.** Paths can't climb out of the disk root, `if_exists: :error` never replaces a file, and S3
