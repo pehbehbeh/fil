@@ -93,4 +93,118 @@ defmodule Fil.Telemetry do
   When a stream goes into `Fil.write/4` and the source fails, the write's `:stop` has the source's error, whose `:op`
   and `:path` name the source.
   """
+
+  require Logger
+
+  @logger_schema NimbleOptions.new!(
+                   level: [
+                     type: {:in, [:emergency, :alert, :critical, :error, :warning, :notice, :info, :debug]},
+                     default: :debug,
+                     doc: "The `Logger` level of the messages."
+                   ]
+                 )
+
+  @logger_id "fil-default-logger"
+
+  @logger_events [
+    [:fil, :op, :stop],
+    [:fil, :op, :exception],
+    [:fil, :stream, :stop],
+    [:fil, :stream, :exception]
+  ]
+
+  @doc """
+  Logs every operation and every read of a stream, with its duration, until `detach_default_logger/0`.
+
+      Fil.Telemetry.attach_default_logger(level: :info)
+
+  The messages look like this:
+
+  ```text
+  Fil write #Fil.Ref<s3:q3.pdf> in 12ms (5120 bytes)
+  Fil read #Fil.Ref<s3:q4.pdf> failed in 8ms: could not read "q4.pdf" on #Fil.Disk<s3>: no such file (NoSuchKey)
+  Fil stream #Fil.Ref<s3:videos/intro.mp4> in 9ms
+  Fil streamed #Fil.Ref<s3:videos/intro.mp4> in 2140ms (73400320 bytes)
+  ```
+
+  Returns `{:error, :already_exists}` if the logger is attached already.
+
+  ## Options
+
+  #{NimbleOptions.docs(@logger_schema)}
+  """
+  @spec attach_default_logger(keyword()) :: :ok | {:error, :already_exists}
+  def attach_default_logger(opts \\ []) do
+    level =
+      case NimbleOptions.validate(opts, @logger_schema) do
+        {:ok, opts} -> opts[:level]
+        {:error, error} -> raise ArgumentError, Exception.message(error)
+      end
+
+    :telemetry.attach_many(@logger_id, @logger_events, &__MODULE__.handle_event/4, level)
+  end
+
+  @doc "Stops logging. Returns `{:error, :not_found}` if the logger isn't attached."
+  @spec detach_default_logger() :: :ok | {:error, :not_found}
+  def detach_default_logger, do: :telemetry.detach(@logger_id)
+
+  @doc false
+  @spec handle_event([atom()], map(), map(), Logger.level()) :: :ok
+  def handle_event(event, measurements, metadata, level) do
+    Logger.log(level, fn -> message(event, measurements, metadata) end)
+  end
+
+  defp message([:fil, :op, :stop], measurements, %{error: nil} = metadata) do
+    [op(metadata), " in ", duration(measurements), bytes(measurements)]
+  end
+
+  defp message([:fil, :op, :stop], measurements, %{error: error} = metadata) do
+    [op(metadata), " failed in ", duration(measurements), ": ", Exception.message(error)]
+  end
+
+  defp message([:fil, :op, :exception], measurements, metadata) do
+    [op(metadata), " raised after ", duration(measurements), ": ", banner(metadata)]
+  end
+
+  defp message([:fil, :stream, :stop], measurements, %{halted: false} = metadata) do
+    ["Fil streamed ", target(metadata), " in ", duration(measurements), bytes(measurements)]
+  end
+
+  defp message([:fil, :stream, :stop], measurements, %{halted: true} = metadata) do
+    ["Fil stopped streaming ", target(metadata), " after ", duration(measurements), bytes(measurements)]
+  end
+
+  defp message([:fil, :stream, :exception], measurements, metadata) do
+    ["Fil streaming ", target(metadata), " failed after ", duration(measurements), ": ", banner(metadata)]
+  end
+
+  # `Fil.stream/3` is a `:read`, but its op events only cover the check, so the message says "stream".
+  defp op(%{streaming: true} = metadata), do: ["Fil stream ", target(metadata)]
+  defp op(%{op: op} = metadata), do: ["Fil ", Atom.to_string(op), " ", target(metadata)]
+
+  defp target(%{disk: disk, path: path, dest: nil}), do: ref(disk, path)
+
+  defp target(%{disk: disk, path: path, dest: dest, dest_disk: dest_disk}) do
+    [ref(disk, path), " to ", ref(dest_disk, dest)]
+  end
+
+  defp ref(disk, path), do: inspect(%Fil.Ref{disk: disk, path: path})
+
+  defp duration(%{duration: duration}) do
+    microseconds = System.convert_time_unit(duration, :native, :microsecond)
+
+    if microseconds < 1000 do
+      [Integer.to_string(microseconds), "µs"]
+    else
+      milliseconds = div(microseconds, 1000)
+      [Integer.to_string(milliseconds), "ms"]
+    end
+  end
+
+  defp bytes(%{bytes: bytes}), do: [" (", Integer.to_string(bytes), " bytes)"]
+  defp bytes(_measurements), do: []
+
+  defp banner(%{kind: kind, reason: reason, stacktrace: stacktrace}) do
+    Exception.format_banner(kind, reason, stacktrace)
+  end
 end
