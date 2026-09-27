@@ -357,12 +357,57 @@ defmodule Fil.PluginsTest do
       end
     end
 
+    test "a Fil error a read transform raises is the read's error", %{disk: disk, tmp_dir: tmp_dir} do
+      tampered = fn _content -> raise %Fil.ChecksumMismatchError{reason: :tampered} end
+
+      checking =
+        Fil.attach(disk, :check, fn op, next, _opts ->
+          op
+          |> next.()
+          |> Op.update_result(binary: tampered, stream: &Stream.map(&1, tampered))
+        end)
+
+      {:ok, _} = Fil.write(checking, "a.txt", "content")
+
+      # Whole content: returned as an error, with the context filled in.
+      assert {:error, %Fil.ChecksumMismatchError{op: :read, path: "a.txt", reason: :tampered} = error} =
+               Fil.read(checking, "a.txt")
+
+      assert error.disk == checking
+
+      # A stream: raised when it's read, with the context filled in.
+      assert {:ok, stream} = Fil.stream(checking, "a.txt")
+      error = assert_raise Fil.ChecksumMismatchError, fn -> Enum.to_list(stream) end
+      assert {error.op, error.path, error.disk} == {:read, "a.txt", checking}
+
+      # A copy across disks streams, and returns the source's error.
+      other = Fil.disk(adapter: Local, root: Path.join(tmp_dir, "other"))
+
+      assert {:error, %Fil.ChecksumMismatchError{op: :cp, path: "a.txt", reason: :tampered}} =
+               Fil.cp(checking, "a.txt", Fil.ref(other, "a.txt"))
+
+      refute Fil.exists?(other, "a.txt")
+    end
+
+    test "other exceptions in a read transform propagate", %{disk: disk} do
+      failing =
+        Fil.attach(disk, :fail, fn op, next, _opts ->
+          op
+          |> next.()
+          |> Op.update_result(binary: fn _content -> raise "a bug" end)
+        end)
+
+      {:ok, _} = Fil.write(failing, "a.txt", "content")
+
+      assert_raise RuntimeError, "a bug", fn -> Fil.read(failing, "a.txt") end
+    end
+
     test "update_content passes whole content to a stream transform as one chunk", %{disk: disk} do
       op = %Op{disk: disk, name: :write, path: "a.txt", content: ["ab", "cd"], options: [size: 4]}
 
       streamed = Op.update_content(op, stream: &Stream.map(&1, fn chunk -> [chunk, "!"] end))
       assert IO.iodata_to_binary(streamed.content) == "abcd!"
-      assert streamed.options == [size: 4]
+      assert streamed.options == []
     end
 
     test "update_result transforms a streamed read when it's read", %{disk: disk} do

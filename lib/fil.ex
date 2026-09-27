@@ -84,8 +84,8 @@ defmodule Fil do
       type: :non_neg_integer,
       doc: """
       The size of the content in bytes. S3 sends a stream of known size as it's read, and collects one without a size
-      into memory first. Content of another size raises `ArgumentError` and writes nothing. Plugins that transform a
-      stream drop the size.
+      into memory first. Content of another size raises `ArgumentError` and writes nothing, whatever the plugins do
+      with it. Plugins that transform the content drop the size.
       """
     ]
   ]

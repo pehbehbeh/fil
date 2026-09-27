@@ -148,17 +148,16 @@ defmodule Fil.Op do
       it as a stream of one chunk (none if it's empty), and the result is collected again
 
   A stream prefers `stream:` over `chunk:`. The [Plugins guide](plugins.md#streams) describes what a chunk is.
-  Transforming a stream drops the `:size` option of the write, because the size can change.
+  A transform drops the `:size` option of the write, because the size can change. A plugin that knows the new size
+  declares it again with `put_option(op, :size, size)`.
   """
   @spec update_content(t(), transform()) :: t()
   def update_content(%__MODULE__{name: :write, content: content} = op, funs) do
     funs = validate_transform!(funs)
 
-    if Content.whole?(content) do
-      %{op | content: transform_whole(content, funs)}
-    else
-      drop_size(%{op | content: transform_stream(content, funs)})
-    end
+    content = if Content.whole?(content), do: transform_whole(content, funs), else: transform_stream(content, funs)
+
+    drop_size(%{op | content: content})
   end
 
   def update_content(%__MODULE__{} = op, funs) do
@@ -171,18 +170,17 @@ defmodule Fil.Op do
 
   Takes the same `binary:`, `chunk:` and `stream:` functions as `update_content/2`. The result of `Fil.stream/3` is a
   stream, and the transforms run when the caller reads it; a stream with only `binary:` is collected then too.
+
+  A transform that raises one of `Fil`'s errors, such as `Fil.ChecksumMismatchError` for content that fails a check,
+  turns a read of whole content into that error. On a stream, the error is raised when the caller reads it, with the
+  operation, the path and the disk filled in.
   """
   @spec update_result(t(), transform()) :: t()
   def update_result(%__MODULE__{name: :read, result: {:ok, content}} = op, funs) do
     funs = validate_transform!(funs)
 
     if Content.whole?(content) do
-      binary =
-        content
-        |> transform_whole(funs)
-        |> IO.iodata_to_binary()
-
-      %{op | result: {:ok, binary}}
+      %{op | result: transform_whole_result(content, funs)}
     else
       %{op | result: {:ok, transform_result_stream(content, funs)}}
     end
@@ -191,6 +189,19 @@ defmodule Fil.Op do
   def update_result(%__MODULE__{} = op, funs) do
     _ = validate_transform!(funs)
     op
+  end
+
+  # A transform that fails with one of `Fil`'s errors (a decryption that finds the content tampered with, say) turns
+  # the read into that error. A stream raises it instead, when it's read.
+  defp transform_whole_result(content, funs) do
+    binary =
+      content
+      |> transform_whole(funs)
+      |> IO.iodata_to_binary()
+
+    {:ok, binary}
+  rescue
+    error -> transform_error(error, __STACKTRACE__)
   end
 
   @doc """
@@ -262,6 +273,10 @@ defmodule Fil.Op do
     |> IO.iodata_to_binary()
   end
 
+  # `Fil`'s errors are the exceptions with an operation, a path and a disk. Anything else is a bug in the transform.
+  defp transform_error(%{op: _, path: _, disk: _} = error, _stacktrace), do: {:error, error}
+  defp transform_error(error, stacktrace), do: reraise(error, stacktrace)
+
   defp drop_size(%__MODULE__{options: options} = op), do: %{op | options: Keyword.delete(options, :size)}
 
   defp validate_transform!(funs) when is_list(funs) do
@@ -308,8 +323,21 @@ defmodule Fil.Op do
         end
       end)
 
-    chain.(caller).result
+    caller
+    |> chain.()
+    |> Map.fetch!(:result)
+    |> put_stream_context(caller)
   end
+
+  # Errors a plugin's transform raises while the caller reads a stream get the caller's context too, the same as the
+  # adapter's (see `to_result/3`).
+  defp put_stream_context({:ok, content}, %__MODULE__{name: :read, streaming: true} = caller) do
+    if Content.whole?(content), do: {:ok, content}, else: {:ok, Content.put_context(content, context(caller))}
+  end
+
+  defp put_stream_context(result, _caller), do: result
+
+  defp context(%__MODULE__{name: name, path: path, disk: disk}), do: [op: name, path: path, disk: disk]
 
   defp call_plugin({module, function}, op, next, opts), do: apply(module, function, [op, next, opts])
   defp call_plugin(fun, op, next, opts), do: fun.(op, next, opts)
@@ -403,7 +431,7 @@ defmodule Fil.Op do
 
   # Errors raised while the caller reads the stream get the same context as returned ones.
   defp to_result({:ok, stream}, %__MODULE__{name: :read, streaming: true}, caller) do
-    {:ok, Content.put_context(stream, op: caller.name, path: caller.path, disk: caller.disk)}
+    {:ok, Content.put_context(stream, context(caller))}
   end
 
   defp to_result({:ok, value}, _op, _caller), do: {:ok, value}
