@@ -186,6 +186,36 @@ defmodule Fil.Adapter.LocalTest do
       assert Fil.read(disk, "source.txt") == {:ok, "source"}
     end
 
+    test "move a directory onto neither a file nor a directory with files", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
+      assert {:ok, _} = Fil.write(disk, "taken.txt", "taken")
+      assert {:ok, _} = Fil.write(disk, "full/other.txt", "other")
+
+      assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "taken.txt"}} =
+               Fil.rename(disk, "dir", "taken.txt", if_exists: :error)
+
+      assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "full"}} =
+               Fil.rename(disk, "dir", "full", if_exists: :error)
+
+      assert Fil.read(disk, "dir/file.txt") == {:ok, "content"}
+      assert Fil.read(disk, "taken.txt") == {:ok, "taken"}
+      assert Fil.read(disk, "full/other.txt") == {:ok, "other"}
+    end
+
+    test "that can't remove the source remove the destination again", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "locked/a.txt", "a")
+
+      locked = Path.join(tmp_dir, "primary/locked")
+      File.chmod!(locked, 0o555)
+      on_exit(fn -> File.chmod(locked, 0o755) end)
+
+      assert {:error, %Fil.AccessDeniedError{op: :rename, path: "locked/a.txt"}} =
+               Fil.rename(disk, "locked/a.txt", "b.txt", if_exists: :error)
+
+      assert Fil.read(disk, "locked/a.txt") == {:ok, "a"}
+      refute Fil.exists?(disk, "b.txt")
+    end
+
     test "keep the source's permissions, like File.cp/2", %{disk: disk, tmp_dir: tmp_dir} do
       assert {:ok, _} = Fil.write(disk, "run.sh", "echo")
 

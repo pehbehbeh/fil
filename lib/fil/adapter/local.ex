@@ -49,9 +49,12 @@ defmodule Fil.Adapter.Local do
     * `Fil.cp/4`: `File.cp/2`. `if_exists: :error` copies to a `.fil-` temporary file instead and hard-links it to the
       destination, like a write. Copying a directory is a `Fil.InvalidRequestError`.
     * `Fil.rename/4`: `File.rename/2`, which moves directories too. `if_exists: :error` hard-links the file to the
-      destination and then removes the source (on a filesystem without hard links, it creates the destination with
-      `O_EXCL` first, like a write). A directory is still moved with `File.rename/2`, which can replace an empty
-      directory, but never a file.
+      destination and then removes the source. Where the link fails with `:eperm` or `:enotsup` (a filesystem without
+      hard links, or on Linux a file of another user with `fs.protected_hardlinks` on), it creates the destination with
+      `O_EXCL` first and then moves the file there, like a write. A write that replaces the source after the link
+      fails the move with a `Fil.ConflictError` and leaves the destination as it was. A write in the short moment
+      between that check and the removal of the source is lost. A directory is still moved with `File.rename/2`, which
+      replaces an empty directory. A file or a directory with files in it is a `Fil.AlreadyExistsError`.
     * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Files whose name starts with `.fil-` are removed
       too, but not counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
@@ -71,6 +74,7 @@ defmodule Fil.Adapter.Local do
   | a name that's too long, a symlink loop | `Fil.InvalidRequestError` | `:enametoolong`, `:eloop` |
   | a path that resolves outside the root | `Fil.InvalidRequestError` | `:ebadpath` |
   | an exclusive create finding the file already there | `Fil.AlreadyExistsError` | `:eexist` |
+  | a source that a write replaced during a move with `if_exists: :error` | `Fil.ConflictError` | `:source_changed` |
   | a full disk, a used-up quota | `Fil.StorageFullError` | `:enospc`, `:edquot` |
   | too many open files | `Fil.UnavailableError` | `:emfile`, `:enfile` |
   | any other POSIX error | `Fil.UnknownError` | the atom |
@@ -312,29 +316,55 @@ defmodule Fil.Adapter.Local do
   end
 
   # A hard link claims the destination only if it doesn't exist, and removing the source then completes the move (see
-  # `create/2`, which falls back to `O_EXCL` without hard links). When the source can't be removed, the link is removed
-  # again, so both files stay as they were. Directories can't be hard-linked, so they're moved with `File.rename/2`,
-  # which never puts a directory over a file.
+  # `create/2`, which falls back to `O_EXCL` without hard links). Directories can't be hard-linked, so they're moved
+  # with `File.rename/2`.
   defp move_new(from, to) do
     if File.dir?(from) do
-      File.rename(from, to)
+      move_dir(from, to)
     else
       with :ok <- create(from, to), do: remove_source(from, to)
     end
   end
 
-  defp remove_source(from, to) do
-    case File.rm(from) do
-      :ok ->
-        :ok
-
-      {:error, :enoent} ->
-        :ok
-
-      {:error, reason} ->
-        _ = File.rm(to)
-        {:error, reason}
+  # `File.rename/2` puts a directory over an empty one, but not over a file (`:enotdir`) or over a directory with
+  # something in it (`:enotempty`, or `:eexist` on Linux). For `if_exists: :error`, those are a destination that exists.
+  defp move_dir(from, to) do
+    case File.rename(from, to) do
+      {:error, reason} when reason in [:enotdir, :enotempty] -> {:error, :eexist}
+      result -> result
     end
+  end
+
+  # Until the source is removed, it's the same file as the link. A write that replaced the source after the link was
+  # made put a new file there, which stays: the move removes its link and fails with a conflict. A write between that
+  # check and the removal is still lost. Whatever fails, the link is removed only while it's still the file this move
+  # linked, so both files stay as they were. After the `O_EXCL` fallback, the source is already gone.
+  defp remove_source(from, to) do
+    with {:ok, linked} <- file_id(to) do
+      case file_id(from) do
+        {:ok, ^linked} -> unlink_source(from, to, linked)
+        {:ok, _other} -> unlink(to, linked, %Fil.ConflictError{reason: :source_changed})
+        {:error, :enoent} -> :ok
+        {:error, reason} -> unlink(to, linked, reason)
+      end
+    end
+  end
+
+  defp unlink_source(from, to, linked) do
+    case File.rm(from) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> unlink(to, linked, reason)
+    end
+  end
+
+  defp unlink(to, linked, reason) do
+    if file_id(to) == {:ok, linked}, do: File.rm(to)
+    {:error, reason}
+  end
+
+  defp file_id(full) do
+    with {:ok, %File.Stat{major_device: device, inode: inode}} <- File.lstat(full), do: {:ok, {device, inode}}
   end
 
   # An exclusive copy or move that fails because the destination exists, is a directory or is under a file has the
@@ -513,7 +543,7 @@ defmodule Fil.Adapter.Local do
     case :file.open(full, [:write, :exclusive, :raw]) do
       {:ok, io} ->
         :ok = :file.close(io)
-        File.rename(tmp, full)
+        claimed(File.rename(tmp, full), full)
 
       {:error, :eexist} ->
         {:error, directory_or(full, :eexist)}
@@ -521,6 +551,14 @@ defmodule Fil.Adapter.Local do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # A move that fails leaves the empty file behind, which is removed again.
+  defp claimed(:ok, _full), do: :ok
+
+  defp claimed(error, full) do
+    _ = File.rm(full)
+    error
   end
 
   defp tmp_path(full) do
