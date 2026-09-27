@@ -97,7 +97,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.cp/3` and `Fil.rename/3` with `if_exists: :error` replaced an existing file within one disk, and refused only
   across disks. They now return `Fil.AlreadyExistsError` on every adapter and leave both files as they were. The check
   is atomic: a hard link on local disk, `:ets.insert_new/2` in memory, and `If-None-Match: *` on the CopyObject on S3.
-  ([#N](https://github.com/pehbehbeh/fil/pull/N))
+  ([#16](https://github.com/pehbehbeh/fil/pull/16))
 
 ## [0.1.0] - 2026-09-27
 
