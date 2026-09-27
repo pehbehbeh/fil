@@ -10,8 +10,12 @@ defmodule Fil.Support.XML do
 
   @type element :: {String.t(), [{String.t(), String.t()}], [element() | String.t()]}
 
+  # S3 may send whitespace before the document: it keeps a long CompleteMultipartUpload or CopyObject alive with it
+  # after the `200` has gone out.
   @spec parse(binary()) :: {:ok, element()} | {:error, :invalid_xml}
   def parse(binary) when is_binary(binary) do
+    binary = String.trim_leading(binary)
+
     with false <- String.contains?(binary, "<!DOCTYPE"),
          {:ok, {:done, element}, _rest} <- :xmerl_sax_parser.stream(binary, event_fun: &event/3, event_state: []) do
       {:ok, element}

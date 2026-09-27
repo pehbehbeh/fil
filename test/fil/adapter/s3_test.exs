@@ -541,6 +541,19 @@ defmodule Fil.Adapter.S3Test do
       assert {:error, %Fil.UnavailableError{reason: "InternalError"}} = Fil.cp(disk(), "a.txt", "b.txt")
     end
 
+    test "copy notices a failure after the whitespace that kept the connection alive" do
+      stub([response(200, "\n  \n" <> error_xml("InternalError"))])
+
+      assert {:error, %Fil.UnavailableError{reason: "InternalError"}} = Fil.cp(disk(), "a.txt", "b.txt")
+    end
+
+    test "copy succeeds when the 200 has a result, or a body that can't be read" do
+      stub([response(200, "\n  <CopyObjectResult><ETag>\"a\"</ETag></CopyObjectResult>"), response(200, "<Err")])
+
+      assert {:ok, _} = Fil.cp(disk(), "a.txt", "b.txt")
+      assert {:ok, _} = Fil.cp(disk(), "a.txt", "b.txt")
+    end
+
     test "a missing source is not found" do
       stub([response(404, error_xml("NoSuchKey")), response(400, error_xml("NoSuchKey"))])
 

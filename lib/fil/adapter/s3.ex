@@ -640,12 +640,14 @@ defmodule Fil.Adapter.S3 do
 
   defp copy_source(state, src), do: "/" <> state.bucket <> "/" <> encode_path(key(state, src))
 
-  # CopyObject can report failure inside a 200 response body.
-  defp copy_result(%{body: body} = response) when is_binary(body) do
-    if String.contains?(body, "<Error"), do: {:error, error(response)}, else: :ok
+  # CopyObject can report failure inside a `200`, after the status has gone out. Only an `<Error>` document is a
+  # failure: once the copy may have happened, a body that can't be read doesn't turn it into an error.
+  defp copy_result(response) do
+    case XML.parse(response.body) do
+      {:ok, {"Error", _attributes, _children}} -> {:error, error(response)}
+      _result_or_unreadable -> :ok
+    end
   end
-
-  defp copy_result(_response), do: :ok
 
   ## ------------------------------------------------------------------
   ## Keys and prefixes
