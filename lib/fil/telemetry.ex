@@ -134,12 +134,15 @@ defmodule Fil.Telemetry do
 
   `Fil.Adapter.S3` sends its requests with [Req](https://hexdocs.pm/req) and [Finch](https://hexdocs.pm/finch),
   which emits `[:finch, :request, ...]` events of its own. Most requests are sent from the process that runs the
-  operation, so they fall inside its span. The download of a stream from `Fil.stream/3` and the requests that create
-  and abort an upload in parts run in processes of their own. Those processes put the process that runs the operation
-  first in `$callers`, so a Finch handler finds it with `hd(Process.get(:"$callers", []))`.
+  operation, so in a Finch handler that process is `self()`, and the requests fall inside its span. Only the download
+  of a stream from `Fil.stream/3` and the requests that create and abort an upload in parts run in processes of their
+  own. Those put the process that runs the operation first in `$callers`, so `hd(Process.get(:"$callers", []))` finds
+  it there. In the operation's own process, `$callers` is empty (and that call crashes) or names the processes that
+  started it.
 
-  To tell the requests of one disk from another's, give each disk its own `:finch_private` in `:req_options`, which
-  Finch passes on in its events as `request.private`:
+  A handler that has to cover both, or tell the requests of one disk from another's, is better off with a
+  `:finch_private` in each disk's `:req_options`. Finch passes it on in its events as `request.private`, from any
+  process:
 
       Fil.disk(adapter: Fil.Adapter.S3, bucket: "uploads", req_options: [finch_private: %{disk: :uploads}])
 

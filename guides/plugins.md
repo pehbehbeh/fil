@@ -187,6 +187,8 @@ sees every read and write.
 A stream is an enumerable of binaries. What a plugin can rely on:
 
   * chunks come in order, and none is empty
+  * its type says nothing: a `File.Stream` the caller passed may arrive wrapped in a `Stream`, so enumerate it and
+    don't match on its struct
   * their size depends on where the stream comes from (the caller's stream, an upload, the adapter, the network) and
     says nothing about the content: a chunk isn't a line, a record or a multiple of a block size. A transform that
     needs whole lines or blocks buffers them itself
