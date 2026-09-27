@@ -60,7 +60,8 @@ The Hex package is `fil`.
   The adapter always sets `retry: false` and `raw: true`, so user options can't change the storage semantics. Req signs
   requests (its `aws_sigv4:` option), presigned URLs use the private `Req.Utils.aws_sigv4_url/1` (Req is deliberately
   not pinned for it; if a release drops it, presigning crashes), and XML is parsed with OTP's `:xmerl_sax_parser`.
-  There's no HTTP client behaviour.
+  There's no HTTP client behaviour. Bodiless requests send `body: nil`, never `""`: Req 0.8.0-rc.0 turns a GET with a
+  body into a POST.
 
 ## Commands
 

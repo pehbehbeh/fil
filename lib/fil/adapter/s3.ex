@@ -387,7 +387,7 @@ defmodule Fil.Adapter.S3 do
         method: method,
         url: object_url(state, key, params),
         headers: Keyword.get(opts, :headers, []),
-        body: Keyword.get(opts, :body) || "",
+        body: Keyword.get(opts, :body),
         aws_sigv4: aws_sigv4(state),
         retry: false,
         raw: true
