@@ -169,16 +169,6 @@ The [installation guide](https://fil.hexdocs.pm/installation.html) is the full s
 for your disks, the config for each environment (local disks in development, memory disks in tests and S3 in
 production), signed URLs and tests. This section is only a quick tour of the API.
 
-Add `fil` to your dependencies:
-
-```elixir
-def deps do
-  [
-    {:fil, "~> 0.1"}
-  ]
-end
-```
-
 Build one disk per kind of storage:
 
 ```elixir
