@@ -45,6 +45,7 @@ defmodule Fil.Plugin.Thumbnails do
             ],
             prefix: [
               type: {:custom, __MODULE__, :normalize_prefix, []},
+              type_doc: "`t:String.t/0`",
               default: "thumbnails",
               doc: "The directory of the variants, as `<prefix>/<variant>/<path>`. Writes under it get no variants."
             ],
@@ -91,9 +92,9 @@ defmodule Fil.Plugin.Thumbnails do
 
       {:vix, "~> 0.33"}
 
-  The plugin is compiled without it, and raises when it's attached or used and Vix isn't there. So a disk from config
-  that lists the plugin gets that message instead of a missing function. `Fil.Plug` is left out when Plug is missing,
-  but Vix is looked up when the plugin runs, so adding it later needs no recompile of `fil`.
+  Unlike `Fil.Plug`, which isn't compiled without Plug, the plugin is always there and looks Vix up when it's attached
+  or used. So a disk from config that lists the plugin raises with a message about Vix instead of a missing function,
+  and adding Vix later needs no recompile of `fil`.
 
   It's also the example of a plugin that needs all of the content at once and writes files of its own (see the
   [Plugins guide](plugins.md)).
@@ -101,21 +102,20 @@ defmodule Fil.Plugin.Thumbnails do
   ## Variants
 
   A variant of `cats/tom.jpg` is at `<prefix>/<variant>/cats/tom.jpg`. With `format: :webp`, it's
-  `thumbnails/square/cats/tom.jpg.webp`, so `tom.jpg` and `tom.png` never share a variant and the extension gives the
-  right content type. `variant/2` returns the ref. The variants are ordinary files: read them, build their URLs, and
-  expect them in a recursive `Fil.ls/3` of the root.
+  `thumbnails/square/cats/tom.jpg.webp`, so `tom.jpg` and `tom.png` never share a variant, and the content type still
+  follows from the extension. `variant/2` returns the ref. The variants are ordinary files: read them, build their
+  URLs, and expect them in a recursive `Fil.ls/3` of the root.
 
   Every variant fits into its `:width` and `:height`, keeping the image's aspect ratio (or crops to exactly that size
-  with `:crop`). Images are never enlarged. A variant is rotated by the image's EXIF orientation and keeps only its
-  colour profile of the metadata, so no GPS position ends up in a public thumbnail. That needs libvips 8.15 or later,
-  which Vix's precompiled build is.
+  with `:crop`). Images are never enlarged. A variant is rotated by the image's EXIF orientation and keeps only the
+  colour profile of the metadata, so no GPS position ends up in a public thumbnail. That needs libvips 8.15 or later
+  (Vix 0.42 comes with 8.18).
 
   A write of an image (by its extension, see `:extensions`) makes every variant in memory, then writes the image, then
-  the variants, each as a `Fil.write/3` with its content type. With `mode: :manual`, it writes only the image, and
-  `generate/1` makes the variants later. The variants are written with the disk's plugins, and
-  the plugin passes on its own writes because they're under `:prefix`. So `Fil.Telemetry` counts an image write as
-  one `:write` plus one per variant, nested in it (see
-  [Nested operations](Fil.Telemetry.html#module-nested-operations)).
+  the variants, each as a `Fil.write/3` with its content type. The variant writes go through the disk's plugins too,
+  and this one passes them on because they're under `:prefix`. So `Fil.Telemetry` counts an image write as one
+  `:write` plus one per variant, nested in it (see [Nested operations](Fil.Telemetry.html#module-nested-operations)).
+  With `mode: :manual`, a write makes no variants, and `generate/1` makes them later.
 
   ## Deletes, copies and renames
 
@@ -457,10 +457,7 @@ defmodule Fil.Plugin.Thumbnails do
   defp validate!(opts) do
     opts = NimbleOptions.validate!(opts, @schema)
 
-    for {name, _variant} <- opts[:variants],
-        not (name
-             |> Atom.to_string()
-             |> String.match?(~r/^[a-z0-9_]+$/)) do
+    for {name, _variant} <- opts[:variants], not Regex.match?(~r/^[a-z0-9_]+$/, Atom.to_string(name)) do
       raise ArgumentError, "invalid variant name #{inspect(name)}, expected lowercase letters, digits and underscores"
     end
 

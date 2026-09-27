@@ -22,6 +22,7 @@ Fil.read(disk, "hello.txt")
 
   * `Fil.Plugin.ContentType`: sets the content type of a write from the file extension
   * `Fil.Plugin.URL`: builds URLs for any disk, served by `Fil.Plug` from your application
+  * `Fil.Plugin.Thumbnails`: writes resized copies of images next to them, with the optional Vix dependency
 
 ## The callback
 
@@ -89,7 +90,8 @@ def attach(disk, opts \\ []), do: Fil.attach(disk, __MODULE__, {__MODULE__, :cal
 disk = Fil.disk(adapter: Fil.Adapter.Local, root: "priv/storage") |> MyApp.Log.attach(level: :info)
 ```
 
-`Fil.Plugin.ContentType` is a complete example of a plugin module.
+`Fil.Plugin.ContentType` is a complete example of a plugin module. `Fil.Plugin.Thumbnails` is a larger one, which
+needs all of the content and writes files of its own (see [Writing other files](#writing-other-files)).
 
 To log or measure the operations of every disk, attach a handler to the events in `Fil.Telemetry` instead of a
 plugin to each disk. `Fil.Telemetry.attach_default_logger/1` logs them. A plugin that emits events of its own uses a
@@ -259,3 +261,37 @@ A `Fil.cp/3` or `Fil.rename/3` within one disk is a single `:cp` or `:rename` op
 `op.dest`. Across two disks, `Fil` streams from the source disk and writes the stream to the destination disk (and
 deletes the source after a rename), so each disk's plugins see ordinary reads, writes and deletes. In
 `Fil.Telemetry`, those operations are nested in a `:cp` or `:rename` event.
+
+## Writing other files
+
+A plugin can call `Fil` itself, to write, delete or copy files of its own along with the one the operation is about.
+`Fil.Plugin.Thumbnails` writes resized copies of an image, and deletes, copies and renames them with it.
+
+Those calls go to `op.disk`, so they run through all of the disk's plugins again, including the one that makes them.
+The plugin recognises its own files and passes their operations on, or it calls itself forever. This one keeps a
+metadata file next to each file under `meta/`, and deletes it with the file:
+
+```elixir
+def call(%Fil.Op{path: "meta/" <> _path} = op, next, _opts), do: next.(op)
+
+def call(%Fil.Op{name: :rm, path: path} = op, next, _opts) do
+  op = next.(op)
+
+  with {:ok, _ref} <- op.result,
+       {:error, error} <- Fil.rm(op.disk, "meta/" <> path) do
+    Fil.Op.put_result(op, {:error, error})
+  else
+    _deleted -> op
+  end
+end
+
+def call(op, next, _opts), do: next.(op)
+```
+
+It takes the path from the op before `next`, because a plugin attached after it may rewrite `op.path`, and the op
+that `next` returns has the rewritten one. For the same reason, attach such a plugin before plugins that rewrite paths
+or change content (compression, encryption), so it sees the paths and the content the caller passed. Its own calls
+still go through those plugins.
+
+When the plugin's own call fails after the operation succeeded, it returns that error, with the path of its own file.
+In `Fil.Telemetry`, its calls are operations of their own, nested in the caller's.
