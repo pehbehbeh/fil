@@ -129,6 +129,42 @@ defmodule FilTest do
       assert Fil.read(cached, "a.txt") == {:ok, ["cac", "hed"]}
     end
 
+    test "an error of the destination isn't reported as one of the source", %{disk: disk} do
+      other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+
+      rejecting =
+        Fil.attach(other, :reject, fn op, next, _opts ->
+          op
+          |> Fil.Op.update_content(chunk: fn _chunk -> raise %Fil.InvalidRequestError{reason: :rejected} end)
+          |> next.()
+        end)
+
+      source = Fil.stream!(disk, "a.txt")
+
+      assert {:error, %Fil.InvalidRequestError{op: :write, path: "b.txt", reason: :rejected} = error} =
+               Fil.write(rejecting, "b.txt", source)
+
+      assert error.disk == rejecting
+
+      # The same as any other error of the destination of a copy: the operation is the copy, the path the destination.
+      assert {:error, %Fil.InvalidRequestError{op: :cp, path: "b.txt", reason: :rejected} = error} =
+               Fil.cp(disk, "a.txt", Fil.ref(rejecting, "b.txt"))
+
+      assert error.disk == rejecting
+      refute Fil.exists?(other, "b.txt")
+    end
+
+    test "a write returns an error its source stream raises", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+      source = Fil.stream!(disk, "a.txt")
+      {:ok, _} = Fil.rm(disk, "a.txt")
+
+      assert {:error, %Fil.NotFoundError{op: :read, path: "a.txt"} = error} = Fil.write(disk, "b.txt", source)
+      assert error.disk == disk
+      refute Fil.exists?(disk, "b.txt")
+    end
+
     test "a copy across disks returns an error the source raises while it's streamed", %{disk: disk} do
       other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
       {:ok, _} = Fil.write(disk, "a.txt", "content")

@@ -472,8 +472,9 @@ defmodule Fil do
   Writes a file, creating missing parent directories.
 
   `content` is iodata, or a stream of it (see `t:content/0`). A stream is written as it's read, without holding the
-  whole content in memory, and a file is only there once the stream has ended: if the stream raises, the error
-  propagates and nothing is written. Pass the size with `:size` if you know it, so S3 can stream too.
+  whole content in memory, and a file is only there once the stream has ended. If reading the stream raises, nothing
+  is written: one of `Fil`'s errors (from a stream of `stream/3`, say) comes back as `{:error, error}`, and any other
+  exception propagates. Pass the size with `:size` if you know it, so S3 can stream too.
 
   ## Options
 
@@ -1059,12 +1060,9 @@ defmodule Fil do
   defp name_op({:error, %{op: _} = error}, name), do: {:error, %{error | op: name}}
   defp name_op(result, _name), do: result
 
-  # An error the source raises while it's streamed is still an error of the copy, so it's returned like one. It's the
-  # source's when it has the source's context, which `Fil.Op` fills in while the stream is read.
+  # An error the source raises while it's streamed comes back from the write with the source's context.
   defp cross_disk(:cp, src, dest, opts) do
     with {:ok, content} <- stream(src), do: write(dest, content, opts)
-  rescue
-    error -> source_error(error, src, __STACKTRACE__)
   end
 
   defp cross_disk(:rename, src, dest, opts) do
@@ -1073,9 +1071,6 @@ defmodule Fil do
       {:ok, dest_ref}
     end
   end
-
-  defp source_error(%{op: :read, disk: disk} = error, %Ref{disk: disk}, _stacktrace), do: {:error, error}
-  defp source_error(error, _src, stacktrace), do: reraise(error, stacktrace)
 
   defp resolve(%Ref{} = ref, name) do
     with {:error, error} <- Ref.normalize(ref), do: {:error, %{error | op: name}}

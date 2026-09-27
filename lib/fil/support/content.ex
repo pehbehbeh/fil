@@ -78,19 +78,38 @@ defmodule Fil.Support.Content do
   end
 
   @doc """
-  Fills in the context of `Fil`'s errors raised while `stream` is enumerated, the same as for errors that are returned.
+  Fills in the context of `Fil`'s errors that `stream` raises while it's enumerated, the same as for errors that are
+  returned. What the consumer's reducer raises (a write that reads the stream, and its plugins) passes through
+  unchanged, so an error of the destination isn't reported as one of the source.
   """
   @spec put_context(Enumerable.t(), keyword()) :: Enumerable.t()
   def put_context(stream, context) do
-    fn acc, fun -> reduce_with_context(&Enumerable.reduce(stream, &1, fun), acc, context) end
+    fn acc, fun ->
+      ref = make_ref()
+      reduce_with_context(&Enumerable.reduce(stream, &1, consumer(fun, ref)), acc, context, ref)
+    end
   end
 
-  defp reduce_with_context(continuation, acc, context) do
+  # The consumer's exceptions travel through the stream as a throw tagged with `ref`, and are raised again as they were
+  # once they're out of it.
+  defp consumer(fun, ref) do
+    fn element, acc ->
+      try do
+        fun.(element, acc)
+      catch
+        kind, reason -> throw({ref, kind, reason, __STACKTRACE__})
+      end
+    end
+  end
+
+  defp reduce_with_context(continuation, acc, context, ref) do
     case continuation.(acc) do
-      {:suspended, acc, continuation} -> {:suspended, acc, &reduce_with_context(continuation, &1, context)}
+      {:suspended, acc, continuation} -> {:suspended, acc, &reduce_with_context(continuation, &1, context, ref)}
       result -> result
     end
   rescue
     error -> reraise Fil.Support.Error.put_context(error, context), __STACKTRACE__
+  catch
+    :throw, {^ref, kind, reason, stacktrace} -> :erlang.raise(kind, reason, stacktrace)
   end
 end

@@ -324,10 +324,21 @@ defmodule Fil.Op do
       end)
 
     caller
-    |> chain.()
-    |> Map.fetch!(:result)
+    |> run_chain(chain)
     |> put_stream_context(caller)
   end
+
+  # A write reads its content during the chain, and a `Fil` error raised meanwhile (by a stream from `Fil.stream/3`, or
+  # by a plugin's transform) is the write's result. An error from a source stream keeps the source's context, one
+  # without context gets the write's. Anything else propagates.
+  defp run_chain(%__MODULE__{name: :write} = caller, chain) do
+    chain.(caller).result
+  rescue
+    error ->
+      with {:error, error} <- transform_error(error, __STACKTRACE__), do: {:error, put_context(error, caller)}
+  end
+
+  defp run_chain(caller, chain), do: chain.(caller).result
 
   # Errors a plugin's transform raises while the caller reads a stream get the caller's context too, the same as the
   # adapter's (see `to_result/3`).

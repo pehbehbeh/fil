@@ -146,7 +146,8 @@ own errors. A callback that returns something other than a `Fil.Op`, leaves the 
 A content transform can fail with one of `Fil`'s errors too, such as `Fil.ChecksumMismatchError` from a check that
 finds the content tampered with. On a read of whole content, a transform passed to `Fil.Op.update_result/2` that
 raises one turns the read into `{:error, error}`, with the operation, the path and the disk filled in. On a stream, the
-error is raised to whoever reads it (see [Streams](#streams)). Any other exception propagates as it is.
+error is raised to whoever reads it (see [Streams](#streams)). On a write, one raised while the content is read (by a
+transform, or by a stream from `Fil.stream/3`) is the write's result. Any other exception propagates as it is.
 
 ## Content
 
