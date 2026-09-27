@@ -281,7 +281,8 @@ def call(%Fil.Op{name: :rm, path: path} = op, next, _opts) do
        {:error, error} <- Fil.rm(op.disk, "meta/" <> path) do
     Fil.Op.put_result(op, {:error, error})
   else
-    _deleted -> op
+    # The metadata file is deleted, or the operation itself failed.
+    _other -> op
   end
 end
 
