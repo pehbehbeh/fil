@@ -174,8 +174,9 @@ defmodule Fil.Adapter.Local do
   # this write created, so the disk is left as it was.
   defp write_file(state, path, content, opts) do
     with {:ok, full} <- full_path(state, path),
-         {:ok, created} <- make_parents(full) do
-      write_into(full, created, content, opts)
+         {:ok, created} <- make_parents(full),
+         {:ok, tmp, io, created} <- open_tmp(full, created) do
+      write_into(full, {tmp, io}, created, content, opts)
     else
       {:error, reason, created} ->
         remove_dirs(created)
@@ -186,12 +187,35 @@ defmodule Fil.Adapter.Local do
     end
   end
 
-  defp write_into(full, created, content, opts) do
+  # Another write that created a directory this one found, and then failed, removes it again. If that happens before
+  # the temporary file is opened, the directories are created once more, and then belong to this write. The open fails
+  # with `:enoent` then, or with `:einval` on macOS when the directory is removed during the open.
+  defp open_tmp(full, created) do
     tmp = tmp_path(full)
 
+    case open_exclusive(tmp) do
+      {:ok, io} -> {:ok, tmp, io, created}
+      {:error, reason} when reason in [:enoent, :einval] -> reopen_tmp(full, tmp, created)
+      {:error, reason} -> {:error, reason, created}
+    end
+  end
+
+  defp reopen_tmp(full, tmp, created) do
+    with {:ok, recreated} <- make_parents(full),
+         {:ok, io} <- open_exclusive(tmp) do
+      {:ok, tmp, io, created ++ recreated}
+    else
+      {:error, reason, recreated} -> {:error, reason, created ++ recreated}
+      {:error, reason} -> {:error, reason, created}
+    end
+  end
+
+  defp open_exclusive(tmp), do: :file.open(tmp, [:write, :exclusive, :raw, :binary])
+
+  defp write_into(full, {tmp, io}, created, content, opts) do
     result =
       try do
-        place(tmp, full, content, opts)
+        place(tmp, io, full, content, opts)
       catch
         kind, reason ->
           discard(tmp, created)
@@ -202,8 +226,8 @@ defmodule Fil.Adapter.Local do
     result
   end
 
-  defp place(tmp, full, content, opts) do
-    with :ok <- write_tmp(tmp, content) do
+  defp place(tmp, io, full, content, opts) do
+    with :ok <- write_tmp(io, content) do
       case Keyword.get(opts, :if_exists, :overwrite) do
         :overwrite -> File.rename(tmp, full)
         :error -> create(tmp, full)
@@ -309,8 +333,19 @@ defmodule Fil.Adapter.Local do
   defp make_dir(dir, {:ok, created}) do
     case File.mkdir(dir) do
       :ok -> {:cont, {:ok, [dir | created]}}
-      {:error, :eexist} -> if File.dir?(dir), do: {:cont, {:ok, created}}, else: {:halt, {:error, :enotdir, created}}
+      {:error, :eexist} -> existing_dir(dir, created, :retry)
       {:error, reason} -> {:halt, {:error, reason, created}}
+    end
+  end
+
+  # A parent that's a file is `:enotdir`. A directory that another write removed between the `mkdir` and this check is
+  # created again, once.
+  defp existing_dir(dir, created, retry) do
+    cond do
+      File.dir?(dir) -> {:cont, {:ok, created}}
+      File.exists?(dir) or retry == :no_retry -> {:halt, {:error, :enotdir, created}}
+      File.mkdir(dir) == :ok -> {:cont, {:ok, [dir | created]}}
+      true -> existing_dir(dir, created, :no_retry)
     end
   end
 
@@ -352,22 +387,20 @@ defmodule Fil.Adapter.Local do
   ## Writing
   ## ------------------------------------------------------------------
 
-  defp write_tmp(tmp, content) do
-    with {:ok, io} <- :file.open(tmp, [:write, :exclusive, :raw, :binary]) do
-      chunks = if is_binary(content) or is_list(content), do: [content], else: content
+  defp write_tmp(io, content) do
+    chunks = if is_binary(content) or is_list(content), do: [content], else: content
 
-      result =
-        try do
-          write_chunks(io, chunks)
-        catch
-          kind, reason ->
-            _ = :file.close(io)
-            :erlang.raise(kind, reason, __STACKTRACE__)
-        end
+    result =
+      try do
+        write_chunks(io, chunks)
+      catch
+        kind, reason ->
+          _ = :file.close(io)
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
 
-      closed = :file.close(io)
-      if result == :ok, do: closed, else: result
-    end
+    closed = :file.close(io)
+    if result == :ok, do: closed, else: result
   end
 
   defp write_chunks(io, chunks) do
