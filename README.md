@@ -1,6 +1,6 @@
 # Fil
 
-[![License](https://img.shields.io/hexpm/l/fil.svg)](https://github.com/pehbehbeh/fil/blob/develop/LICENSE)
+[![License](https://img.shields.io/hexpm/l/fil.svg)](https://github.com/pehbehbeh/fil/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/fil.svg)](https://hex.pm/packages/fil)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://fil.hexdocs.pm)
 

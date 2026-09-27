@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+#
+# Releases Fil from the current branch: bumps the version, rolls the changelog, commits, tags, publishes to Hex, reopens
+# the changelog, pushes and creates the GitHub release. See "Releasing" in AGENTS.md.
+#
+#   bin/release [VERSION]
+#
+# Everything is local until `mix hex.publish`, which asks for its own confirmation, and nothing is pushed before that
+# succeeded. When a step fails, the script prints how to undo the local changes.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+die() { printf 'release: %s\n' "$*" >&2; exit 1; }
+
+confirm() {
+  local answer
+  read -r -p "$1 [y/N] " answer
+  [ "$answer" = "y" ] || [ "$answer" = "Y" ]
+}
+
+# Rewrites FILE with an awk program (macOS sed has no portable -i).
+rewrite() {
+  local file=$1
+  shift
+  awk "$@" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+unreleased() { awk '$0 == "## Unreleased" { s = 1; next } /^## / { s = 0 } s' CHANGELOG.md; }
+
+for tool in git gh mix curl; do
+  command -v "$tool" > /dev/null || die "$tool is not installed"
+done
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+case "$branch" in
+  main | v[0-9]*) ;;
+  *) die "release from main or a v0.N maintenance branch, not from $branch" ;;
+esac
+
+say "Checking $branch"
+[ -z "$(git status --porcelain)" ] || die "the working tree isn't clean"
+git fetch --quiet origin
+[ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$branch")" ] || die "$branch isn't in sync with origin/$branch"
+
+sha=$(git rev-parse HEAD)
+ci=$(gh run list --commit "$sha" --workflow CI --limit 1 --json status,conclusion \
+  --jq '.[0] // empty | "\(.status) \(.conclusion)"')
+case "$ci" in
+  "completed success") echo "CI passed on $sha" ;;
+  "") confirm "CI hasn't run on $sha. Continue without it?" || exit 1 ;;
+  *) die "the CI run on $sha is $ci" ;;
+esac
+
+say "Unreleased changes"
+unreleased | grep -q '[^[:space:]]' || die "CHANGELOG.md has no entries under Unreleased"
+unreleased
+
+version=${1:-}
+[ -n "$version" ] || read -r -p "Version to release (without the v): " version
+echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || die "'$version' isn't a version like 0.2.0"
+tag="v$version"
+
+if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+  die "$tag is already tagged on origin"
+fi
+status=$(curl -s -o /dev/null -w '%{http_code}' "https://hex.pm/api/packages/fil/releases/$version")
+[ "$status" = 404 ] || die "hex.pm answered $status for $version, expected 404"
+grep -q '^  @version "' mix.exs || die "mix.exs has no @version line"
+
+echo
+confirm "Release $tag from $branch?" || exit 1
+
+undo_help() {
+  cat >&2 <<EOF
+
+release: failed. Nothing was pushed. To undo the local changes:
+
+  git reset --hard origin/$branch
+  git tag -d $tag
+
+If 'mix hex.publish' already succeeded, keep them and finish by hand instead:
+
+  git push origin $branch $tag
+  gh release create $tag --title $tag --notes "<the changelog section>"
+EOF
+}
+trap undo_help ERR
+
+say "Bumping to $version"
+rewrite mix.exs -v v="$version" '/^  @version "/ { $0 = "  @version \"" v "\"" } { print }'
+grep -q "^  @version \"$version\"\$" mix.exs || die "couldn't set @version in mix.exs"
+rewrite CHANGELOG.md -v h="## $tag ($(date -u +%F))" '$0 == "## Unreleased" { $0 = h } { print }'
+git commit --quiet -am "Release $tag"
+git tag -a "$tag" -m "Release $tag"
+
+say "Publishing $tag to Hex"
+mix hex.publish
+
+say "Reopening the changelog"
+rewrite CHANGELOG.md '/^## / && !done { print "## Unreleased"; print ""; done = 1 } { print }'
+git commit --quiet -am "Reopen the changelog after $tag"
+
+say "Pushing"
+git push --quiet origin "$branch" "$tag"
+
+say "Creating the GitHub release"
+notes=$(mktemp)
+git show "$tag:CHANGELOG.md" | awk -v h="## $tag" 'index($0, h " ") == 1 { s = 1; next } /^## / { s = 0 } s' > "$notes"
+gh release create "$tag" --title "$tag" --notes-file "$notes"
+rm -f "$notes"
+
+trap - ERR
+say "Released $tag"
+echo "https://hex.pm/packages/fil/$version"
+echo "https://fil.hexdocs.pm/$version"

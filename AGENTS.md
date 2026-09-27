@@ -71,6 +71,7 @@ docker compose up -d        # SeaweedFS (S3, verifies SigV4)
 mix test.integration        # runs the @tag :integration suites against the compose.yml services
 mix format                  # 120 columns, Quokka plugin
 mix credo                   # strict, every check enabled (see .credo.exs)
+bin/release 0.2.0           # releases main to Hex (see Releasing)
 ```
 
 ## CI
@@ -78,35 +79,31 @@ mix credo                   # strict, every check enabled (see .credo.exs)
 `.github/workflows/ci.yml` checks formatting, `mix credo` and `mix docs --warnings-as-errors` on the latest Elixir, and
 runs `mix test` on every supported Elixir minor version, each with the newest OTP it supports (plus OTP 26 on Elixir
 1.16). The integration suite runs once, on the latest Elixir, against SeaweedFS started from `compose.yml`. When
-`elixir:` in `mix.exs` changes, update the matrix. The `release` job (below) runs after them on `main` and on
-maintenance branches.
+`elixir:` in `mix.exs` changes, update the matrix.
 
 ## Releasing
 
-Nobody publishes by hand. `.github/workflows/release.yml` does the whole release when started with a version, from the
-Actions tab or with `gh workflow run release.yml -f version=0.2.0`. It runs on the branch it's started from (`develop`
-by default) and, in order: runs CI, bumps `@version` in `mix.exs`, renames `## Unreleased` in `CHANGELOG.md` to
-`## v0.2.0 (date)` and commits "Release v0.2.0", merges into `main`, publishes package and docs with `mix hex.publish`,
-pushes the `v0.2.0` tag, creates the GitHub release from the changelog section, merges `main` back into `develop` and
-puts a fresh `## Unreleased` heading on top of the changelog there. Every step skips what's already done, so a failed
-run is rerun with the same version. It refuses a changelog without entries under Unreleased. Pushes made by the workflow
-don't trigger CI on `main` and `develop`, and don't need to: the workflow ran CI first.
+Development is trunk-based: `main` is the only long-lived branch, a release is a commit plus a tag on it, and `v0.N`
+maintenance branches exist only once an older line needs a backport. `bin/release` does a release from your machine:
 
-One-time setup: create a key on the hex.pm dashboard (Keys page, permission "API write") and store it as the
-`HEX_API_KEY` repository secret. `mix hex.user key generate` no longer exists in Hex 2.5; 2FA applies to your own
-sessions, API keys publish without a code.
+```sh
+bin/release 0.2.0
+```
+
+It checks that `main` is clean, in sync with `origin` and has a green CI run, refuses a version that is tagged or on
+Hex, and a changelog without entries under Unreleased. Then it bumps `@version` in `mix.exs`, renames `## Unreleased`
+in `CHANGELOG.md` to `## v0.2.0 (date)`, commits "Release v0.2.0", tags `v0.2.0`, runs `mix hex.publish` (package and
+docs, with your own Hex login and 2FA), commits a fresh `## Unreleased` heading, pushes branch and tag and creates the
+GitHub release from the changelog section. Nothing is pushed before Hex accepted the package, and on failure the script
+prints how to undo the local commits. Pushing to a protected `main` needs your account on the ruleset's bypass list.
 
 - **Changelog:** `CHANGELOG.md`, newest first, one line per user-visible change, added in the same commit as the change
   under `## Unreleased`. Released sections are headed `## v0.2.0 (2026-10-01)`. The file is in the Hex package and a
   Guides tab on HexDocs, so each published version carries its changelog.
-- **Release:** `gh workflow run release.yml -f version=0.2.0`.
-- **Hotfix:** branch `hotfix/0.2.1` from `main`, fix it with a line under `## Unreleased` (add the heading, `main` has
-  none), push, then `gh workflow run release.yml --ref hotfix/0.2.1 -f version=0.2.1`. The workflow merges the branch
-  into `main` and `main` back into `develop` like any release; delete the branch afterwards.
+- **Hotfix:** a normal fix on `main`, then `bin/release 0.2.1`.
 - **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix with its changelog line under a new
-  `## Unreleased`, push, then `gh workflow run release.yml --ref v0.1 -f version=0.1.1`. A `v0.N` branch is released
-  onto itself, keeps its own changelog and is never merged anywhere; `main` may note the backport in the current
-  section.
+  `## Unreleased`, push the branch, then `bin/release 0.1.1` on it. A `v0.N` branch keeps its own changelog and is never
+  merged anywhere; `main` may note the backport in the current section.
 - **Bad release:** `mix hex.retire fil 0.2.0 security --message "..."` warns users on `mix deps.get`. A version can't be
   replaced, so the fix is the next patch version.
 

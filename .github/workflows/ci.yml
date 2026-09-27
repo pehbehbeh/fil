@@ -2,11 +2,10 @@ name: CI
 
 on:
   push:
-    # `v[0-9]*` are maintenance branches for backports (see "Releasing" in AGENTS.md).
-    branches: [main, develop, "v[0-9]*"]
+    # `v[0-9]*` are maintenance branches for backports. bin/release checks the CI run of the commit it releases, so it
+    # needs CI on every branch it releases from (see "Releasing" in AGENTS.md).
+    branches: [main, "v[0-9]*"]
   pull_request:
-  # release.yml runs the whole workflow before it publishes.
-  workflow_call:
 
 permissions:
   contents: read
