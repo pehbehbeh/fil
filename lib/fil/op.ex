@@ -3,7 +3,8 @@ defmodule Fil.Op do
   One call to a `Fil` function, as plugins see it.
 
   Every operation builds a `%Fil.Op{}` and passes it through the disk's plugins to the adapter. See the
-  [Plugins guide](plugins.md) for how to write a plugin.
+  [Plugins guide](plugins.md) for how to write a plugin. Each run emits the events in `Fil.Telemetry`, and their
+  duration includes the plugins.
 
     * `:disk`: the `Fil.Disk` the operation runs on
     * `:name`: the operation, `:read`, `:write`, `:stat`, `:ls`, `:rm`, `:rm_rf`, `:cp`, `:rename`, `:url` or
@@ -23,6 +24,7 @@ defmodule Fil.Op do
   alias Fil.Ref
   alias Fil.Support.Content
   alias Fil.Support.Sized
+  alias Fil.Support.Telemetry
 
   # Tags a `Fil` error raised while a write's content is read, on its way to `run_chain/2`.
   @content_error {__MODULE__, :content_error}
@@ -328,8 +330,12 @@ defmodule Fil.Op do
   #
   # Errors get their context from `caller`, the op as the caller made it, not from the op a plugin may have rewritten:
   # `error.path` is the path the caller passed, so `Fil.ref(error.disk, error.path)` is a ref to the same file.
+  #
+  # Every run is an `[:fil, :op]` span (`Fil.Telemetry`), plugins included.
   @spec run(t()) :: {:ok, term()} | {:error, Exception.t()}
-  def run(%__MODULE__{disk: %Disk{plugins: plugins}} = caller) do
+  def run(%__MODULE__{} = caller), do: Telemetry.span(caller, &run_plugins/2)
+
+  defp run_plugins(%__MODULE__{disk: %Disk{plugins: plugins}} = caller, telemetry) do
     chain =
       plugins
       |> Enum.reverse()
@@ -343,7 +349,7 @@ defmodule Fil.Op do
 
     caller
     |> run_chain(chain)
-    |> put_stream_context(caller)
+    |> put_stream_context(caller, telemetry)
   end
 
   # A `Fil` error raised while a write's content is read (by a stream from `Fil.stream/3`, or by a plugin's transform)
@@ -359,12 +365,14 @@ defmodule Fil.Op do
   defp run_chain(caller, chain), do: chain.(caller).result
 
   # Errors a plugin's transform raises while the caller reads a stream get the caller's context too, the same as the
-  # adapter's (see `to_result/3`).
-  defp put_stream_context({:ok, content}, %__MODULE__{name: :read, streaming: true} = caller) do
-    if Content.iodata?(content), do: {:ok, content}, else: {:ok, Content.put_context(content, context(caller))}
+  # adapter's (see `to_result/3`), and reading the stream emits the stream events. Iodata a plugin answered with becomes
+  # a stream first, so every stream emits them, whoever answered.
+  defp put_stream_context({:ok, content}, %__MODULE__{name: :read, streaming: true} = caller, telemetry) do
+    content = if Content.iodata?(content), do: Content.chunks(content), else: content
+    {:ok, Content.put_context(content, context(caller), telemetry)}
   end
 
-  defp put_stream_context(result, _caller), do: result
+  defp put_stream_context(result, _caller, _telemetry), do: result
 
   defp context(%__MODULE__{name: name, path: path, disk: disk}), do: [op: name, path: path, disk: disk]
 

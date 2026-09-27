@@ -2,6 +2,7 @@ defmodule Fil.Support.Content do
   @moduledoc false
 
   alias Fil.Support.Sized
+  alias Fil.Support.Telemetry
 
   # Content is iodata or a stream (any other enumerable of iodata). These helpers turn a stream into what
   # adapters, plugins and callers get: non-empty binaries, in order.
@@ -85,37 +86,63 @@ defmodule Fil.Support.Content do
   Fills in the context of `Fil`'s errors that `stream` raises while it's enumerated, the same as for errors that are
   returned. What the consumer's reducer raises (a write that reads the stream, and its plugins) passes through
   unchanged, so an error of the destination isn't reported as one of the source.
-  """
-  @spec put_context(Enumerable.t(), keyword()) :: Enumerable.t()
-  def put_context(%Sized{stream: stream} = sized, context), do: %{sized | stream: put_context(stream, context)}
 
-  def put_context(stream, context) do
+  With `telemetry`, the metadata of the op, each enumeration of the stream is a `[:fil, :stream]` span
+  (`Fil.Telemetry`). The stream's own errors end it with `:exception`, the consumer's with a `:stop` that's `halted`.
+  """
+  @spec put_context(Enumerable.t(), keyword(), map() | nil) :: Enumerable.t()
+  def put_context(stream, context, telemetry \\ nil)
+
+  def put_context(%Sized{stream: stream} = sized, context, telemetry) do
+    %{sized | stream: put_context(stream, context, telemetry)}
+  end
+
+  def put_context(stream, context, telemetry) do
     fn acc, fun ->
       ref = make_ref()
-      reduce_with_context(&Enumerable.reduce(stream, &1, consumer(fun, ref)), acc, context, ref)
+      span = Telemetry.stream_start(telemetry)
+      reduce_with_context(&Enumerable.reduce(stream, &1, consumer(fun, ref)), with_bytes(acc, 0), context, ref, span)
     end
   end
 
-  # The consumer's exceptions travel through the stream as a throw tagged with `ref`, and are raised again as they were
-  # once they're out of it.
+  # The accumulator counts the bytes the consumer took, and notes whether it asked to halt: a source may end with
+  # `:halted` on its own (`Stream.flat_map/2` does). The consumer's exceptions travel through the stream as a throw
+  # tagged with `ref`, with the count, and are raised again as they were once they're out of it.
   defp consumer(fun, ref) do
-    fn element, acc ->
+    fn element, {acc, bytes, _halted} ->
       try do
         fun.(element, acc)
       catch
-        kind, reason -> throw({ref, kind, reason, __STACKTRACE__})
+        kind, reason -> throw({ref, kind, reason, __STACKTRACE__, bytes})
+      else
+        {command, acc} -> {command, {acc, bytes + IO.iodata_length(element), command == :halt}}
       end
     end
   end
 
-  defp reduce_with_context(continuation, acc, context, ref) do
+  defp with_bytes({command, acc}, bytes), do: {command, {acc, bytes, command == :halt}}
+
+  defp reduce_with_context(continuation, acc, context, ref, span) do
     case continuation.(acc) do
-      {:suspended, acc, continuation} -> {:suspended, acc, &reduce_with_context(continuation, &1, context, ref)}
-      result -> result
+      {:suspended, {acc, bytes, _halted}, continuation} ->
+        {:suspended, acc, &reduce_with_context(continuation, with_bytes(&1, bytes), context, ref, span)}
+
+      {result, {acc, bytes, halted}} when result in [:done, :halted] ->
+        Telemetry.stream_stop(span, bytes, halted)
+        {result, acc}
     end
   rescue
-    error -> reraise Fil.Support.Error.put_context(error, context), __STACKTRACE__
+    error ->
+      error = Fil.Support.Error.put_context(error, context)
+      Telemetry.stream_exception(span, :error, error, __STACKTRACE__)
+      reraise error, __STACKTRACE__
   catch
-    :throw, {^ref, kind, reason, stacktrace} -> :erlang.raise(kind, reason, stacktrace)
+    :throw, {^ref, kind, reason, stacktrace, bytes} ->
+      Telemetry.stream_stop(span, bytes, true)
+      :erlang.raise(kind, reason, stacktrace)
+
+    kind, reason ->
+      Telemetry.stream_exception(span, kind, reason, __STACKTRACE__)
+      :erlang.raise(kind, reason, __STACKTRACE__)
   end
 end

@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Telemetry events for every operation on every disk, `[:fil, :op, :start]`, `[:fil, :op, :stop]` and
+  `[:fil, :op, :exception]`, with the operation, the disk, the path, the error and the bytes read or written. Each read
+  of a stream from `Fil.stream/3` is a `[:fil, :stream, ...]` span of its own, with the bytes read. See
+  `Fil.Telemetry`.
+  ([#N](https://github.com/pehbehbeh/fil/pull/N))
 - S3 uploads a stream without a size, and content over 5 GiB, in parts (a multipart upload), with one part in memory
   at a time: 8 MiB by default, set with the new `:part_size` option. A stream that fits in one part is still one
   PutObject. A part that fails because the storage is unavailable is sent once more, a second later. A failed upload

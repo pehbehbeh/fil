@@ -315,7 +315,7 @@ defmodule Fil do
   def stream(ref, opts) when is_list(opts) do
     opts = validate!(opts, @read_schema)
 
-    # A plugin may answer with iodata, and the caller still gets a stream.
+    # The chunks are binaries, even where a plugin's transform returns iodata.
     with {:ok, content} <- run(ref, :read, opts, streaming: true), do: {:ok, Content.chunks(content)}
   end
 

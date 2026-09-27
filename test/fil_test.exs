@@ -125,7 +125,8 @@ defmodule FilTest do
           op, next, _opts -> next.(op)
         end)
 
-      assert Fil.stream(cached, "a.txt") == {:ok, ["cached"]}
+      assert {:ok, stream} = Fil.stream(cached, "a.txt")
+      assert Enum.to_list(stream) == ["cached"]
       assert Fil.read(cached, "a.txt") == {:ok, ["cac", "hed"]}
     end
 
