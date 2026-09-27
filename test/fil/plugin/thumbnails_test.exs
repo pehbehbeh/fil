@@ -277,10 +277,27 @@ defmodule Fil.Plugin.ThumbnailsTest do
       refute Fil.exists?(disk, "thumbnails/small/cats/tom.bin")
     end
 
-    test "a missing variant is fine", %{disk: disk} do
+    test "cp and rename delete the variants the destination had", %{disk: disk} do
+      Fil.write!(disk, "cats/felix.jpg", image(400, 200, ".jpg"))
+      Fil.write!(disk, "cats/rex.jpg", image(400, 200, ".jpg"))
+
+      Fil.cp!(disk, "cats/tom.png", "cats/felix.jpg")
+      Fil.rename!(disk, "cats/tom.png", "cats/rex.jpg")
+
+      refute Fil.exists?(disk, "thumbnails/small/cats/felix.jpg")
+      refute Fil.exists?(disk, "thumbnails/small/cats/rex.jpg")
+    end
+
+    test "an image without variants takes the destination's along", %{disk: disk} do
+      Fil.write!(disk, "cats/felix.png", image(400, 200))
+      Fil.write!(disk, "cats/rex.png", image(400, 200))
       Fil.rm!(disk, "thumbnails/small/cats/tom.png")
 
-      assert {:ok, _moved} = Fil.rename(disk, "cats/tom.png", "cats/moved.png")
+      assert {:ok, _felix} = Fil.cp(disk, "cats/tom.png", "cats/felix.png")
+      assert {:ok, _rex} = Fil.rename(disk, "cats/tom.png", "cats/rex.png")
+
+      refute Fil.exists?(disk, "thumbnails/small/cats/felix.png")
+      refute Fil.exists?(disk, "thumbnails/small/cats/rex.png")
     end
 
     test "across disks, the destination makes its own variants", %{disk: disk} do

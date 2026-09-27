@@ -124,7 +124,8 @@ defmodule Fil.Plugin.Thumbnails do
   when the prefix is in the deleted directory.
 
   A copy or a rename to another extension doesn't fit the variants any more: a rename deletes them, and a copy leaves
-  the source's alone. A missing variant is skipped, since an image written before the plugin was attached has none.
+  the source's alone. Either deletes the variants the destination had, since they belong to the file it replaced. The
+  same goes for a variant the source doesn't have (an image written before the plugin was attached has none).
 
   Across disks, `Fil` copies with a read and a write, so a disk with the plugin makes the variants of the copy itself,
   and a rename deletes the source's variants with the source.
@@ -276,7 +277,7 @@ defmodule Fil.Plugin.Thumbnails do
     opts = validate!(opts)
     op = next.(op)
 
-    if image?(path, opts), do: each_variant(op, variants(op.disk, path, opts), &Fil.rm/1), else: op
+    each_variant(op, variants(op.disk, path, opts), &Fil.rm/1)
   end
 
   def call(%Op{name: :rm_rf, path: path} = op, next, opts) do
@@ -293,9 +294,9 @@ defmodule Fil.Plugin.Thumbnails do
     op = next.(op)
 
     if follows?(path, dest, opts) do
-      each_variant(op, pairs(op.disk, path, dest, opts), &Fil.cp(&1.from, &1.to))
+      each_variant(op, pairs(op.disk, path, dest, opts), &transfer(&1, :cp))
     else
-      op
+      each_variant(op, variants(op.disk, dest, opts), &Fil.rm/1)
     end
   end
 
@@ -303,10 +304,11 @@ defmodule Fil.Plugin.Thumbnails do
     opts = validate!(opts)
     op = next.(op)
 
-    cond do
-      follows?(path, dest, opts) -> each_variant(op, pairs(op.disk, path, dest, opts), &Fil.rename(&1.from, &1.to))
-      image?(path, opts) -> each_variant(op, variants(op.disk, path, opts), &Fil.rm/1)
-      true -> op
+    if follows?(path, dest, opts) do
+      each_variant(op, pairs(op.disk, path, dest, opts), &transfer(&1, :rename))
+    else
+      stale = variants(op.disk, path, opts) ++ variants(op.disk, dest, opts)
+      each_variant(op, stale, &Fil.rm/1)
     end
   end
 
@@ -325,19 +327,22 @@ defmodule Fil.Plugin.Thumbnails do
 
   def normalize_prefix(other), do: {:error, "expected a string, got: #{inspect(other)}"}
 
-  # Runs `fun` on each item once the operation succeeded, and stops at the first error, which becomes the result. A
-  # missing variant is fine: an image written before the plugin was attached has none.
+  # Runs `fun` on each item once the operation succeeded, and stops at the first error, which becomes the result.
   defp each_variant(%Op{result: {:ok, _value}} = op, items, fun) do
     Enum.reduce_while(items, op, fn item, op ->
       case fun.(item) do
         {:ok, _value} -> {:cont, op}
-        {:error, %Fil.NotFoundError{}} -> {:cont, op}
         {:error, error} -> {:halt, Op.put_result(op, {:error, error})}
       end
     end)
   end
 
   defp each_variant(op, _items, _fun), do: op
+
+  # A variant the source doesn't have is deleted at the destination, where it would belong to the file copied over.
+  defp transfer(%{from: from, to: to}, name) do
+    with {:error, %Fil.NotFoundError{}} <- apply(Fil, name, [from, to]), do: Fil.rm(to)
+  end
 
   defp write_variant({_name, variant, data}) do
     content_type = MIME.from_path(variant.path)
@@ -377,15 +382,16 @@ defmodule Fil.Plugin.Thumbnails do
 
   defp variant_path(path, name, opts), do: Path.join([opts[:prefix], Atom.to_string(name), path])
 
+  # The variants of `path`, none if it isn't an image.
   defp variants(disk, path, opts) do
-    for {name, _variant} <- opts[:variants], do: variant_ref(disk, path, name, opts)
+    for {name, _variant} <- opts[:variants], image?(path, opts), do: variant_ref(disk, path, name, opts)
   end
 
   # What `rm_rf` deletes: the directory of each variant at `path`, which has no format's extension, and the variant
   # itself when `path` is an image.
   defp variant_trees(disk, path, opts) do
     directories = for {name, _variant} <- opts[:variants], do: Fil.ref(disk, variant_path(path, name, opts))
-    files = if image?(path, opts), do: variants(disk, path, opts), else: []
+    files = variants(disk, path, opts)
 
     Enum.uniq(directories ++ files)
   end
