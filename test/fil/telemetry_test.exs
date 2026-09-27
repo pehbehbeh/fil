@@ -280,6 +280,76 @@ defmodule Fil.TelemetryTest do
     end
   end
 
+  describe "paths that escape the disk root" do
+    test "are a failed operation", %{disk: disk} do
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.read(disk, "../escape.txt")
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.signed_url(disk, "../escape.txt")
+
+      assert [
+               {[:fil, :op, :start], _, %{op: :read, path: "../escape.txt"}},
+               {[:fil, :op, :stop], %{duration: _}, %{op: :read, error: read_error}},
+               {[:fil, :op, :start], _, %{op: :signed_url}},
+               {[:fil, :op, :stop], _, %{op: :signed_url, error: %{reason: :ebadpath}}}
+             ] = events()
+
+      assert %Fil.InvalidRequestError{op: :read, path: "../escape.txt", disk: ^disk} = read_error
+    end
+
+    test "a copy to one keeps the source's path and names the destination in the error", %{disk: disk} do
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.cp(disk, "a.txt", "../escape.txt")
+
+      assert [{_, %{op: :cp, path: "a.txt", dest: "../escape.txt", dest_disk: ^disk, error: error}}] = stops()
+      assert %Fil.InvalidRequestError{op: :cp, path: "../escape.txt"} = error
+    end
+  end
+
+  describe "copies and renames across disks" do
+    setup %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+      _ = events()
+      {:ok, other: Fil.disk(adapter: Memory, root: "other")}
+    end
+
+    test "are an operation with the read and the write nested in it", %{disk: disk, other: other} do
+      test = self()
+
+      other =
+        Fil.attach(other, :size, fn op, next, _opts ->
+          send(test, {:size, Op.get_option(op, :size)})
+          next.(op)
+        end)
+
+      assert {:ok, _} = Fil.cp(disk, "a.txt", Fil.ref(other, "b.txt"))
+      assert_received {:size, 7}
+
+      assert [
+               {[:fil, :op, :start], _, %{op: :cp, path: "a.txt", dest: "b.txt", dest_disk: ^other} = cp},
+               {[:fil, :op, :start], _, %{op: :read, disk: ^disk}},
+               {[:fil, :op, :stop], _, %{op: :read}},
+               {[:fil, :op, :start], _, %{op: :write, disk: ^other, path: "b.txt"}},
+               {[:fil, :stream, :start], _, %{op: :read}},
+               {[:fil, :stream, :stop], %{bytes: 7}, %{op: :read, halted: false}},
+               {[:fil, :op, :stop], %{bytes: 7}, %{op: :write}},
+               {[:fil, :op, :stop], cp_measurements, %{op: :cp, error: nil} = cp_stop}
+             ] = events()
+
+      assert cp_stop.telemetry_span_context == cp.telemetry_span_context
+      refute Map.has_key?(cp_measurements, :bytes)
+    end
+
+    test "a rename deletes the source inside its span", %{disk: disk, other: other} do
+      assert {:ok, _} = Fil.rename(disk, "a.txt", Fil.ref(other, "b.txt"))
+
+      assert [:read, :write, :rm, :rename] = Enum.map(stops(), fn {_measurements, metadata} -> metadata.op end)
+    end
+
+    test "an error names the call", %{disk: disk, other: other} do
+      assert {:error, %Fil.NotFoundError{}} = Fil.cp(disk, "nope.txt", Fil.ref(other, "b.txt"))
+
+      assert [{_, %{op: :read}}, {_, %{op: :cp, error: %Fil.NotFoundError{op: :cp, path: "nope.txt"}}}] = stops()
+    end
+  end
+
   describe "privacy" do
     test "neither content nor signed URLs are in the events", %{disk: disk} do
       disk = Fil.Plugin.URL.attach(disk, base_url: "http://localhost/storage", secret: "secret")

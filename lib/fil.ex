@@ -19,6 +19,7 @@ defmodule Fil do
   alias Fil.Support.Checksum
   alias Fil.Support.Content
   alias Fil.Support.Sized
+  alias Fil.Support.Telemetry
 
   @typedoc """
   An error from an adapter or from `Fil` itself. Each struct stands for what the caller can do about it, and means the
@@ -1050,17 +1051,32 @@ defmodule Fil do
     end
   end
 
-  defp transfer(src, dest, opts, name) do
-    with {:ok, src_ref} <- resolve(src, name),
-         {:ok, dest_ref} <- resolve_dest(dest, src_ref, name) do
+  defp transfer(%Ref{} = src, dest, opts, name) do
+    dest = dest_ref(dest, src)
+    rejection = {%Op{disk: src.disk, name: name, path: src.path, dest: dest.path}, %{dest_disk: dest.disk}}
+
+    with {:ok, src_ref} <- resolve(src, name, rejection),
+         {:ok, dest_ref} <- resolve(dest, name, rejection) do
       if src_ref.disk == dest_ref.disk do
         run(src_ref, name, opts, dest: dest_ref.path)
       else
-        name
-        |> cross_disk(src_ref, dest_ref, opts)
-        |> name_op(name)
+        across_disks(src_ref, dest_ref, opts, name)
       end
     end
+  end
+
+  defp transfer(other, _dest, _opts, _name), do: not_a_ref!(other)
+
+  # A copy across disks is an operation of its own for `Fil.Telemetry`, with the read, the write and the delete nested
+  # in it.
+  defp across_disks(src, dest, opts, name) do
+    op = %Op{disk: src.disk, name: name, path: src.path, dest: dest.path}
+
+    Telemetry.span(op, %{dest_disk: dest.disk}, fn _op, _metadata ->
+      name
+      |> cross_disk(src, dest, opts)
+      |> name_op(name)
+    end)
   end
 
   # A copy across disks runs as a read, a write and a delete, but the error reports the call the caller made.
@@ -1093,17 +1109,23 @@ defmodule Fil do
     %Fil.ConflictError{reason: :size_changed, op: :read, path: path, disk: disk}
   end
 
-  defp resolve(%Ref{} = ref, name) do
-    with {:error, error} <- Ref.normalize(ref), do: {:error, %{error | op: name}}
+  defp resolve(%Ref{} = ref, name), do: resolve(ref, name, {%Op{disk: ref.disk, name: name, path: ref.path}, %{}})
+  defp resolve(other, _name), do: not_a_ref!(other)
+
+  # A path that escapes the disk root never reaches `Fil.Op.run/1`, but it's still an operation that failed, so it emits
+  # the events of one, described by `rejection`: the op and extra metadata.
+  defp resolve(ref, name, {op, extra}) do
+    case Ref.normalize(ref) do
+      {:ok, ref} -> {:ok, ref}
+      {:error, error} -> Telemetry.span(op, extra, fn _op, _metadata -> {:error, %{error | op: name}} end)
+    end
   end
 
-  defp resolve(other, _name) do
-    raise ArgumentError,
-          "expected a %Fil.Ref{}, got: #{inspect(other)}"
-  end
+  defp dest_ref(path, %Ref{disk: disk}) when is_binary(path), do: Ref.new(disk, path)
+  defp dest_ref(%Ref{} = ref, _src), do: ref
+  defp dest_ref(other, _src), do: not_a_ref!(other)
 
-  defp resolve_dest(path, %Ref{disk: disk}, name) when is_binary(path), do: resolve(Ref.new(disk, path), name)
-  defp resolve_dest(ref, _src, name), do: resolve(ref, name)
+  defp not_a_ref!(other), do: raise(ArgumentError, "expected a %Fil.Ref{}, got: #{inspect(other)}")
 
   defp unwrap!({:ok, value}), do: value
   defp unwrap!({:error, error}), do: raise(error)

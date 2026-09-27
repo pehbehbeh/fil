@@ -41,10 +41,11 @@ defmodule Fil.Telemetry do
     * `:telemetry_span_context`: the same on a start and its stop or exception
 
   A call that returns `{:error, error}` ends with a `:stop` that has the error, and its bang variant raises only after
-  that. `Fil.exists?/1` on a missing file is a `:stat` that ends with a `Fil.NotFoundError`, so a counter of errors
-  counts it too. An `:exception` means the call raised: a plugin or an adapter with a bug, or content passed to
-  `Fil.write/4` that raised while it was read (`Fil.Plug` stops an upload that's too large or ends short this way).
-  Options that fail validation raise before any event.
+  that. A path that escapes the disk root is such an error, with a `:start` and a `:stop` of its own. `Fil.exists?/1`
+  on a missing file is a `:stat` that ends with a `Fil.NotFoundError`, so a counter of errors counts it too. An
+  `:exception` means the call raised: a plugin or an adapter with a bug, or content passed to `Fil.write/4` that raised
+  while it was read (`Fil.Plug` stops an upload that's too large or ends short this way). Options that fail validation
+  raise before any event.
 
   `:bytes` counts the caller's content, before plugins change it:
 
@@ -57,6 +58,14 @@ defmodule Fil.Telemetry do
 
   The metadata never has content, the result of the call (a signed URL is a credential), or the options of the call,
   which can hold file names and query parameters. The `%Fil.Op{}` isn't in it either, because it holds the content.
+
+  ## Nested operations
+
+  A copy or a rename across disks is a `:cp` or `:rename` span with the operations it runs nested inside: a streamed
+  `:read` of the source, a `:write` to the destination that reads the stream, and for a rename an `:rm` of the source.
+  A plugin that calls `Fil` nests its operations the same way. So a counter of all `[:fil, :op, :stop]` events counts
+  a copy across disks three times, and an error of its read twice: on the `:read` and on the `:cp`. Filter or tag by
+  `:op` where that matters.
 
   ## Stream events
 
