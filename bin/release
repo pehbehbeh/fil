@@ -28,7 +28,9 @@ rewrite() {
   awk "$@" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 }
 
-unreleased() { awk '$0 == "## Unreleased" { s = 1; next } /^## / { s = 0 } s' CHANGELOG.md; }
+# CHANGELOG.md follows Keep a Changelog 1.1.0: `## [Unreleased]`, `## [0.2.0] - 2026-10-01`, and link definitions
+# (`[unreleased]: …/compare/v0.1.0...HEAD`) at the end.
+unreleased() { awk '$0 == "## [Unreleased]" { s = 1; next } /^## |^\[/ { s = 0 } s' CHANGELOG.md; }
 
 for tool in git gh mix curl; do
   command -v "$tool" > /dev/null || die "$tool is not installed"
@@ -55,7 +57,7 @@ case "$ci" in
 esac
 
 say "Unreleased changes"
-unreleased | grep -q '[^[:space:]]' || die "CHANGELOG.md has no entries under Unreleased"
+unreleased | grep -q '^- ' || die "CHANGELOG.md has no entries under Unreleased"
 unreleased
 
 version=${1:-}
@@ -69,6 +71,10 @@ fi
 status=$(curl -s -o /dev/null -w '%{http_code}' "https://hex.pm/api/packages/fil/releases/$version")
 [ "$status" = 404 ] || die "hex.pm answered $status for $version, expected 404"
 grep -q '^  @version "' mix.exs || die "mix.exs has no @version line"
+source_url=$(sed -n 's/^  @source_url "\(.*\)"$/\1/p' mix.exs)
+[ -n "$source_url" ] || die "mix.exs has no @source_url line"
+# The previous release, from the `[unreleased]` link, or none before the first release.
+previous=$(sed -n 's|^\[unreleased\]: .*/compare/\(.*\)\.\.\.HEAD$|\1|p' CHANGELOG.md)
 
 echo
 confirm "Release $tag from $branch?" || exit 1
@@ -92,7 +98,14 @@ trap undo_help ERR
 say "Bumping to $version"
 rewrite mix.exs -v v="$version" '/^  @version "/ { $0 = "  @version \"" v "\"" } { print }'
 grep -q "^  @version \"$version\"\$" mix.exs || die "couldn't set @version in mix.exs"
-rewrite CHANGELOG.md -v h="## $tag ($(date -u +%F))" '$0 == "## Unreleased" { $0 = h } { print }'
+if [ -n "$previous" ]; then link="$source_url/compare/$previous...$tag"; else link="$source_url/releases/tag/$tag"; fi
+rewrite CHANGELOG.md -v h="## [$version] - $(date -u +%F)" -v u="[unreleased]: $source_url/compare/$tag...HEAD" \
+  -v l="[$version]: $link" '
+    $0 == "## [Unreleased]" { $0 = h }
+    /^\[unreleased\]: / { print u; print l; seen = 1; next }
+    { print }
+    END { if (!seen) { print ""; print u; print l } }'
+grep -q "^## \[$version\] - " CHANGELOG.md || die "couldn't roll the changelog"
 git commit --quiet -am "Release $tag"
 git tag -a "$tag" -m "Release $tag"
 
@@ -100,7 +113,7 @@ say "Publishing $tag to Hex"
 mix hex.publish
 
 say "Reopening the changelog"
-rewrite CHANGELOG.md '/^## / && !done { print "## Unreleased"; print ""; done = 1 } { print }'
+rewrite CHANGELOG.md '/^## \[/ && !done { print "## [Unreleased]"; print ""; done = 1 } { print }'
 git commit --quiet -am "Reopen the changelog after $tag"
 
 say "Pushing"
@@ -108,7 +121,8 @@ git push --quiet origin "$branch" "$tag"
 
 say "Creating the GitHub release"
 notes=$(mktemp)
-git show "$tag:CHANGELOG.md" | awk -v h="## $tag" 'index($0, h " ") == 1 { s = 1; next } /^## / { s = 0 } s' > "$notes"
+git show "$tag:CHANGELOG.md" |
+  awk -v h="## [$version] - " 'index($0, h) == 1 { s = 1; next } /^## |^\[/ { s = 0 } s' > "$notes"
 gh release create "$tag" --title "$tag" --notes-file "$notes"
 rm -f "$notes"
 
