@@ -1,9 +1,10 @@
 defmodule Fil.Emulator do
   @moduledoc false
 
-  # Setup for the local emulators the integration suites run against: a
-  # reachability check with an error message that says how to start them, and
-  # creating and removing the bucket for a run.
+  alias Fil.Support.XML
+
+  # Setup for the local emulators the integration suites run against: a reachability check with an error message that
+  # says how to start them, and creating and removing the bucket for a run.
   #
   #     docker compose up -d
   #     mix test.integration
@@ -110,9 +111,11 @@ defmodule Fil.Emulator do
   ## Buckets
   ## ------------------------------------------------------------------
 
-  # A bucket that already exists answers 409 (`BucketAlreadyOwnedByYou`) outside us-east-1 and counts as created.
+  # A bucket we already own answers 409 `BucketAlreadyOwnedByYou` outside us-east-1 and counts as created. Any other
+  # 409 fails the setup with its code: `OperationAborted` (the bucket was deleted a moment ago) or `BucketAlreadyExists`
+  # (someone else's bucket) would otherwise show up later as a confusing `NoSuchBucket`.
   @spec create_s3_bucket(String.t()) :: :ok | {:error, term()}
-  def create_s3_bucket(bucket), do: s3_request(:put, "/" <> bucket, [200, 409])
+  def create_s3_bucket(bucket), do: s3_request(:put, "/" <> bucket, [200, {409, "BucketAlreadyOwnedByYou"}])
 
   # S3 and RustFS refuse to delete a bucket that isn't empty, so the objects go first. A bucket that doesn't exist
   # counts as deleted, but a 409 (`BucketNotEmpty`) doesn't: it means `Fil.rm_rf/2` left something behind.
@@ -146,9 +149,23 @@ defmodule Fil.Emulator do
     |> accept(allowed)
   end
 
-  defp accept({:ok, %{status: status}}, allowed) when is_list(allowed) do
-    if status in allowed, do: :ok, else: {:error, {:unexpected_status, status}}
+  # `allowed` holds statuses, and `{status, code}` pairs that accept a status only with that S3 error code.
+  defp accept({:ok, %{status: status, body: body}}, allowed) when is_list(allowed) do
+    code = error_code(body)
+
+    if status in allowed or {status, code} in allowed do
+      :ok
+    else
+      {:error, {:unexpected_status, status, code}}
+    end
   end
 
   defp accept({:error, reason}, _allowed), do: {:error, reason}
+
+  defp error_code(body) do
+    case XML.parse(body) do
+      {:ok, element} -> XML.text(element, "Code")
+      {:error, :invalid_xml} -> nil
+    end
+  end
 end

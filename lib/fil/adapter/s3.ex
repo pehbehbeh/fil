@@ -31,7 +31,7 @@ defmodule Fil.Adapter.S3 do
             endpoint: [
               type: :string,
               doc: """
-              A base URL for S3-compatible services, e.g. `"http://localhost:8333"`. Setting it turns `:path_style` on.
+              A base URL for S3-compatible services, e.g. `"http://localhost:9000"`. Setting it turns `:path_style` on.
               """
             ],
             public_endpoint: [

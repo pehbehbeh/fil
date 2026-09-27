@@ -560,9 +560,9 @@ defmodule Fil.Adapter.S3Test do
     end
 
     test "puts the bucket in the path of a custom endpoint" do
-      disk = disk(endpoint: "http://localhost:8333")
+      disk = disk(endpoint: "http://localhost:9000")
 
-      assert Fil.url(disk, "cv.pdf") == {:ok, "http://localhost:8333/bucket/cv.pdf"}
+      assert Fil.url(disk, "cv.pdf") == {:ok, "http://localhost:9000/bucket/cv.pdf"}
     end
 
     test "needs no credentials" do
