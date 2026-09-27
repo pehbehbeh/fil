@@ -116,6 +116,25 @@ defmodule Fil do
                          type: {:in, 1..(7 * 24 * 60 * 60)},
                          default: 900,
                          doc: "How long the URL stays valid, in seconds. At most 7 days (`604800`), the cap of S3."
+                       ],
+                       disposition: [
+                         type: {:or, [{:in, [:inline, :attachment]}, {:tuple, [{:in, [:attachment]}, :string]}]},
+                         doc: """
+                         The `content-disposition` of the download, for `method: :get` only. `:inline` lets the browser
+                         show the file, `:attachment` saves it under the file's name, and `{:attachment, filename}`
+                         under another name, which can be any UTF-8 string. Without it, S3 sends the disposition an
+                         object was uploaded with outside `Fil`, and the other disks send none.
+                         """
+                       ],
+                       query: [
+                         type: {:list, {:tuple, [:string, :string]}},
+                         default: [],
+                         doc: """
+                         Extra query parameters, e.g. `[{"trackingInfo", "42"}]`, for a page that reads them from its
+                         own URL. They're signed with the URL, so they can't be changed or added afterwards. Names that
+                         signed URLs use themselves on some disk raise on every disk: `expires`, `disposition`,
+                         `signature`, and anything starting with `X-Amz-` or `response-`.
+                         """
                        ]
                      )
 
@@ -638,6 +657,9 @@ defmodule Fil do
       Fil.signed_url(s3, "cv.pdf", expires_in: 300)
       #=> {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/cv.pdf?X-Amz-Algorithm=..."}
 
+      Fil.signed_url(s3, "uploads/7f3a.pdf", disposition: {:attachment, "Invoice 2026-09.pdf"})
+      #=> {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/uploads/7f3a.pdf?...&response-content-disposition=..."}
+
   S3 signs its own URLs. Local and memory disks can't, so they need `Fil.Plugin.URL` with a `:secret`, and `Fil.Plug`
   serves the URLs from your application:
 
@@ -666,8 +688,13 @@ defmodule Fil do
 
   def signed_url(ref, opts) when is_list(opts) do
     opts = validate!(opts, @signed_url_schema)
+    check_disposition!(opts)
+    check_query!(opts[:query])
 
-    run(ref, :signed_url, opts)
+    # The file name for `disposition: :attachment` comes from the normalized path, so `docs/..` doesn't become `..`.
+    with {:ok, ref} <- resolve(ref, :signed_url) do
+      run(ref, :signed_url, put_disposition(opts, Path.basename(ref.path)))
+    end
   end
 
   @doc "Builds a signed URL. See `signed_url/1`."
@@ -861,9 +888,42 @@ defmodule Fil do
     end
   end
 
+  # Parameters that signed URLs already use on some disk. They're rejected on every disk, so a URL that works on one
+  # works on all.
+  defp check_query!(query) do
+    for {name, _value} <- query, reserved_query_param?(String.downcase(name)) do
+      raise ArgumentError, "the :query option can't set #{inspect(name)}, signed URLs use it themselves"
+    end
+
+    :ok
+  end
+
+  defp reserved_query_param?(name) do
+    name in ["expires", "disposition", "signature"] or String.starts_with?(name, ["x-amz-", "response-"])
+  end
+
+  defp check_disposition!(opts) do
+    case {opts[:disposition], opts[:method]} do
+      {nil, _method} -> :ok
+      {_disposition, :put} -> raise ArgumentError, "the :disposition option only applies to downloads (method: :get)"
+      {{:attachment, ""}, :get} -> raise ArgumentError, "the file name of the :disposition option can't be empty"
+      {_disposition, :get} -> :ok
+    end
+  end
+
+  # Adapters get `:disposition` as the header value, built here so it's the same on every disk.
+  defp put_disposition(opts, basename) do
+    case opts[:disposition] do
+      nil -> opts
+      disposition -> Keyword.put(opts, :disposition, Fil.Support.ContentDisposition.header(disposition, basename))
+    end
+  end
+
   defp run(ref, name, opts, fields \\ []) do
     with {:ok, %Ref{disk: disk, path: path}} <- resolve(ref, name) do
-      Op.run(struct!(%Op{disk: disk, name: name, path: path, options: opts}, fields))
+      %Op{disk: disk, name: name, path: path, options: opts}
+      |> struct!(fields)
+      |> Op.run()
     end
   end
 

@@ -34,6 +34,16 @@ defmodule Fil.Adapter.S3 do
               A base URL for S3-compatible services, e.g. `"http://localhost:8333"`. Setting it turns `:path_style` on.
               """
             ],
+            public_endpoint: [
+              type: :string,
+              doc: """
+              The base URL clients reach the storage at, when it isn't `:endpoint`, e.g. `"http://localhost:9090"` for
+              a container the application reaches as `"http://s3mock:9090"`. `Fil.url/2` and `Fil.signed_url/3` build
+              their URLs with it, and the requests the disk makes itself still go to `:endpoint`. A signature covers the
+              host, so a signed URL can't be rewritten to another host afterwards. `:path_style` applies to both, but
+              only `:endpoint` turns it on by default.
+              """
+            ],
             path_style: [
               type: :boolean,
               doc: """
@@ -96,7 +106,7 @@ defmodule Fil.Adapter.S3 do
   | `rename/4` | CopyObject, then DeleteObject |
   | `rm_rf/3` | ListObjectsV2, then one DeleteObject per key |
   | `url/2` | the object URL, without a signature (works for public objects only) |
-  | `signed_url/3` | a presigned GET or PUT URL |
+  | `signed_url/3` | a presigned GET or PUT URL, `response-content-disposition` for `disposition:`, and `query:` |
 
   ## Errors
 
@@ -134,12 +144,13 @@ defmodule Fil.Adapter.S3 do
 
   @checksum_mode {"x-amz-checksum-mode", "ENABLED"}
 
-  @derive {Inspect, only: [:bucket, :region, :prefix, :endpoint, :path_style]}
+  @derive {Inspect, only: [:bucket, :region, :prefix, :endpoint, :public_endpoint, :path_style]}
   defstruct [
     :bucket,
     :region,
     :prefix,
     :endpoint,
+    :public_endpoint,
     :path_style,
     :access_key_id,
     :secret_access_key,
@@ -153,13 +164,15 @@ defmodule Fil.Adapter.S3 do
   def init(opts) do
     with {:ok, opts} <- NimbleOptions.validate(opts, @schema),
          {:ok, prefix} <- parse_root(opts[:root]),
-         {:ok, endpoint} <- parse_endpoint(opts[:endpoint]) do
+         {:ok, endpoint} <- parse_endpoint(:endpoint, opts[:endpoint]),
+         {:ok, public_endpoint} <- parse_endpoint(:public_endpoint, opts[:public_endpoint]) do
       {:ok,
        %__MODULE__{
          bucket: opts[:bucket],
          region: opts[:region],
          prefix: prefix,
          endpoint: endpoint,
+         public_endpoint: public_endpoint,
          path_style: Keyword.get(opts, :path_style, endpoint != nil),
          access_key_id: opts[:access_key_id],
          secret_access_key: opts[:secret_access_key],
@@ -289,15 +302,15 @@ defmodule Fil.Adapter.S3 do
   end
 
   @impl Fil.Adapter
-  def url(state, path, _opts), do: {:ok, object_url(state, key(state, path), [])}
+  def url(state, path, _opts), do: {:ok, object_url(state, key(state, path), [], public_base_url(state))}
 
   @impl Fil.Adapter
   def signed_url(state, path, opts) do
-    # `Fil` has validated `:method` and `:expires_in` (at most 7 days, the limit of S3).
+    # `Fil` has validated `:method` and `:expires_in` (at most 7 days, the limit of S3) and built `:disposition`.
     if is_nil(state.access_key_id) or is_nil(state.secret_access_key) do
       {:error, %Fil.UnsupportedError{reason: :missing_credentials}}
     else
-      {:ok, presign(state, key(state, path), Keyword.get(opts, :method, :get), Keyword.get(opts, :expires_in, 900))}
+      {:ok, presign(state, key(state, path), opts)}
     end
   end
 
@@ -314,15 +327,15 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  defp parse_endpoint(nil), do: {:ok, nil}
+  defp parse_endpoint(_name, nil), do: {:ok, nil}
 
-  defp parse_endpoint(endpoint) do
+  defp parse_endpoint(name, endpoint) do
     case URI.parse(endpoint) do
       %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
         {:ok, String.trim_trailing(endpoint, "/")}
 
       _other ->
-        {:error, {:invalid_option, {:endpoint, endpoint}}}
+        {:error, {:invalid_option, {name, endpoint}}}
     end
   end
 
@@ -418,9 +431,18 @@ defmodule Fil.Adapter.S3 do
   end
 
   # `Req.Utils.aws_sigv4_url/1` is private Req API. Req isn't pinned for it: if a release drops it, presigning crashes.
-  # It has no option for a session token, but it signs any extra query parameters, so the token goes in that way.
-  defp presign(state, key, method, expires_in) do
-    query = if state.session_token, do: [{"X-Amz-Security-Token", state.session_token}], else: []
+  # It has no option for a session token, but it signs any extra query parameters, so the token goes in that way, and so
+  # do the `response-content-disposition` S3 answers the download with and the caller's `:query`.
+  defp presign(state, key, opts) do
+    query =
+      Enum.reject(
+        [
+          {"X-Amz-Security-Token", state.session_token},
+          {"response-content-disposition", Keyword.get(opts, :disposition)}
+          | Keyword.get(opts, :query, [])
+        ],
+        &is_nil(elem(&1, 1))
+      )
 
     [
       access_key_id: state.access_key_id,
@@ -428,20 +450,23 @@ defmodule Fil.Adapter.S3 do
       region: state.region,
       service: :s3,
       datetime: DateTime.utc_now(),
-      method: method,
-      url: object_url(state, key, []),
-      expires: expires_in,
+      method: Keyword.get(opts, :method, :get),
+      url: object_url(state, key, [], public_base_url(state)),
+      expires: Keyword.get(opts, :expires_in, 900),
       query: query
     ]
     |> Req.Utils.aws_sigv4_url()
     |> URI.to_string()
   end
 
-  defp object_url(state, key, params) do
-    base_url(state) <> encode_key(key) <> encode_query(params)
+  defp object_url(state, key, params, base_url \\ nil) do
+    (base_url || base_url(state, state.endpoint)) <> encode_key(key) <> encode_query(params)
   end
 
-  defp base_url(%__MODULE__{endpoint: nil} = state) do
+  # URLs handed out to clients use the public endpoint, requests the disk makes itself use `:endpoint`.
+  defp public_base_url(state), do: base_url(state, state.public_endpoint || state.endpoint)
+
+  defp base_url(state, nil) do
     if state.path_style do
       "https://s3.#{state.region}.amazonaws.com/#{state.bucket}"
     else
@@ -449,7 +474,7 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  defp base_url(%__MODULE__{endpoint: endpoint} = state) do
+  defp base_url(state, endpoint) do
     if state.path_style, do: endpoint <> "/" <> state.bucket, else: endpoint
   end
 
@@ -490,7 +515,13 @@ defmodule Fil.Adapter.S3 do
 
   defp list_all(state, prefix, delimiter, token \\ nil, contents \\ [], prefixes \\ []) do
     with {:ok, result} <- list_page(state, prefix, delimiter, token) do
-      contents = contents ++ Enum.reject(XML.children(result, "Contents"), &marker?(&1, prefix))
+      page_contents =
+        result
+        |> XML.children("Contents")
+        |> Enum.reject(&marker?(&1, prefix))
+
+      contents = contents ++ page_contents
+
       prefixes = prefixes ++ XML.children(result, "CommonPrefixes")
 
       case next_token(result) do

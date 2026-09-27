@@ -40,7 +40,9 @@ defmodule Fil.Adapter.S3Test do
     test "passes req_options to every request" do
       stub([response(200, "content")])
 
-      assert {:ok, "content"} = Fil.read(disk(req_options: [{:params, [extra: "1"]} | req_options()]), "a.txt")
+      disk = disk(req_options: [{:params, [extra: "1"]} | req_options()])
+
+      assert {:ok, "content"} = Fil.read(disk, "a.txt")
       assert params(request!()) == %{"extra" => "1"}
     end
 
@@ -61,7 +63,9 @@ defmodule Fil.Adapter.S3Test do
     test "path style on request" do
       stub([response(200, "content")])
 
-      assert {:ok, "content"} = Fil.read(disk(path_style: true), "a.txt")
+      disk = disk(path_style: true)
+
+      assert {:ok, "content"} = Fil.read(disk, "a.txt")
 
       assert request!().url == "https://s3.eu-central-1.amazonaws.com/bucket/a.txt"
     end
@@ -69,7 +73,9 @@ defmodule Fil.Adapter.S3Test do
     test "a custom endpoint" do
       stub([response(200, "content")])
 
-      assert {:ok, "content"} = Fil.read(disk(endpoint: "http://localhost:9000"), "a.txt")
+      disk = disk(endpoint: "http://localhost:9000")
+
+      assert {:ok, "content"} = Fil.read(disk, "a.txt")
 
       assert request!().url == "http://localhost:9000/bucket/a.txt"
     end
@@ -77,7 +83,9 @@ defmodule Fil.Adapter.S3Test do
     test "an endpoint with a base path" do
       stub([response(200, "content")])
 
-      assert {:ok, "content"} = Fil.read(disk(endpoint: "https://s3.example.com/storage/"), "a.txt")
+      disk = disk(endpoint: "https://s3.example.com/storage/")
+
+      assert {:ok, "content"} = Fil.read(disk, "a.txt")
 
       assert request!().url == "https://s3.example.com/storage/bucket/a.txt"
     end
@@ -96,8 +104,11 @@ defmodule Fil.Adapter.S3Test do
     test "prefixes every key" do
       stub([response(200, "content"), response(200)])
 
-      assert {:ok, "content"} = Fil.read(disk(root: "uploads/avatars"), "a.png")
-      assert {:ok, _} = Fil.write(disk(root: "/uploads/"), "b.png", "content")
+      avatars = disk(root: "uploads/avatars")
+      uploads = disk(root: "/uploads/")
+
+      assert {:ok, "content"} = Fil.read(avatars, "a.png")
+      assert {:ok, _} = Fil.write(uploads, "b.png", "content")
 
       assert Enum.map(requests(), &path/1) == ["/uploads/avatars/a.png", "/uploads/b.png"]
     end
@@ -105,7 +116,9 @@ defmodule Fil.Adapter.S3Test do
     test "lists under the root and strips it from the paths" do
       stub([response(200, list_under_root())])
 
-      assert {:ok, refs} = Fil.ls(disk(root: "uploads"), "photos")
+      disk = disk(root: "uploads")
+
+      assert {:ok, refs} = Fil.ls(disk, "photos")
 
       assert Enum.map(refs, & &1.path) == ["photos/2026", "photos/a.jpg"]
       assert params(request!()) == %{"list-type" => "2", "prefix" => "uploads/photos/", "delimiter" => "/"}
@@ -114,14 +127,18 @@ defmodule Fil.Adapter.S3Test do
     test "the disk root lists the root prefix" do
       stub([response(200, empty_list())])
 
-      assert {:ok, []} = Fil.ls(disk(root: "uploads"))
+      disk = disk(root: "uploads")
+
+      assert {:ok, []} = Fil.ls(disk)
       assert params(request!()) == %{"list-type" => "2", "prefix" => "uploads/", "delimiter" => "/"}
     end
 
     test "rm_rf deletes by full key" do
       stub([response(200, list_under_root_recursive()), response(204)])
 
-      assert {:ok, 1} = Fil.rm_rf(disk(root: "uploads"), "photos")
+      disk = disk(root: "uploads")
+
+      assert {:ok, 1} = Fil.rm_rf(disk, "photos")
 
       [list, delete] = requests()
 
@@ -132,14 +149,18 @@ defmodule Fil.Adapter.S3Test do
     test "copies from a key under the root" do
       stub([response(200, "<CopyObjectResult/>")])
 
-      assert {:ok, _} = Fil.cp(disk(root: "uploads"), "a.jpg", "b.jpg")
+      disk = disk(root: "uploads")
+
+      assert {:ok, _} = Fil.cp(disk, "a.jpg", "b.jpg")
 
       assert path(request!()) == "/uploads/b.jpg"
       assert header(request!(), "x-amz-copy-source") == "/bucket/uploads/a.jpg"
     end
 
     test "presigns the full key" do
-      assert {:ok, url} = Fil.signed_url(disk(root: "uploads"), "cv.pdf")
+      disk = disk(root: "uploads")
+
+      assert {:ok, url} = Fil.signed_url(disk, "cv.pdf")
       assert URI.parse(url).path == "/uploads/cv.pdf"
     end
 
@@ -168,7 +189,9 @@ defmodule Fil.Adapter.S3Test do
     test "a session token is signed and sent" do
       stub([response(200, "content")])
 
-      assert {:ok, _} = Fil.read(disk(session_token: "SESSION"), "a.txt")
+      disk = disk(session_token: "SESSION")
+
+      assert {:ok, _} = Fil.read(disk, "a.txt")
 
       request = request!()
 
@@ -527,7 +550,9 @@ defmodule Fil.Adapter.S3Test do
       assert Fil.url(disk(), "reports/q3 final.pdf") ==
                {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/reports/q3%20final.pdf"}
 
-      assert Fil.url(disk(root: "uploads"), "cv.pdf") ==
+      disk = disk(root: "uploads")
+
+      assert Fil.url(disk, "cv.pdf") ==
                {:ok, "https://bucket.s3.eu-central-1.amazonaws.com/uploads/cv.pdf"}
 
       assert requests() == []
@@ -550,7 +575,7 @@ defmodule Fil.Adapter.S3Test do
     test "presigns a GET" do
       assert {:ok, url} = Fil.signed_url(disk(), "cv.pdf", expires_in: 300)
 
-      query = URI.decode_query(URI.parse(url).query)
+      query = query(url)
 
       assert String.starts_with?(url, "https://bucket.s3.eu-central-1.amazonaws.com/cv.pdf?")
       assert query["X-Amz-Algorithm"] == "AWS4-HMAC-SHA256"
@@ -566,11 +591,13 @@ defmodule Fil.Adapter.S3Test do
       assert {:ok, put} = Fil.signed_url(disk(), "upload.bin", method: :put)
 
       refute signature(get) == signature(put)
-      assert URI.decode_query(URI.parse(get).query)["X-Amz-Expires"] == "900"
+      assert query(get)["X-Amz-Expires"] == "900"
     end
 
     test "encodes the key and includes the session token" do
-      assert {:ok, url} = Fil.signed_url(disk(session_token: "SESSION"), "reports/q3 final.pdf")
+      disk = disk(session_token: "SESSION")
+
+      assert {:ok, url} = Fil.signed_url(disk, "reports/q3 final.pdf")
 
       uri = URI.parse(url)
 
@@ -593,6 +620,88 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :missing_credentials}} =
                Fil.signed_url(disk, "cv.pdf")
+    end
+
+    test "signs the disposition as response-content-disposition" do
+      assert {:ok, plain} = Fil.signed_url(disk(), "cv.pdf")
+      assert {:ok, inline} = Fil.signed_url(disk(), "cv.pdf", disposition: :inline)
+      assert {:ok, attachment} = Fil.signed_url(disk(), "cv.pdf", disposition: :attachment)
+
+      refute plain
+             |> query()
+             |> Map.has_key?("response-content-disposition")
+
+      assert query(inline)["response-content-disposition"] == "inline"
+
+      # Encoded the way SigV4 canonicalizes it (`%20`, not `+`), so the URL S3 receives matches the signed query.
+      assert URI.parse(attachment).query =~
+               "&response-content-disposition=attachment%3B%20filename%3D%22cv.pdf%22&"
+
+      assert [plain, inline, attachment]
+             |> Enum.map(&signature/1)
+             |> Enum.uniq()
+             |> length() == 3
+
+      assert requests() == []
+    end
+
+    test "takes the file name from the normalized path" do
+      disposition = fn path, opts ->
+        {:ok, url} = Fil.signed_url(disk(), path, opts)
+        query(url)["response-content-disposition"]
+      end
+
+      assert disposition.("docs/../cv.pdf", disposition: :attachment) == ~s(attachment; filename="cv.pdf")
+      assert disposition.("", disposition: :attachment) == "attachment"
+
+      assert_raise ArgumentError, ~r/can't be empty/, fn ->
+        Fil.signed_url(disk(), "cv.pdf", disposition: {:attachment, ""})
+      end
+    end
+
+    test "signs extra query parameters" do
+      assert {:ok, plain} = Fil.signed_url(disk(), "index.html")
+      assert {:ok, tracked} = Fil.signed_url(disk(), "index.html", query: [{"trackingInfo", "7-42-a b"}])
+
+      assert query(tracked)["trackingInfo"] == "7-42-a b"
+      assert URI.parse(tracked).query =~ "&trackingInfo=7-42-a%20b&"
+      refute signature(plain) == signature(tracked)
+    end
+
+    test "encodes a filename that isn't ASCII" do
+      assert {:ok, url} = Fil.signed_url(disk(), "7f3a.pdf", disposition: {:attachment, ~s(Rechnung "März".pdf)})
+
+      assert query(url)["response-content-disposition"] ==
+               ~s(attachment; filename="Rechnung _M_rz_.pdf"; filename*=UTF-8''Rechnung%20%22M%C3%A4rz%22.pdf)
+    end
+  end
+
+  describe "public_endpoint" do
+    setup do
+      {:ok, disk: disk(endpoint: "http://s3mock:9090", public_endpoint: "http://localhost:9090/")}
+    end
+
+    test "builds public and signed URLs", %{disk: disk} do
+      assert Fil.url(disk, "cv.pdf") == {:ok, "http://localhost:9090/bucket/cv.pdf"}
+      assert {:ok, "http://localhost:9090/bucket/cv.pdf?" <> _query} = Fil.signed_url(disk, "cv.pdf")
+    end
+
+    test "leaves the requests on the endpoint", %{disk: disk} do
+      stub([response(200, "content")])
+
+      assert Fil.read(disk, "cv.pdf") == {:ok, "content"}
+      assert String.starts_with?(request!().url, "http://s3mock:9090/bucket/cv.pdf")
+    end
+
+    test "follows path_style" do
+      disk = disk(public_endpoint: "https://bucket.cdn.example.com", path_style: false)
+
+      assert Fil.url(disk, "cv.pdf") == {:ok, "https://bucket.cdn.example.com/cv.pdf"}
+    end
+
+    test "must be a URL" do
+      assert {:error, {:invalid_option, {:public_endpoint, "localhost:9090"}}} =
+               S3.init(bucket: "b", public_endpoint: "localhost:9090")
     end
   end
 
@@ -701,11 +810,16 @@ defmodule Fil.Adapter.S3Test do
     |> Base.encode16(case: :lower)
   end
 
-  defp signature(url) do
+  defp query(url) do
     url
     |> URI.parse()
     |> Map.fetch!(:query)
     |> URI.decode_query()
+  end
+
+  defp signature(url) do
+    url
+    |> query()
     |> Map.fetch!("X-Amz-Signature")
   end
 

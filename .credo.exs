@@ -7,7 +7,6 @@ credo_checks =
 overwrite_checks = [
   {Credo.Check.Design.AliasUsage, false},
   {Credo.Check.Readability.AliasAs, false},
-  {Credo.Check.Readability.NestedFunctionCalls, false},
   {Credo.Check.Readability.SinglePipe, false},
   {Credo.Check.Readability.Specs, false},
   {

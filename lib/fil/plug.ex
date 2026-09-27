@@ -52,7 +52,7 @@ if Code.ensure_loaded?(Plug) do
     What it answers:
 
       * `GET` and `HEAD` on a URL signed for `:get` return the file, with its stored content type or one guessed from
-        the extension
+        the extension, and the `content-disposition` the URL was signed with (`disposition:`)
       * `PUT` on a URL signed for `:put` writes the request body, with the request's `content-type`, the same as a
         presigned PUT on S3. Plugins attached to the disk run as for any other write
       * a request that doesn't match its signature, or comes after the URL expired, gets a `403`
@@ -76,7 +76,8 @@ if Code.ensure_loaded?(Plug) do
     `GET /avatars/1.png` then returns `1.png` from the disk, on every adapter. There are no directory listings, and a
     path can't leave the disk root. With `Fil.Plugin.URL` and `base_url: "http://localhost:4000/avatars"` on the disk,
     `Fil.url/2` builds these URLs. Uploads still need a signed URL, and without a `:secret` for `Fil.Plugin.URL` on the
-    disk, a `PUT` gets a `403`.
+    disk, a `PUT` gets a `403`. A signed download URL that has expired or was changed still works on a public disk, but
+    without the `content-disposition` it was signed with.
 
     ## In a router
 
@@ -149,9 +150,11 @@ if Code.ensure_loaded?(Plug) do
       conn = fetch_query_params(conn)
 
       with {:ok, method} <- method(conn),
-           :ok <- authorize(conn, method, secret, opts[:public]) do
+           {:ok, headers} <- authorize(conn, method, secret, opts[:public]) do
         # `path_info` keeps the percent-encoding of the request, and the disk wants the path itself.
-        serve(conn, method, disk, Enum.map_join(conn.path_info, "/", &URI.decode/1), opts[:max_body_size])
+        path = Enum.map_join(conn.path_info, "/", &URI.decode/1)
+
+        serve(conn, method, disk, path, headers, opts[:max_body_size])
       else
         {:error, :method_not_allowed} -> send_error(conn, 405, "method not allowed")
         {:error, :expired} -> send_error(conn, 403, "the URL has expired")
@@ -160,11 +163,23 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp authorize(_conn, :get, _secret, true), do: :ok
+    # Returns the response headers the signed URL asks for. A public download needs no signature, but only a valid one
+    # can set the disposition, so nobody can make a link that serves the disk's files under another name.
+    defp authorize(conn, :get, secret, true) do
+      with {:error, _reason} <- authorize(conn, :get, secret, false), do: {:ok, []}
+    end
+
     defp authorize(_conn, _method, nil, _public?), do: {:error, :signature_required}
 
-    defp authorize(conn, method, secret, _public?),
-      do: Fil.Plugin.URL.verify(secret, method, conn.request_path, conn.query_params)
+    defp authorize(conn, method, secret, _public?) do
+      with :ok <- Fil.Plugin.URL.verify(secret, method, conn.request_path, conn.query_string) do
+        # A verified query has at most one `disposition`, and it's a string.
+        case conn.query_params["disposition"] do
+          nil -> {:ok, []}
+          disposition -> {:ok, [{"content-disposition", disposition}]}
+        end
+      end
+    end
 
     defp disk(%Fil.Disk{} = disk), do: disk
     defp disk(fun) when is_function(fun, 0), do: fun.()
@@ -174,12 +189,13 @@ if Code.ensure_loaded?(Plug) do
     defp method(%{method: "PUT"}), do: {:ok, :put}
     defp method(_conn), do: {:error, :method_not_allowed}
 
-    defp serve(conn, :get, disk, path, _max_body_size) do
+    defp serve(conn, :get, disk, path, headers, _max_body_size) do
       with {:ok, stat} <- Fil.stat(disk, path),
            :regular <- stat.type,
            {:ok, content} <- Fil.read(disk, path) do
         conn
         |> put_resp_content_type(stat.content_type || MIME.from_path(path), nil)
+        |> merge_resp_headers(headers)
         |> send_resp(200, if(conn.method == "HEAD", do: "", else: content))
       else
         :directory -> send_error(conn, 404, "not found")
@@ -187,7 +203,7 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp serve(conn, :put, disk, path, max_body_size) do
+    defp serve(conn, :put, disk, path, _headers, max_body_size) do
       opts =
         conn
         |> get_req_header("content-type")

@@ -54,6 +54,10 @@ The Hex package is `fil`.
   `mix format` left unchanged files alone here.
 - **`do:` one-liners:** only for bodies that fit on one line without a pipe chain. Quokka puts each pipe on its own
   line, which turns a piped `do:` body into a multi-line `do:` block; write those as `do ... end` instead.
+- **Nested calls:** `f(g(x))` is a credo error (`NestedFunctionCalls`), in tests too. Pipe it, bind a variable, or give
+  the step a function of its own. Credo doesn't see calls nested inside a list literal, so watch for those by hand. Bind
+  a variable before a `case` rather than writing `case x |> g() do`: Quokka turns that into `|> case do`, which credo
+  rejects as well.
 - **Docs:** operation functions have `@doc section: :operations` (and so on). The ExDoc groups are built from these
   tags, so never maintain function lists by hand.
 - **HTTP:** cloud adapters call Req directly, with a `req_options:` adapter option that's merged into every request.
@@ -92,21 +96,26 @@ bin/release 0.2.0
 ```
 
 It checks that `main` is clean, in sync with `origin` and has a green CI run, refuses a version that is tagged or on
-Hex, and a changelog without entries under Unreleased. Then it bumps `@version` in `mix.exs`, renames `## Unreleased`
-in `CHANGELOG.md` to `## v0.2.0 (date)`, commits "Release v0.2.0", tags `v0.2.0`, runs `mix hex.publish` (package and
-docs, with your own Hex login and 2FA), commits a fresh `## Unreleased` heading, pushes branch and tag and creates the
-GitHub release from the changelog section. Nothing is pushed before Hex accepted the package, and on failure the script
-prints how to undo the local commits. Pushing to a protected `main` needs your account on the ruleset's bypass list.
+Hex, and a changelog without entries under Unreleased. Then it bumps `@version` in `mix.exs`, renames `## [Unreleased]`
+in `CHANGELOG.md` to `## [0.2.0] - date` and adds its compare link, commits "Release v0.2.0", tags `v0.2.0`, runs
+`mix hex.publish` (package and docs, with your own Hex login and 2FA), commits a fresh `## [Unreleased]` heading, pushes
+branch and tag and creates the GitHub release from the changelog section. Nothing is pushed before Hex accepted the
+package, and on failure the script prints how to undo the local commits. Pushing to a protected `main` needs your
+account on the ruleset's bypass list.
 
-- **Changelog:** `CHANGELOG.md`, newest first, one line per user-visible change, added in the same commit as the change
-  under `## Unreleased`. Released sections are headed `## v0.2.0 (2026-10-01)`. The file is in the Hex package and a
-  Guides tab on HexDocs, so each published version carries its changelog.
+- **Changelog:** `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first,
+  one entry per user-visible change under `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, added
+  under `## [Unreleased]` in the same commit as the change. Released sections are headed `## [0.2.0] - 2026-10-01`.
+  `bin/release` keeps the link definitions at the end, which compare each version with the one before. The file is in
+  the Hex package and a Guides tab on HexDocs, so each published version includes its changelog.
 - **Hotfix:** a normal fix on `main`, then `bin/release 0.2.1`.
-- **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix with its changelog line under a new
-  `## Unreleased`, push the branch, then `bin/release 0.1.1` on it. A `v0.N` branch keeps its own changelog and is never
-  merged anywhere; `main` may note the backport in the current section.
-- **Bad release:** `mix hex.retire fil 0.2.0 security --message "..."` warns users on `mix deps.get`. A version can't be
-  replaced, so the fix is the next patch version.
+- **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix with its changelog entry under a new
+  `## [Unreleased]`, push the branch, then `bin/release 0.1.1` on it. A `v0.N` branch keeps its own changelog and is
+  never merged anywhere; `main` may note the backport in the current section. `v0.1.0` still has the old changelog
+  format, so a `v0.1` branch first cherry-picks the commit "Follow Keep a Changelog 1.1.0".
+- **Bad release:** `mix hex.retire fil 0.2.0 security --message "..."` warns users on `mix deps.get`, and the changelog
+  heading becomes `## [0.2.0] - 2026-10-01 [YANKED]`. A version can't be replaced, so the fix is the next patch
+  version.
 
 ## Testing conventions
 

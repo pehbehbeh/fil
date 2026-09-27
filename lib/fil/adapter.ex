@@ -164,6 +164,10 @@ defmodule Fil.Adapter do
 
   Optional. Adapters whose storage can't sign URLs leave it out, and `Fil.signed_url/2` then returns a
   `Fil.UnsupportedError`. `Fil.Plugin.URL` signs URLs for those disks, and `Fil.Plug` serves them.
+
+  `opts` has `:method`, `:expires_in` and `:query` as `Fil.signed_url/3` validated them, and for a download with
+  `disposition:`, `:disposition` as the finished `content-disposition` header value. The storage has to send that header
+  with the download, and the URL's signature has to cover it and the `:query` parameters.
   """
   @callback signed_url(state(), path(), opts()) :: {:ok, String.t()} | error()
 

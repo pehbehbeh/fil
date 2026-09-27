@@ -14,8 +14,18 @@ defmodule Fil.Support.Checksum do
 
   @doc "The checksum of `content`."
   @spec digest(algorithm(), iodata()) :: String.t()
-  def digest(:crc32, content), do: encode_crc32(:erlang.crc32(content))
-  def digest(algorithm, content), do: Base.encode64(:crypto.hash(crypto(algorithm), content))
+  def digest(:crc32, content) do
+    content
+    |> :erlang.crc32()
+    |> encode_crc32()
+  end
+
+  def digest(algorithm, content) do
+    algorithm
+    |> crypto()
+    |> :crypto.hash(content)
+    |> Base.encode64()
+  end
 
   @doc "The checksum of a file, read in chunks so large files don't have to fit in memory."
   @spec digest_file(algorithm(), Path.t()) :: {:ok, String.t()} | {:error, File.posix()}
@@ -30,7 +40,12 @@ defmodule Fil.Support.Checksum do
   end
 
   defp hash_device(algorithm, device) do
-    with {:ok, state} <- fold(device, :crypto.hash_init(crypto(algorithm)), &:crypto.hash_update/2) do
+    initial =
+      algorithm
+      |> crypto()
+      |> :crypto.hash_init()
+
+    with {:ok, state} <- fold(device, initial, &:crypto.hash_update/2) do
       {:ok,
        state
        |> :crypto.hash_final()

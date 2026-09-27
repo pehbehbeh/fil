@@ -151,7 +151,12 @@ defmodule Fil.Op do
   """
   @spec update_result(t(), transform()) :: t()
   def update_result(%__MODULE__{name: :read, result: {:ok, content}} = op, funs) do
-    %{op | result: {:ok, IO.iodata_to_binary(transform!(content, funs))}}
+    binary =
+      content
+      |> transform!(funs)
+      |> IO.iodata_to_binary()
+
+    %{op | result: {:ok, binary}}
   end
 
   def update_result(%__MODULE__{} = op, funs) do
@@ -178,10 +183,15 @@ defmodule Fil.Op do
   def materialize(%__MODULE__{} = op), do: op
 
   defp transform!(content, funs) do
-    case validate_transform!(funs) do
-      %{binary: fun} -> fun.(IO.iodata_to_binary(content))
-      %{chunk: fun} -> fun.(IO.iodata_to_binary(content))
-    end
+    fun =
+      case validate_transform!(funs) do
+        %{binary: fun} -> fun
+        %{chunk: fun} -> fun
+      end
+
+    content
+    |> IO.iodata_to_binary()
+    |> fun.()
   end
 
   defp validate_transform!(funs) when is_list(funs) do

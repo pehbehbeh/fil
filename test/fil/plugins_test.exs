@@ -55,14 +55,20 @@ defmodule Fil.PluginsTest do
 
       assert {:ok, ref} = Fil.write(disk, "a.txt", "content")
       assert ref.path == "tenant/a.txt"
-      assert Fil.read(Fil.detach(disk, :prefix), "tenant/a.txt") == {:ok, "content"}
+
+      assert disk
+             |> Fil.detach(:prefix)
+             |> Fil.read("tenant/a.txt") == {:ok, "content"}
     end
 
     test "takes a {module, function} callback", %{disk: disk} do
       disk = Fil.attach(disk, :upcase, {__MODULE__, :upcase}, [])
 
       assert {:ok, _} = Fil.write(disk, "a.txt", "content")
-      assert Fil.read(Fil.detach(disk, :upcase), "a.txt") == {:ok, "CONTENT"}
+
+      assert disk
+             |> Fil.detach(:upcase)
+             |> Fil.read("a.txt") == {:ok, "CONTENT"}
 
       assert_raise ArgumentError, ~r/FilTest.nope\/3 is not a function/, fn ->
         Fil.attach(disk, :nope, {FilTest, :nope})
@@ -82,7 +88,11 @@ defmodule Fil.PluginsTest do
 
       assert [:first, :second] = Enum.map(disk.plugins, &elem(&1, 0))
 
-      assert {:ok, _} = Fil.stat(Fil.write!(disk, "a.txt", "content"))
+      assert {:ok, _} =
+               disk
+               |> Fil.write!("a.txt", "content")
+               |> Fil.stat()
+
       assert_received {:in, :replaced, :write}
       refute_received {:in, :first, _name}
     end
@@ -183,7 +193,10 @@ defmodule Fil.PluginsTest do
       assert {:error, %Fil.NotFoundError{path: "a.txt"} = error} = Fil.read(disk, "a.txt")
 
       assert {:ok, _} = Fil.write(error.disk, error.path, "content")
-      assert Fil.read(Fil.ref(error.disk, error.path)) == {:ok, "content"}
+
+      assert error.disk
+             |> Fil.ref(error.path)
+             |> Fil.read() == {:ok, "content"}
 
       # Local reports a destination under a file with the destination's path, which is translated back too.
       assert {:error, %Fil.InvalidRequestError{path: "a.txt/copy.txt", reason: :enotdir}} =
@@ -197,7 +210,9 @@ defmodule Fil.PluginsTest do
       assert {:error, %Fil.InvalidRequestError{path: "a.txt", reason: :ebadpath}} =
                Fil.write(escaping, "a.txt", "content")
 
-      refute File.exists?(Path.join(tmp_dir, "a.txt"))
+      refute tmp_dir
+             |> Path.join("a.txt")
+             |> File.exists?()
 
       assert {:ok, _} = Fil.write(disk, "a.txt", "content")
       assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.cp(escaping, "a.txt", "b.txt")
@@ -244,7 +259,11 @@ defmodule Fil.PluginsTest do
         |> Fil.attach(:dest, tracer(self(), :dest))
 
       assert {:ok, _} = Fil.write(disk, "a.txt", "content")
-      assert {:ok, _} = Fil.rename(Fil.ref(disk, "a.txt"), Fil.ref(other, "a.txt"))
+
+      assert {:ok, _} =
+               disk
+               |> Fil.ref("a.txt")
+               |> Fil.rename(Fil.ref(other, "a.txt"))
 
       assert_received {:in, :source, :read}
       assert_received {:in, :dest, :write}
@@ -264,7 +283,10 @@ defmodule Fil.PluginsTest do
 
       assert {:ok, _} = Fil.write(disk, "a.txt", ["Hello", [", ", "World"]])
       assert Fil.read(disk, "a.txt") == {:ok, "Hello, World"}
-      assert Fil.read(Fil.detach(disk, :rot), "a.txt") == {:ok, :zlib.gzip("Hello, World")}
+
+      assert disk
+             |> Fil.detach(:rot)
+             |> Fil.read("a.txt") == {:ok, :zlib.gzip("Hello, World")}
     end
 
     test "chunk: alone gets the content as a single chunk", %{disk: disk} do
@@ -289,6 +311,12 @@ defmodule Fil.PluginsTest do
       assert_raise ArgumentError, ~r/at least one of/, fn -> Op.update_content(op, []) end
       assert_raise ArgumentError, ~r/unknown transforms \[:stream\]/, fn -> Op.update_content(op, stream: & &1) end
       assert_raise ArgumentError, ~r/1-arity function/, fn -> Op.update_result(op, binary: :nope) end
+    end
+
+    test "the transforms are checked before the content", %{disk: disk} do
+      op = %Op{disk: disk, name: :read, path: "a.txt", result: {:ok, :not_iodata}}
+
+      assert_raise ArgumentError, ~r/at least one of/, fn -> Op.update_result(op, []) end
     end
   end
 end

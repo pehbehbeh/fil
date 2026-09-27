@@ -62,6 +62,29 @@ defmodule Fil.Plugin.URLTest do
       assert get_url != put_url
     end
 
+    test "puts the query parameters between the expiry and the signature", %{disk: disk} do
+      assert {:ok, url} = Fil.signed_url(disk, "a.txt", disposition: :inline, query: [{"trackingInfo", "a b&c"}])
+
+      assert [{"expires", _}, {"disposition", "inline"}, {"trackingInfo", "a b&c"}, {"signature", _}] =
+               url
+               |> URI.parse()
+               |> Map.fetch!(:query)
+               |> URI.query_decoder()
+               |> Enum.to_list()
+    end
+
+    test "keeps verifying URLs signed by 0.1" do
+      # 0.1 signed the method, the URL path and the expiry, and nothing else.
+      expires = System.os_time(:second) + 60
+
+      signature =
+        :hmac
+        |> :crypto.mac(:sha256, "secret", "GET\n/storage/a.txt\n#{expires}")
+        |> Base.url_encode64(padding: false)
+
+      assert URL.verify("secret", :get, "/storage/a.txt", "expires=#{expires}&signature=#{signature}") == :ok
+    end
+
     test "caps the expiry at 7 days, as on S3", %{disk: disk} do
       assert {:ok, _url} = Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60)
 
@@ -109,7 +132,10 @@ defmodule Fil.Plugin.URLTest do
 
     assert URL.secret(disk) == "secret"
     assert URL.secret(plain) == nil
-    assert URL.secret(URL.attach(plain, base_url: "http://localhost")) == nil
+
+    assert plain
+           |> URL.attach(base_url: "http://localhost")
+           |> URL.secret() == nil
   end
 
   test "doesn't show the secret", %{disk: disk} do
