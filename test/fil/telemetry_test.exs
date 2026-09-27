@@ -179,6 +179,18 @@ defmodule Fil.TelemetryTest do
       assert_raise RuntimeError, fn -> Fil.write(disk, "a.txt", content) end
       assert [_start, {[:fil, :op, :exception], _, %{op: :write, reason: %RuntimeError{}}}] = events()
     end
+
+    test "a throw from the content ends the write with an exception and is thrown again", %{disk: disk} do
+      # `Fil.Plug` stops an upload that's too large this way.
+      content = Stream.map([:too_large], fn reason -> throw({:upload, reason}) end)
+
+      assert catch_throw(Fil.write(disk, "a.txt", content)) == {:upload, :too_large}
+
+      assert [
+               _start,
+               {[:fil, :op, :exception], _, %{op: :write, kind: :throw, reason: {:upload, :too_large}}}
+             ] = events()
+    end
   end
 
   describe "stream events" do
@@ -239,6 +251,21 @@ defmodule Fil.TelemetryTest do
              ] = events()
 
       assert %Fil.UnavailableError{op: :read, path: "a.txt", disk: ^failing} = reason
+    end
+
+    test "a throw or an exit of the source is an exception of that kind", %{disk: disk} do
+      throwing = answering(disk, fn -> Stream.map([:ok], fn _ -> throw(:closed) end) end)
+      exiting = answering(disk, fn -> Stream.map([:ok], fn _ -> exit(:closed) end) end)
+
+      assert {:ok, stream} = Fil.stream(throwing, "a.txt")
+      assert catch_throw(Enum.to_list(stream)) == :closed
+      assert {:ok, stream} = Fil.stream(exiting, "a.txt")
+      assert catch_exit(Enum.to_list(stream)) == :closed
+
+      assert [
+               {[:fil, :stream, :exception], %{duration: _}, %{kind: :throw, reason: :closed, stacktrace: [_ | _]}},
+               {[:fil, :stream, :exception], %{duration: _}, %{kind: :exit, reason: :closed}}
+             ] = for({[:fil, :stream, :exception], _, _} = event <- events(), do: event)
     end
 
     test "an error of the consumer halts the stream", %{disk: disk} do
