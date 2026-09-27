@@ -42,7 +42,7 @@ defmodule Fil.Op do
         }
 
   @type transform :: [
-          binary: (binary() -> iodata()),
+          iodata: (binary() -> iodata()),
           chunk: (binary() -> iodata()),
           stream: (Enumerable.t() -> Enumerable.t())
         ]
@@ -135,22 +135,24 @@ defmodule Fil.Op do
   @doc """
   Transforms the content of a `:write`. Other operations are returned unchanged.
 
-  The content is iodata or a stream. Pass `binary:` to transform iodata, and `chunk:` or `stream:` to transform a
+  The content is iodata or a stream. Pass `iodata:` to transform iodata, and `chunk:` or `stream:` to transform a
   stream without collecting it:
 
-      Fil.Op.update_content(op, binary: &:zlib.gzip/1, stream: &MyApp.Gzip.stream/1)
+      Fil.Op.update_content(op, iodata: &:zlib.gzip/1, stream: &MyApp.Gzip.stream/1)
 
-    * `binary:` gets all of the content as one binary and returns iodata. A stream is collected into memory first when
+    * `iodata:` gets all of the content as one binary and returns iodata. A stream is collected into memory first when
       there's no `chunk:` or `stream:`
     * `chunk:` gets one chunk of a stream as a binary and returns iodata, once per chunk, when the adapter reads it.
-      Without `binary:`, iodata is passed to it as a single chunk, and empty iodata not at all
+      Without `iodata:`, it also gets content that isn't a stream, as a single chunk, and nothing if that's empty
     * `stream:` gets the stream (an enumerable of binaries) and returns an enumerable of iodata, for transforms that
-      keep state from one chunk to the next or add something at the end. Without `binary:`, iodata is passed to it as a
-      stream of one chunk (none if it's empty), and the result is collected again
+      keep state from one chunk to the next or add something at the end. Without `iodata:`, it also gets content that
+      isn't a stream, as a stream of one chunk (none if it's empty), and the result is collected again
 
   A stream prefers `stream:` over `chunk:`. The [Plugins guide](plugins.md#streams) describes what a chunk is.
   A transform drops the `:size` option of the write, because the size can change. A plugin that knows the new size
   declares it again with `put_option(op, :size, size)`.
+
+  `binary:`, the name of `iodata:` in 0.1, still works but is deprecated.
   """
   @spec update_content(t(), transform()) :: t()
   def update_content(%__MODULE__{name: :write, content: content} = op, funs) do
@@ -169,8 +171,8 @@ defmodule Fil.Op do
   @doc """
   Transforms the content returned by a successful `:read`. Other operations and errors are returned unchanged.
 
-  Takes the same `binary:`, `chunk:` and `stream:` functions as `update_content/2`. The result of `Fil.stream/3` is a
-  stream, and the transforms run when the caller reads it; a stream with only `binary:` is collected then too.
+  Takes the same `iodata:`, `chunk:` and `stream:` functions as `update_content/2`. The result of `Fil.stream/3` is a
+  stream, and the transforms run when the caller reads it; a stream with only `iodata:` is collected then too.
 
   A transform that raises one of `Fil`'s errors, such as `Fil.ChecksumMismatchError` for content that fails a check,
   turns a read that returns a binary into that error. On a stream, the error is raised when the caller reads it, with
@@ -227,7 +229,7 @@ defmodule Fil.Op do
     binary = IO.iodata_to_binary(content)
 
     case funs do
-      %{binary: fun} ->
+      %{iodata: fun} ->
         fun.(binary)
 
       %{stream: fun} ->
@@ -255,7 +257,7 @@ defmodule Fil.Op do
       %{chunk: fun} ->
         Stream.map(chunks, fun)
 
-      %{binary: fun} ->
+      %{iodata: fun} ->
         chunks
         |> Enum.into(<<>>)
         |> fun.()
@@ -267,7 +269,7 @@ defmodule Fil.Op do
     case funs do
       %{stream: _fun} -> transform_stream(stream, funs)
       %{chunk: _fun} -> transform_stream(stream, funs)
-      %{binary: fun} -> Stream.flat_map([stream], &[collect(&1, fun)])
+      %{iodata: fun} -> Stream.flat_map([stream], &[collect(&1, fun)])
     end
   end
 
@@ -285,7 +287,7 @@ defmodule Fil.Op do
   defp drop_size(%__MODULE__{options: options} = op), do: %{op | options: Keyword.delete(options, :size)}
 
   defp validate_transform!(funs) when is_list(funs) do
-    case Keyword.split(funs, [:binary, :chunk, :stream]) do
+    case split_transforms(funs) do
       {[_ | _] = valid, []} ->
         Enum.each(valid, fn
           {_key, fun} when is_function(fun, 1) ->
@@ -298,12 +300,49 @@ defmodule Fil.Op do
         Map.new(valid)
 
       {[], []} ->
-        raise ArgumentError, "expected at least one of :binary, :chunk or :stream"
+        raise ArgumentError, "expected at least one of :iodata, :chunk or :stream"
 
       {_valid, unknown} ->
         raise ArgumentError,
-              "unknown transforms #{inspect(Keyword.keys(unknown))}, expected :binary, :chunk or :stream"
+              "unknown transforms #{inspect(Keyword.keys(unknown))}, expected :iodata, :chunk or :stream"
     end
+  end
+
+  defp split_transforms(funs) do
+    funs
+    |> deprecated_binary()
+    |> Keyword.split([:iodata, :chunk, :stream])
+  end
+
+  # `binary:` is the name `iodata:` had in 0.1. It warns once per call (the transforms are checked once per call, not
+  # per chunk), at the plugin that passed it.
+  defp deprecated_binary(funs) do
+    cond do
+      not Keyword.has_key?(funs, :binary) ->
+        funs
+
+      Keyword.has_key?(funs, :iodata) ->
+        raise ArgumentError, "pass :iodata or the deprecated :binary, not both"
+
+      true ->
+        IO.warn(
+          "the :binary transform of Fil.Op.update_content/2 and Fil.Op.update_result/2 is deprecated, " <>
+            "use :iodata, which gets the same argument",
+          caller_stacktrace()
+        )
+
+        Enum.map(funs, fn
+          {:binary, fun} -> {:iodata, fun}
+          transform -> transform
+        end)
+    end
+  end
+
+  # The stacktrace from the caller of `update_content/2` or `update_result/2` on, so the warning points at the plugin.
+  defp caller_stacktrace do
+    {:current_stacktrace, stacktrace} = Process.info(self(), :current_stacktrace)
+
+    Enum.drop_while(stacktrace, fn {module, _function, _arity, _location} -> module in [Process, __MODULE__] end)
   end
 
   ## ------------------------------------------------------------------

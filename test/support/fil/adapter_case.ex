@@ -376,9 +376,9 @@ defmodule Fil.AdapterCase do
         compressing =
           Fil.attach(disk, :gzip, fn op, next, _opts ->
             op
-            |> Fil.Op.update_content(binary: &:zlib.gzip/1, stream: &gzip/1)
+            |> Fil.Op.update_content(iodata: &:zlib.gzip/1, stream: &gzip/1)
             |> next.()
-            |> Fil.Op.update_result(binary: &:zlib.gunzip/1, stream: &gunzip/1)
+            |> Fil.Op.update_result(iodata: &:zlib.gunzip/1, stream: &gunzip/1)
           end)
 
         content = String.duplicate("all work and no play makes Jack a dull boy\n", 5_000)

@@ -10,7 +10,7 @@ anonymous function in a script:
 disk =
   Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
   |> Fil.attach(:shout, fn op, next, _opts ->
-    op |> Fil.Op.update_content(binary: &String.upcase/1) |> next.()
+    op |> Fil.Op.update_content(iodata: &String.upcase/1) |> next.()
   end)
 
 Fil.write!(disk, "hello.txt", "world")
@@ -40,7 +40,7 @@ operations) and passes the rest on unchanged:
 
 ```elixir
 def call(%Fil.Op{name: :write} = op, next, _opts) do
-  op |> Fil.Op.update_content(binary: &stamp/1) |> next.()
+  op |> Fil.Op.update_content(iodata: &stamp/1) |> next.()
 end
 
 def call(op, next, _opts), do: next.(op)
@@ -159,13 +159,13 @@ functions handle both:
 ```elixir
 def call(%Fil.Op{name: :write} = op, next, _opts) do
   op
-  |> Fil.Op.update_content(binary: &String.upcase/1, chunk: &String.upcase/1)
+  |> Fil.Op.update_content(iodata: &String.upcase/1, chunk: &String.upcase/1)
   |> next.()
 end
 ```
 
-`binary:` gets all of the content as one binary, `chunk:` one chunk of a stream, and `stream:` the stream. A plugin
-with only `binary:` still works on streams: `Fil` collects the stream into memory first, which costs memory for large
+`iodata:` gets all of the content as one binary, `chunk:` one chunk of a stream, and `stream:` the stream. A plugin
+with only `iodata:` still works on streams: `Fil` collects the stream into memory first, which costs memory for large
 files. `Fil.Op.materialize/1` does the same for plugins that need all of the content for something else, such as a
 signature.
 
@@ -202,9 +202,9 @@ one with `Stream.transform/5`, whose start function runs each time the stream is
 ```elixir
 def call(%Fil.Op{} = op, next, _opts) do
   op
-  |> Fil.Op.update_content(binary: &:zlib.gzip/1, stream: &gzip/1)
+  |> Fil.Op.update_content(iodata: &:zlib.gzip/1, stream: &gzip/1)
   |> next.()
-  |> Fil.Op.update_result(binary: &:zlib.gunzip/1, stream: &gunzip/1)
+  |> Fil.Op.update_result(iodata: &:zlib.gunzip/1, stream: &gunzip/1)
 end
 
 defp gzip(chunks) do
@@ -223,7 +223,7 @@ end
 ```
 
 `gunzip/1` is the same with `inflateInit/2` and `inflate/2`. Content in memory goes to `stream:` as a stream of one
-chunk when there's no `binary:`, so one function can cover both.
+chunk when there's no `iodata:`, so one function can cover both.
 
 A transform can change the size of the content, so `Fil.Op.update_content/2` drops the `:size` option of the write.
 On S3, a stream without a size is collected into memory before it's sent. A plugin that knows the new size declares

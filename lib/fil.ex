@@ -195,7 +195,7 @@ defmodule Fil do
       iex> disk =
       ...>   Fil.disk(adapter: Fil.Adapter.Memory)
       ...>   |> Fil.attach(:shout, fn op, next, _opts ->
-      ...>     op |> Fil.Op.update_content(binary: &String.upcase/1) |> next.()
+      ...>     op |> Fil.Op.update_content(iodata: &String.upcase/1) |> next.()
       ...>   end)
       iex> Fil.write!(disk, "hello.txt", "world")
       iex> Fil.read(disk, "hello.txt")

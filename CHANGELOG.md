@@ -52,6 +52,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.Plug` refuses a signed URL with a query parameter that wasn't signed, as S3 does. URLs signed by 0.1 still work.
   ([#1](https://github.com/pehbehbeh/fil/pull/1))
 
+### Deprecated
+
+- `binary:` in `Fil.Op.update_content/2` and `update_result/2` is deprecated in favour of `iodata:`, which gets the
+  same argument. It will be removed in the first breaking release.
+  ([#10](https://github.com/pehbehbeh/fil/pull/10))
+
 ### Fixed
 
 - `Fil.Plug` answers `403` instead of `500` for signed URLs whose query parameters aren't plain strings.

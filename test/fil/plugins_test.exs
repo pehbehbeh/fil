@@ -22,7 +22,7 @@ defmodule Fil.PluginsTest do
 
   def upcase(op, next, _opts) do
     op
-    |> Op.update_content(binary: &String.upcase/1)
+    |> Op.update_content(iodata: &String.upcase/1)
     |> next.()
   end
 
@@ -276,9 +276,9 @@ defmodule Fil.PluginsTest do
       disk =
         Fil.attach(disk, :rot, fn op, next, _opts ->
           op
-          |> Op.update_content(binary: &:zlib.gzip/1)
+          |> Op.update_content(iodata: &:zlib.gzip/1)
           |> next.()
-          |> Op.update_result(binary: &:zlib.gunzip/1)
+          |> Op.update_result(iodata: &:zlib.gunzip/1)
         end)
 
       assert {:ok, _} = Fil.write(disk, "a.txt", ["Hello", [", ", "World"]])
@@ -317,13 +317,13 @@ defmodule Fil.PluginsTest do
       assert chunked.options == [content_type: "x"]
       assert Enum.to_list(chunked.content) == ["AB", "CD"]
 
-      streamed = Op.update_content(op, binary: &String.reverse/1, stream: &Stream.map(&1, fn c -> [c, "."] end))
+      streamed = Op.update_content(op, iodata: &String.reverse/1, stream: &Stream.map(&1, fn c -> [c, "."] end))
 
       assert streamed.content
              |> Enum.to_list()
              |> IO.iodata_to_binary() == "ab.cd."
 
-      collected = Op.update_content(op, binary: &String.reverse/1)
+      collected = Op.update_content(op, iodata: &String.reverse/1)
       assert collected.content == "dcba"
       assert collected.options == [content_type: "x"]
 
@@ -364,7 +364,7 @@ defmodule Fil.PluginsTest do
         Fil.attach(disk, :check, fn op, next, _opts ->
           op
           |> next.()
-          |> Op.update_result(binary: tampered, stream: &Stream.map(&1, tampered))
+          |> Op.update_result(iodata: tampered, stream: &Stream.map(&1, tampered))
         end)
 
       {:ok, _} = Fil.write(checking, "a.txt", "content")
@@ -394,7 +394,7 @@ defmodule Fil.PluginsTest do
         Fil.attach(disk, :fail, fn op, next, _opts ->
           op
           |> next.()
-          |> Op.update_result(binary: fn _content -> raise "a bug" end)
+          |> Op.update_result(iodata: fn _content -> raise "a bug" end)
         end)
 
       {:ok, _} = Fil.write(failing, "a.txt", "content")
@@ -422,7 +422,7 @@ defmodule Fil.PluginsTest do
       op = %Op{disk: disk, name: :read, path: "a.txt", streaming: true, result: {:ok, stream}}
 
       assert {:ok, chunked} = Op.update_result(op, chunk: &String.upcase/1).result
-      assert {:ok, collected} = Op.update_result(op, binary: &String.reverse/1).result
+      assert {:ok, collected} = Op.update_result(op, iodata: &String.reverse/1).result
       refute_received {:pulled, _chunk}
 
       assert Enum.to_list(chunked) == ["AB", "CD"]
@@ -444,16 +444,42 @@ defmodule Fil.PluginsTest do
       end
     end
 
+    test "binary: still works as a deprecated name for iodata:", %{disk: disk} do
+      op = %Op{disk: disk, name: :write, path: "a.txt", content: "abc"}
+
+      warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert Op.update_content(op, binary: &String.upcase/1).content == "ABC"
+        end)
+
+      assert warning =~ "the :binary transform of Fil.Op.update_content/2 and Fil.Op.update_result/2 is deprecated"
+      assert warning =~ "plugins_test.exs"
+
+      read = %Op{disk: disk, name: :read, path: "a.txt", streaming: true, result: {:ok, Stream.map(["ab", "c"], & &1)}}
+
+      read_warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert {:ok, stream} = Op.update_result(read, binary: &String.upcase/1).result
+          assert Enum.to_list(stream) == ["ABC"]
+        end)
+
+      assert [_once] = Regex.scan(~r/is deprecated/, read_warning)
+
+      assert_raise ArgumentError, ~r/not both/, fn ->
+        Op.update_content(op, iodata: &String.upcase/1, binary: &String.upcase/1)
+      end
+    end
+
     test "other operations are left alone, but the transforms are still checked", %{disk: disk} do
       op = %Op{disk: disk, name: :stat, path: "a.txt"}
 
-      assert Op.update_content(op, binary: &String.upcase/1) == op
-      assert Op.update_result(op, binary: &String.upcase/1) == op
+      assert Op.update_content(op, iodata: &String.upcase/1) == op
+      assert Op.update_result(op, iodata: &String.upcase/1) == op
       assert Op.materialize(op) == op
 
-      assert_raise ArgumentError, ~r/at least one of :binary, :chunk or :stream/, fn -> Op.update_content(op, []) end
+      assert_raise ArgumentError, ~r/at least one of :iodata, :chunk or :stream/, fn -> Op.update_content(op, []) end
       assert_raise ArgumentError, ~r/unknown transforms \[:lines\]/, fn -> Op.update_content(op, lines: & &1) end
-      assert_raise ArgumentError, ~r/1-arity function/, fn -> Op.update_result(op, binary: :nope) end
+      assert_raise ArgumentError, ~r/1-arity function/, fn -> Op.update_result(op, iodata: :nope) end
     end
 
     test "the transforms are checked before the content", %{disk: disk} do
