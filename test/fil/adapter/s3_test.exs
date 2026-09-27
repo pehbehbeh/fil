@@ -546,6 +546,10 @@ defmodule Fil.Adapter.S3Test do
       assert {complete.method, complete.query_params} == {"POST", %{"uploadId" => "UP"}}
       assert completed_parts(complete) == [{"1", ~s("e1")}, {"2", ~s("e2")}]
 
+      # The guard creates the upload, and the writer (the test) sends the parts.
+      assert create.assigns.label == {S3, :upload_guard, "a.bin"}
+      refute match?({S3, _op, _key}, first.assigns.label)
+
       for request <- [create, first, second, complete], do: assert(header(request, "if-none-match") == nil)
     end
 
@@ -1018,6 +1022,7 @@ defmodule Fil.Adapter.S3Test do
       assert Enum.to_list(stream) == ["Hel", "lo"]
       assert [%{method: "GET", request_path: "/a.txt"} = get] = requests()
       assert header(get, "x-amz-checksum-mode") == nil
+      assert get.assigns.label == {S3, :stream, "a.txt"}
     end
 
     test "downloads again each time the stream is read" do
@@ -2000,9 +2005,15 @@ defmodule Fil.Adapter.S3Test do
     for response <- responses, do: Req.Test.expect(__MODULE__, &respond(&1, response, test))
   end
 
+  # The request also notes the label of the process that sent it (`:undefined` for none).
   defp respond(conn, response, test) do
     {:ok, body, conn} = read_body(conn)
-    request = assign(conn, :body, body)
+
+    request =
+      conn
+      |> assign(:body, body)
+      |> assign(:label, :proc_lib.get_label(self()))
+
     send(test, {__MODULE__, request})
     reply(conn, response)
   end

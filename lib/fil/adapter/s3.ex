@@ -234,9 +234,8 @@ defmodule Fil.Adapter.S3 do
   @max_object 5 * 1024 ** 4
   @max_parts 10_000
 
-  # How long a failed part waits before it's sent again, in milliseconds, so a storage that asked to slow down gets a
-  # moment.
-  @retry_delay 1_000
+  # How long a failed part waits before it's sent again, so a storage that asked to slow down gets a moment.
+  @retry_delay to_timeout(second: 1)
 
   @derive {Inspect, only: [:bucket, :region, :prefix, :endpoint, :public_endpoint, :path_style]}
   defstruct [
@@ -426,6 +425,8 @@ defmodule Fil.Adapter.S3 do
 
     {pid, monitor} =
       spawn_monitor(fn ->
+        # The label shows in `:observer` and crash reports. The key names the file, and nothing else goes in.
+        Process.set_label({__MODULE__, :stream, key})
         Process.put(:"$callers", callers)
         relay = %Relay{to: reader, ref: ref, monitor: Process.monitor(reader)}
         headers = if check, do: [@checksum_mode], else: []
@@ -821,6 +822,7 @@ defmodule Fil.Adapter.S3 do
 
     pid =
       spawn(fn ->
+        Process.set_label({__MODULE__, :upload_guard, key})
         Process.put(:"$callers", callers)
         guard(%{state: state, key: key, ref: ref, writer: writer, monitor: Process.monitor(writer), id: nil})
       end)
