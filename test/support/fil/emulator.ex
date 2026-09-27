@@ -108,8 +108,18 @@ defmodule Fil.Emulator do
   @spec create_s3_bucket(String.t()) :: :ok | {:error, term()}
   def create_s3_bucket(bucket), do: s3_request(:put, "/" <> bucket)
 
+  # S3 and S3Mock refuse to delete a bucket that isn't empty (SeaweedFS doesn't), so the objects go first. A bucket
+  # that doesn't exist counts as deleted.
   @spec delete_s3_bucket(String.t()) :: :ok | {:error, term()}
-  def delete_s3_bucket(bucket), do: s3_request(:delete, "/" <> bucket)
+  def delete_s3_bucket(bucket) do
+    disk = Fil.disk([adapter: Fil.Adapter.S3, bucket: bucket, endpoint: url(:s3), path_style: true] ++ s3_credentials())
+
+    case Fil.rm_rf(disk, ".") do
+      {:ok, _count} -> s3_request(:delete, "/" <> bucket)
+      {:error, %Fil.ConfigurationError{reason: "NoSuchBucket"}} -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
 
   defp s3_request(method, path) do
     credentials = s3_credentials()
