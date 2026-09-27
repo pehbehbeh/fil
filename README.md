@@ -248,6 +248,15 @@ case Fil.write(s3, "jobs/today.lock", "started", if_exists: :error) do
 end
 ```
 
+`tmp` returns a ref to a file in a temporary directory, which is removed when the calling process exits. It's a local
+file, so a copy from any disk gives a tool the path it needs:
+
+```elixir
+report = Fil.tmp("report.pdf")
+{:ok, _} = Fil.cp(Fil.ref(s3, "reports/q3.pdf"), report)
+{text, 0} = System.cmd("pdftotext", [Fil.Tmp.path(report), "-"])
+```
+
 ## Development
 
 `mix test` runs the unit tests, which need no network. The integration tests run the conformance suite against RustFS,
