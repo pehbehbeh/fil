@@ -179,10 +179,10 @@ defmodule Fil.Adapter.Local do
   defp write_file(state, path, content, opts) do
     chunks = if is_binary(content) or is_list(content), do: [content], else: content
 
-    put_file(state, path, &write_chunks(&1, chunks), opts)
+    put_file(state, path, fn _tmp, io -> write_chunks(io, chunks) end, opts)
   end
 
-  # `fill` writes the content into the open temporary file.
+  # `fill` gets the temporary file's path and its open handle, and writes the content into it.
   defp put_file(state, path, fill, opts) do
     with {:ok, full} <- full_path(state, path),
          {:ok, created} <- make_parents(full),
@@ -238,7 +238,7 @@ defmodule Fil.Adapter.Local do
   end
 
   defp place(tmp, io, full, fill, opts) do
-    with :ok <- write_tmp(io, fill) do
+    with :ok <- write_tmp(tmp, io, fill) do
       case Keyword.get(opts, :if_exists, :overwrite) do
         :overwrite -> File.rename(tmp, full)
         :error -> create(tmp, full)
@@ -283,7 +283,7 @@ defmodule Fil.Adapter.Local do
          {:ok, io} <- open_read(from) do
       try do
         state
-        |> put_file(dest, &copy_chunks(&1, io), opts)
+        |> put_file(dest, &copy_into(&1, &2, io), opts)
         |> at_dest(dest)
       after
         :file.close(io)
@@ -291,10 +291,12 @@ defmodule Fil.Adapter.Local do
     end
   end
 
-  defp copy_chunks(tmp_io, io) do
-    case :file.copy(io, tmp_io) do
-      {:ok, _bytes} -> :ok
-      {:error, reason} -> {:error, reason}
+  # The copy gets the source's permissions, like `File.cp/2` gives it.
+  defp copy_into(tmp, tmp_io, io) do
+    with {:ok, info} <- :file.read_file_info(io, [:raw]),
+         {:ok, _bytes} <- :file.copy(io, tmp_io) do
+      %File.Stat{mode: mode} = File.Stat.from_record(info)
+      File.chmod(tmp, Bitwise.band(mode, 0o7777))
     end
   end
 
@@ -472,10 +474,10 @@ defmodule Fil.Adapter.Local do
   ## Writing
   ## ------------------------------------------------------------------
 
-  defp write_tmp(io, fill) do
+  defp write_tmp(tmp, io, fill) do
     result =
       try do
-        fill.(io)
+        fill.(tmp, io)
       catch
         kind, reason ->
           _ = :file.close(io)

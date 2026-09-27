@@ -186,6 +186,19 @@ defmodule Fil.Adapter.LocalTest do
       assert Fil.read(disk, "source.txt") == {:ok, "source"}
     end
 
+    test "keep the source's permissions, like File.cp/2", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "run.sh", "echo")
+
+      root = Path.join(tmp_dir, "primary")
+      source = Path.join(root, "run.sh")
+      copy = Path.join(root, "copies/run.sh")
+      File.chmod!(source, 0o750)
+
+      assert {:ok, _} = Fil.cp(disk, "run.sh", "copies/run.sh", if_exists: :error)
+      assert %File.Stat{mode: mode} = File.stat!(copy)
+      assert Bitwise.band(mode, 0o7777) == 0o750
+    end
+
     test "move a directory as before", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
       assert {:ok, _} = Fil.rename(disk, "dir", "moved/dir", if_exists: :error)
