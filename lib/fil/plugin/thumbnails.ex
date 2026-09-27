@@ -39,15 +39,19 @@ defmodule Fil.Plugin.Thumbnails do
               ],
               doc: """
               The variants by name, such as `[small: [width: 200], square: [width: 96, crop: :attention]]`. A name
-              is a directory in the variant's path, so it's lowercase letters, digits and underscores. Each variant
-              takes:
+              goes into the variant's path, so it's lowercase letters, digits and underscores. Each variant takes:
               """
             ],
-            prefix: [
-              type: {:custom, __MODULE__, :normalize_prefix, []},
-              type_doc: "`t:String.t/0`",
-              default: "thumbnails",
-              doc: "The directory of the variants, as `<prefix>/<variant>/<path>`. Writes under it get no variants."
+            variant_path: [
+              type: {:or, [{:fun, 3}, :mfa]},
+              default: {__MODULE__, :prefixed, ["thumbnails"]},
+              doc: """
+              Where the variants of an image go: a function `(path, variant, format)` that returns the path of the
+              variant, or `nil` for a path that gets no variants, such as a variant's own path. `format` is the
+              variant's `:format` or `nil`. A `{module, function, args}` is called with `args` after those three, for
+              disks from config. The default puts them under `thumbnails/` (see `prefixed/4` and
+              [Where variants go](#module-where-variants-go)).
+              """
             ],
             extensions: [
               type: {:list, :string},
@@ -101,11 +105,6 @@ defmodule Fil.Plugin.Thumbnails do
 
   ## Variants
 
-  A variant of `cats/tom.jpg` is at `<prefix>/<variant>/cats/tom.jpg`. With `format: :webp`, it's
-  `thumbnails/square/cats/tom.jpg.webp`, so `tom.jpg` and `tom.png` never share a variant, and the content type still
-  follows from the extension. `variant/2` returns the ref. The variants are ordinary files: read them, build their
-  URLs, and expect them in a recursive `Fil.ls/3` of the root.
-
   Every variant fits into its `:width` and `:height`, keeping the image's aspect ratio (or crops to exactly that size
   with `:crop`). Images are never enlarged. A variant is rotated by the image's EXIF orientation and keeps only the
   colour profile of the metadata, so no GPS position ends up in a public thumbnail. That needs libvips 8.15 or later
@@ -114,15 +113,48 @@ defmodule Fil.Plugin.Thumbnails do
 
   A write of an image (by its extension, see `:extensions`) makes every variant in memory, then writes the image, then
   the variants, each as a `Fil.write/3` with its content type. The variant writes go through the disk's plugins too,
-  and this one passes them on because they're under `:prefix`. So `Fil.Telemetry` counts an image write as one
-  `:write` plus one per variant, nested in it (see [Nested operations](Fil.Telemetry.html#module-nested-operations)).
-  With `mode: :manual`, a write makes no variants, and `generate/1` makes them later.
+  and this one passes them on because `:variant_path` gives them no variants. So `Fil.Telemetry` counts an image
+  write as one `:write` plus one per variant, nested in it (see
+  [Nested operations](Fil.Telemetry.html#module-nested-operations)). With `mode: :manual`, a write makes no variants,
+  and `generate/1` makes them later.
+
+  ## Where variants go
+
+  `:variant_path` maps the path of an image to the path of each variant. The default, `prefixed/4` with `"thumbnails"`,
+  puts the variants of `cats/tom.jpg` at `thumbnails/small/cats/tom.jpg`, and a variant with `format: :webp` at
+  `thumbnails/square/cats/tom.jpg.webp`. So `tom.jpg` and `tom.png` never share a variant, and the content type still
+  follows from the extension. `{Fil.Plugin.Thumbnails, :prefixed, ["media/thumbs"]}` uses another directory.
+  `variant/2` returns the ref of a variant. The variants are ordinary files: read them, build their URLs, and expect
+  them in a recursive `Fil.ls/3`.
+
+  A function of your own can put the variants next to the image instead. This one stores an image as
+  `images/5a95_original_158.jpg` and its variants as `images/5a95_small_158.jpg`:
+
+      defmodule MyApp.Images do
+        def variant_path(path, variant, format) do
+          case String.split(path, "_original_", parts: 2) do
+            [id, rest] -> "\#{id}_\#{variant}_\#{rest}" <> if(format, do: ".\#{format}", else: "")
+            [_not_an_original] -> nil
+          end
+        end
+      end
+
+      Fil.Plugin.Thumbnails.attach(disk,
+        variants: [small: [width: 200]],
+        variant_path: {MyApp.Images, :variant_path, []}
+      )
+
+  The function returns `nil` for a path that gets no variants, and that has to include the variants' own paths, or the
+  plugin makes variants of variants. `Fil.rm_rf/1` calls it with the directory and a `nil` format: a path it returns,
+  such as `thumbnails/small/cats` in the default layout, is deleted with everything under it, and `nil` deletes nothing
+  more (variants next to their images go with the directory). A path outside the disk root, the root itself or the
+  image's own path raises `ArgumentError`.
 
   ## Deletes, copies and renames
 
   Once an image is deleted, copied or renamed on its disk, the plugin does the same with its variants. `Fil.rm_rf/1`
   deletes the variants under the path too. Its count is what the operation itself deleted, so variants only count
-  when the prefix is in the deleted directory.
+  when they're in the deleted directory.
 
   A copy or a rename to another extension doesn't fit the variants any more: a rename deletes them, and a copy leaves
   the source's alone. Either deletes the variants the destination had, since they belong to the file it replaced. The
@@ -193,8 +225,8 @@ defmodule Fil.Plugin.Thumbnails do
       iex> Fil.Plugin.Thumbnails.variant(tom, :square)
       #Fil.Ref<memory:thumbnails/square/cats/tom.jpg.webp>
 
-  Raises `ArgumentError` when the plugin isn't attached to the disk, `name` isn't one of its variants, or the path
-  escapes the disk root.
+  Raises `ArgumentError` when the plugin isn't attached to the disk, `name` isn't one of its variants, the path escapes
+  the disk root, or `:variant_path` gives the path no variant.
   """
   @spec variant(Fil.Ref.t(), atom()) :: Fil.Ref.t()
   def variant(%Fil.Ref{disk: disk, path: path}, name), do: variant(disk, path, name)
@@ -209,9 +241,15 @@ defmodule Fil.Plugin.Thumbnails do
       raise ArgumentError, "unknown variant #{inspect(name)}, expected one of #{inspect(names)}"
     end
 
-    case Fil.Support.Path.normalize(path) do
-      {:ok, path} -> variant_ref(disk, path, name, opts)
-      {:error, :ebadpath} -> raise ArgumentError, "the path #{inspect(path)} escapes the disk root"
+    normalized =
+      case Fil.Support.Path.normalize(path) do
+        {:ok, normalized} -> normalized
+        {:error, :ebadpath} -> raise ArgumentError, "the path #{inspect(path)} escapes the disk root"
+      end
+
+    case variant_path(normalized, name, opts[:variants][name][:format], opts) do
+      nil -> raise ArgumentError, ":variant_path gives #{inspect(normalized)} no variant #{inspect(name)}"
+      mapped -> Fil.ref(disk, mapped)
     end
   end
 
@@ -226,8 +264,8 @@ defmodule Fil.Plugin.Thumbnails do
   bypasses the plugins, so it gets its variants this way too.
 
   Returns the errors of `Fil.read/1` and those of a write of the image (see [Errors](#module-errors)). Raises
-  `ArgumentError` when the plugin isn't attached to the disk, or the path isn't an image by `:extensions` or is under
-  `:prefix`.
+  `ArgumentError` when the plugin isn't attached to the disk, or the path gets no variants: its extension isn't in
+  `:extensions`, or `:variant_path` returns `nil` for it.
   """
   @spec generate(Fil.Ref.t()) :: {:ok, keyword(Fil.Ref.t())} | {:error, Fil.error()}
   def generate(%Fil.Ref{disk: disk, path: path}), do: generate(disk, path)
@@ -236,30 +274,58 @@ defmodule Fil.Plugin.Thumbnails do
   @spec generate(Fil.Disk.t(), Path.t()) :: {:ok, keyword(Fil.Ref.t())} | {:error, Fil.error()}
   def generate(%Fil.Disk{} = disk, path) when is_binary(path) do
     opts = opts!(disk)
-    original = Fil.ref(disk, path)
+    ref = Fil.ref(disk, path)
 
-    if not image?(original.path, opts) do
-      raise ArgumentError, "#{inspect(path)} isn't an image: its extension isn't in :extensions, or it's under :prefix"
-    end
-
-    with {:ok, content} <- Fil.read(original),
-         {:ok, thumbnails} <- thumbnails(content, original, opts),
+    with {:ok, original} <- Fil.Ref.normalize(ref),
+         variants = variants!(original, opts),
+         {:ok, content} <- Fil.read(original),
+         {:ok, thumbnails} <- thumbnails(content, original, variants, opts),
          :ok <- write_all(thumbnails) do
-      {:ok, for({name, variant, _data} <- thumbnails, do: {name, variant})}
+      {:ok, variants}
     end
   end
+
+  @doc """
+  Puts the variants under `prefix`, as `<prefix>/<variant>/<path>`, with the format's extension appended when the
+  variant has a `:format`. It's the default `:variant_path`, with `"thumbnails"`. Paths under `prefix` get no
+  variants, which keeps the plugin from making variants of variants.
+
+      iex> Fil.Plugin.Thumbnails.prefixed("cats/tom.jpg", :small, nil, "thumbnails")
+      "thumbnails/small/cats/tom.jpg"
+      iex> Fil.Plugin.Thumbnails.prefixed("cats/tom.jpg", :square, :webp, "thumbnails")
+      "thumbnails/square/cats/tom.jpg.webp"
+      iex> Fil.Plugin.Thumbnails.prefixed("thumbnails/small/cats/tom.jpg", :small, nil, "thumbnails")
+      nil
+
+  Another directory is `variant_path: {Fil.Plugin.Thumbnails, :prefixed, ["media/thumbs"]}`.
+  """
+  @spec prefixed(String.t(), atom(), atom() | nil, String.t()) :: String.t() | nil
+  def prefixed(path, variant, format, prefix) do
+    prefix =
+      case Fil.Support.Path.normalize(prefix) do
+        {:ok, prefix} when prefix != "." -> prefix
+        _root_or_escape -> raise ArgumentError, "expected a directory inside the disk root, got: #{inspect(prefix)}"
+      end
+
+    if outside?(path, prefix) do
+      Path.join([prefix, Atom.to_string(variant), path]) <> format_extension(format)
+    end
+  end
+
+  defp outside?(path, directory), do: path != directory and not String.starts_with?(path, directory <> "/")
 
   @doc false
   @spec call(Op.t(), (Op.t() -> Op.t()), keyword()) :: Op.t()
   def call(%Op{name: :write} = op, next, opts) do
     opts = validate!(opts)
+    original = Fil.ref(op.disk, op.path)
+    variants = variants(original, opts)
 
-    if opts[:mode] == :on_write and image?(op.path, opts) do
+    if opts[:mode] == :on_write and variants != [] do
       vix!()
       op = Op.materialize(op)
-      original = Fil.ref(op.disk, op.path)
 
-      case thumbnails(op.content, original, opts) do
+      case thumbnails(op.content, original, variants, opts) do
         {:ok, thumbnails} ->
           op
           |> next.()
@@ -277,56 +343,42 @@ defmodule Fil.Plugin.Thumbnails do
   def call(%Op{name: :rm, path: path} = op, next, opts) do
     opts = validate!(opts)
     op = next.(op)
+    image = Fil.ref(op.disk, path)
 
-    each_variant(op, variants(op.disk, path, opts), &Fil.rm/1)
+    each_variant(op, variants(image, opts), &rm_variant/1)
   end
 
   def call(%Op{name: :rm_rf, path: path} = op, next, opts) do
     opts = validate!(opts)
     op = next.(op)
+    tree = Fil.ref(op.disk, path)
 
-    if under_prefix?(path, opts[:prefix]),
-      do: op,
-      else: each_variant(op, variant_trees(op.disk, path, opts), &Fil.rm_rf/1)
+    each_variant(op, variant_trees(tree, opts), &Fil.rm_rf/1)
   end
 
   def call(%Op{name: :cp, path: path, dest: dest} = op, next, opts) do
     opts = validate!(opts)
     op = next.(op)
+    {src, dest} = {Fil.ref(op.disk, path), Fil.ref(op.disk, dest)}
 
-    if follows?(path, dest, opts) do
-      each_variant(op, pairs(op.disk, path, dest, opts), &transfer(&1, :cp))
-    else
-      each_variant(op, variants(op.disk, dest, opts), &Fil.rm/1)
+    case pairs(src, dest, opts) do
+      [] -> each_variant(op, variants(dest, opts), &rm_variant/1)
+      pairs -> each_variant(op, pairs, &transfer(&1, :cp))
     end
   end
 
   def call(%Op{name: :rename, path: path, dest: dest} = op, next, opts) do
     opts = validate!(opts)
     op = next.(op)
+    {src, dest} = {Fil.ref(op.disk, path), Fil.ref(op.disk, dest)}
 
-    if follows?(path, dest, opts) do
-      each_variant(op, pairs(op.disk, path, dest, opts), &transfer(&1, :rename))
-    else
-      stale = variants(op.disk, path, opts) ++ variants(op.disk, dest, opts)
-      each_variant(op, stale, &Fil.rm/1)
+    case pairs(src, dest, opts) do
+      [] -> each_variant(op, variants(src, opts) ++ variants(dest, opts), &rm_variant/1)
+      pairs -> each_variant(op, pairs, &transfer(&1, :rename))
     end
   end
 
   def call(op, next, _opts), do: next.(op)
-
-  @doc false
-  # The `:prefix` type: a path inside the disk root, normalized so it compares with normalized paths.
-  @spec normalize_prefix(term()) :: {:ok, String.t()} | {:error, String.t()}
-  def normalize_prefix(prefix) when is_binary(prefix) do
-    case Fil.Support.Path.normalize(prefix) do
-      {:ok, "."} -> {:error, "expected a directory, got the disk root: #{inspect(prefix)}"}
-      {:ok, prefix} -> {:ok, prefix}
-      {:error, :ebadpath} -> {:error, "expected a directory inside the disk root, got: #{inspect(prefix)}"}
-    end
-  end
-
-  def normalize_prefix(other), do: {:error, "expected a string, got: #{inspect(other)}"}
 
   # Runs `fun` on each item once the operation succeeded, and stops at the first error, which becomes the result.
   defp each_variant(%Op{result: {:ok, _value}} = op, items, fun) do
@@ -339,6 +391,8 @@ defmodule Fil.Plugin.Thumbnails do
   end
 
   defp each_variant(op, _items, _fun), do: op
+
+  defp rm_variant({_name, variant}), do: Fil.rm(variant)
 
   # A variant the source doesn't have is deleted at the destination, where it would belong to the file copied over.
   defp transfer(%{from: from, to: to}, name) do
@@ -359,55 +413,87 @@ defmodule Fil.Plugin.Thumbnails do
     end)
   end
 
-  # An image by its extension, outside the prefix, so the plugin's own operations pass through.
-  defp image?(path, opts), do: extension(path) in opts[:extensions] and not under_prefix?(path, opts[:prefix])
-
-  # A copy or a rename keeps the variants when they still fit: the destination is an image of the same format.
-  defp follows?(path, dest, opts), do: image?(path, opts) and image?(dest, opts) and extension(path) == extension(dest)
-
   defp extension(path) do
     path
     |> Path.extname()
     |> String.downcase()
   end
 
-  defp under_prefix?(path, prefix), do: path == prefix or String.starts_with?(path, prefix <> "/")
+  defp format_extension(nil), do: ""
+  defp format_extension(format), do: ".#{format}"
 
-  defp variant_ref(disk, path, name, opts) do
-    format = opts[:variants][name][:format]
-    extension = if format, do: ".#{format}", else: ""
-    variant_path = variant_path(path, name, opts)
-
-    Fil.ref(disk, variant_path <> extension)
+  # The variants of an image as `{name, ref}`. A path whose extension isn't in `:extensions` has none, and neither does
+  # one `:variant_path` returns `nil` for, such as a variant's own path.
+  defp variants(%Fil.Ref{disk: disk, path: path}, opts) do
+    for {name, variant} <- opts[:variants],
+        extension(path) in opts[:extensions],
+        mapped when mapped != nil <- [variant_path(path, name, variant[:format], opts)],
+        do: {name, Fil.ref(disk, mapped)}
   end
 
-  defp variant_path(path, name, opts), do: Path.join([opts[:prefix], Atom.to_string(name), path])
+  defp variants!(original, opts) do
+    case variants(original, opts) do
+      [] ->
+        raise ArgumentError,
+              "#{inspect(original.path)} gets no variants: its extension isn't in :extensions, " <>
+                "or :variant_path returns nil for it"
 
-  # The variants of `path`, none if it isn't an image.
-  defp variants(disk, path, opts) do
-    for {name, _variant} <- opts[:variants], image?(path, opts), do: variant_ref(disk, path, name, opts)
+      variants ->
+        variants
+    end
   end
 
-  # What `rm_rf` deletes: the directory of each variant at `path`, which has no format's extension, and the variant
-  # itself when `path` is an image.
-  defp variant_trees(disk, path, opts) do
-    directories = for {name, _variant} <- opts[:variants], do: Fil.ref(disk, variant_path(path, name, opts))
-    files = variants(disk, path, opts)
+  # The variants a copy or a rename takes along, which only fit a destination with the same extension.
+  defp pairs(src, dest, opts) do
+    if extension(src.path) == extension(dest.path) do
+      for {name, to} <- variants(dest, opts), {^name, from} <- variants(src, opts), do: %{from: from, to: to}
+    else
+      []
+    end
+  end
+
+  # What `rm_rf` deletes: what `:variant_path` gives the path as a directory (without a format), and the variants of
+  # the path when it's an image.
+  defp variant_trees(%Fil.Ref{disk: disk, path: path} = ref, opts) do
+    directories =
+      for {name, _variant} <- opts[:variants],
+          mapped when mapped != nil <- [variant_path(path, name, nil, opts)],
+          do: Fil.ref(disk, mapped)
+
+    files = for {_name, variant} <- variants(ref, opts), do: variant
 
     Enum.uniq(directories ++ files)
   end
 
-  defp pairs(disk, path, dest, opts) do
-    for {name, _variant} <- opts[:variants] do
-      %{from: variant_ref(disk, path, name, opts), to: variant_ref(disk, dest, name, opts)}
+  # Calls `:variant_path` and checks what it returns, so a mistake can't delete or overwrite the wrong files.
+  defp variant_path(path, name, format, opts) do
+    result =
+      case opts[:variant_path] do
+        {module, function, args} -> apply(module, function, [path, name, format | args])
+        fun -> fun.(path, name, format)
+      end
+
+    normalized = if is_binary(result), do: Fil.Support.Path.normalize(result), else: result
+
+    case normalized do
+      nil ->
+        nil
+
+      {:ok, normalized} when normalized not in [path, "."] ->
+        normalized
+
+      _invalid ->
+        raise ArgumentError,
+              ":variant_path returned #{inspect(result)} for #{inspect(path)} and #{inspect(name)}, expected nil or " <>
+                "a path inside the disk root, other than the root and the image's own path"
     end
   end
 
   # Makes every variant in memory before anything is written, as `{name, ref, binary}`.
-  defp thumbnails(content, %Fil.Ref{} = original, opts) do
+  defp thumbnails(content, %Fil.Ref{} = original, variants, opts) do
     result =
       with :ok <- check_pixels(content, opts[:max_pixels]) do
-        Enum.reduce_while(opts[:variants], {:ok, []}, &resize(&1, &2, content, original, opts))
+        Enum.reduce_while(variants, {:ok, []}, &resize(&1, &2, content, opts))
       end
 
     case result do
@@ -416,10 +502,8 @@ defmodule Fil.Plugin.Thumbnails do
     end
   end
 
-  defp resize({name, variant}, {:ok, thumbnails}, content, original, opts) do
-    ref = variant_ref(original.disk, original.path, name, opts)
-
-    case thumbnail(content, ref.path, variant) do
+  defp resize({name, ref}, {:ok, thumbnails}, content, opts) do
+    case thumbnail(content, ref.path, opts[:variants][name]) do
       {:ok, data} -> {:cont, {:ok, [{name, ref, data} | thumbnails]}}
       {:error, message} -> {:halt, not_an_image(message)}
     end

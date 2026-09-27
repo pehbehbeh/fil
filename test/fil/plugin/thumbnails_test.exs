@@ -377,9 +377,9 @@ defmodule Fil.Plugin.ThumbnailsTest do
                |> Thumbnails.generate()
     end
 
-    test "raises for a path that isn't an image" do
-      assert_raise ArgumentError, ~r/isn't an image/, fn -> Thumbnails.generate(disk(), "notes.txt") end
-      assert_raise ArgumentError, ~r/under :prefix/, fn -> Thumbnails.generate(disk(), "thumbnails/small/a.png") end
+    test "raises for a path that gets no variants" do
+      assert_raise ArgumentError, ~r/gets no variants/, fn -> Thumbnails.generate(disk(), "notes.txt") end
+      assert_raise ArgumentError, ~r/gets no variants/, fn -> Thumbnails.generate(disk(), "thumbnails/small/a.png") end
     end
   end
 
@@ -409,8 +409,7 @@ defmodule Fil.Plugin.ThumbnailsTest do
 
       assert_raise ArgumentError, ~r/invalid variant name :Small/, fn -> disk(variants: [Small: [width: 100]]) end
       assert_raise ArgumentError, ~r/invalid variant name :"a\/b"/, fn -> disk(variants: ["a/b": [width: 100]]) end
-      assert_raise NimbleOptions.ValidationError, ~r/disk root/, fn -> disk(prefix: "/") end
-      assert_raise NimbleOptions.ValidationError, ~r/inside the disk root/, fn -> disk(prefix: "../up") end
+      assert_raise NimbleOptions.ValidationError, ~r/:variant_path/, fn -> disk(variant_path: "thumbnails") end
     end
 
     test "are validated on the first write of a disk from config" do
@@ -420,11 +419,97 @@ defmodule Fil.Plugin.ThumbnailsTest do
         Fil.write(disk, "a.png", "png")
       end
     end
+  end
 
-    test "normalize the prefix" do
-      disk = disk(prefix: "/media//thumbs/")
+  describe "variant_path:" do
+    # The layout of an application that keeps the variants next to the image: `images/5a95_original_158_OET.jpg` has
+    # `images/5a95_small_158_OET.jpg`.
+    defmodule Beside do
+      def variant_path(path, variant, format) do
+        case String.split(path, "_original_", parts: 2) do
+          [id, rest] -> "#{id}_#{variant}_#{rest}" <> if(format, do: ".#{format}", else: "")
+          [_not_an_original] -> nil
+        end
+      end
+    end
 
-      assert Thumbnails.variant(disk, "a.jpg", :small).path == "media/thumbs/small/a.jpg"
+    setup do
+      disk =
+        disk(
+          variants: [small: [width: 100], webp: [width: 50, format: :webp]],
+          variant_path: {Beside, :variant_path, []}
+        )
+
+      Fil.write!(disk, "images/5a95_original_158_OET.jpg", image(400, 200, ".jpg"))
+      %{disk: disk}
+    end
+
+    defp paths(disk) do
+      disk
+      |> Fil.ls!(".", recursive: true)
+      |> Enum.map(& &1.path)
+      |> Enum.sort()
+    end
+
+    test "puts the variants next to the image, and makes none of them", %{disk: disk} do
+      assert paths(disk) == [
+               "images/5a95_original_158_OET.jpg",
+               "images/5a95_small_158_OET.jpg",
+               "images/5a95_webp_158_OET.jpg.webp"
+             ]
+
+      assert variant_size(disk, "images/5a95_original_158_OET.jpg", :small) == {100, 50}
+
+      assert Thumbnails.variant(disk, "images/5a95_original_158_OET.jpg", :webp).path ==
+               "images/5a95_webp_158_OET.jpg.webp"
+
+      assert_raise ArgumentError, ~r/no variant :small/, fn -> Thumbnails.variant(disk, "images/other.jpg", :small) end
+    end
+
+    test "deletes, copies and renames the variants with the image", %{disk: disk} do
+      Fil.cp!(disk, "images/5a95_original_158_OET.jpg", "images/77ab_original_158_OET.jpg")
+      Fil.rename!(disk, "images/5a95_original_158_OET.jpg", "images/99cd_original_158_OET.jpg")
+      Fil.rm!(disk, "images/77ab_original_158_OET.jpg")
+
+      assert paths(disk) == [
+               "images/99cd_original_158_OET.jpg",
+               "images/99cd_small_158_OET.jpg",
+               "images/99cd_webp_158_OET.jpg.webp"
+             ]
+
+      assert Fil.rm_rf(disk, "images") == {:ok, 3}
+      assert paths(disk) == []
+    end
+
+    test "generate/1 makes the variants", %{disk: disk} do
+      Fil.rm!(disk, "images/5a95_small_158_OET.jpg")
+
+      assert {:ok, [small: small, webp: _webp]} =
+               disk
+               |> Fil.ref("images/5a95_original_158_OET.jpg")
+               |> Thumbnails.generate()
+
+      assert small.path == "images/5a95_small_158_OET.jpg"
+      assert Fil.exists?(small)
+    end
+
+    test "prefixed/4 takes another directory, also from config" do
+      variant_path = {Thumbnails, :prefixed, ["/media//thumbs/"]}
+      config = [variants: [small: [width: 100]], variant_path: variant_path]
+      disk = Fil.disk(adapter: Memory, root: "config", plugins: [{Thumbnails, :call, config}])
+
+      Fil.write!(disk, "a.png", image(400, 200))
+      Fil.write!(disk, "media/thumbs/b.png", image(400, 200))
+
+      assert paths(disk) == ["a.png", "media/thumbs/b.png", "media/thumbs/small/a.png"]
+    end
+
+    test "raises for a path outside the disk root, the root, or the image's own path" do
+      for {result, message} <- [{"../up.jpg", ~r/"..\/up.jpg"/}, {"", ~r/""/}, {"a.png", ~r/returned "a.png"/}] do
+        disk = disk(variant_path: fn _path, _variant, _format -> result end)
+
+        assert_raise ArgumentError, message, fn -> Fil.write(disk, "a.png", image(40, 20)) end
+      end
     end
   end
 end
