@@ -279,22 +279,27 @@ defmodule Fil.PlugTest do
 
   test "proxies an S3 disk" do
     # A stubbed S3: HeadObject and GetObject answer from the test, PutObject records the body.
-    Fil.ReqStub.stub(fn request ->
-      case request.method do
-        :head ->
-          {request, Req.Response.new(status: 200, headers: [{"content-type", "application/pdf"}])}
+    test = self()
 
-        :get ->
-          {request, Req.Response.new(status: 200, body: "%PDF")}
+    Req.Test.stub(__MODULE__, fn conn ->
+      case conn.method do
+        "HEAD" ->
+          conn
+          |> put_resp_header("content-type", "application/pdf")
+          |> send_resp(200, "")
 
-        :put ->
-          send(self(), {:put, URI.to_string(request.url), request.body})
-          {request, Req.Response.new(status: 200)}
+        "GET" ->
+          send_resp(conn, 200, "%PDF")
+
+        "PUT" ->
+          {:ok, body, conn} = read_body(conn)
+          send(test, {:put, request_url(conn), body})
+          send_resp(conn, 200, "")
       end
     end)
 
     disk =
-      [adapter: Fil.Adapter.S3, bucket: "bucket", req_options: [adapter: Fil.ReqStub]]
+      [adapter: Fil.Adapter.S3, bucket: "bucket", req_options: [plug: {Req.Test, __MODULE__}]]
       |> Fil.disk()
       |> URL.attach(base_url: @base_url, secret: "s3-secret")
 
