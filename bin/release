@@ -47,9 +47,9 @@ git fetch --quiet origin
 
 sha=$(git rev-parse HEAD)
 ci=$(gh run list --commit "$sha" --workflow CI --limit 1 --json status,conclusion \
-  --jq '.[0] // empty | "\(.status) \(.conclusion)"')
+  --jq '.[0] // empty | if .status == "completed" then .conclusion else .status end')
 case "$ci" in
-  "completed success") echo "CI passed on $sha" ;;
+  success) echo "CI passed on $sha" ;;
   "") confirm "CI hasn't run on $sha. Continue without it?" || exit 1 ;;
   *) die "the CI run on $sha is $ci" ;;
 esac
