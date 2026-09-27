@@ -600,6 +600,44 @@ defmodule Fil.Adapter.S3Test do
       assert abort.query_params == %{"uploadId" => "UP"}
     end
 
+    test "a stream over 5 GiB is uploaded in parts, even with its size" do
+      stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
+
+      assert_raise RuntimeError, "the upload broke off", fn ->
+        Fil.write(parts_disk(), "a.bin", raising_after(@part + 3 * @mib, fn -> raise "the upload broke off" end),
+          size: 6 * 1024 ** 3
+        )
+      end
+
+      assert [create, first, _abort] = requests()
+      assert create.query_params == %{"uploads" => ""}
+      assert byte_size(first.assigns.body) == @part
+    end
+
+    test "a known size gets parts large enough to fit S3's limit on parts" do
+      # 6 GiB in at most 1,000 parts needs 6.4 MiB each, rounded up to 7 MiB.
+      disk = max_parts(parts_disk(), 1_000)
+      stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
+
+      assert_raise RuntimeError, fn ->
+        Fil.write(disk, "a.bin", raising_after(10 * @mib, fn -> raise "the upload broke off" end), size: 6 * 1024 ** 3)
+      end
+
+      assert [_create, first, _abort] = requests()
+      assert byte_size(first.assigns.body) == 7 * @mib
+    end
+
+    test "a size over 5 TiB is refused before the stream is read" do
+      stub([])
+
+      stream = Stream.map([:never], fn _chunk -> flunk("the stream was read") end)
+
+      assert {:error, %Fil.InvalidRequestError{reason: "EntityTooLarge"}} =
+               Fil.write(parts_disk(), "a.bin", stream, size: 5 * 1024 ** 4 + 1)
+
+      assert requests() == []
+    end
+
     test "the part size is at least 5 MiB" do
       assert_raise ArgumentError, ~r/invalid value for :part_size option/, fn -> disk(part_size: @part - 1) end
     end

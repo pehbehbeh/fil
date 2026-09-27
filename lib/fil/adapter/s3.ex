@@ -170,7 +170,9 @@ defmodule Fil.Adapter.S3 do
 
   @checksum_mode {"x-amz-checksum-mode", "ENABLED"}
 
-  # S3's limit on the parts of a multipart upload.
+  # S3's limits: the largest PutObject, the largest object, and the most parts of a multipart upload.
+  @max_put 5 * 1024 ** 3
+  @max_object 5 * 1024 ** 4
   @max_parts 10_000
 
   @derive {Inspect, only: [:bucket, :region, :prefix, :endpoint, :public_endpoint, :path_style]}
@@ -231,13 +233,38 @@ defmodule Fil.Adapter.S3 do
   def write(state, path, content, opts) do
     key = key(state, path)
 
-    cond do
-      Content.iodata?(content) -> put_object(state, key, content, opts)
-      is_integer(opts[:size]) and is_nil(opts[:checksum]) -> put_stream(state, key, content, opts)
-      opts[:checksum] != nil -> put_object(state, key, Content.to_binary(content), opts)
-      true -> upload(state, key, content, opts)
+    case route(content, opts) do
+      :put -> put_object(state, key, content, opts)
+      :put_stream -> put_stream(state, key, content, opts)
+      :collect -> put_object(state, key, Content.to_binary(content), opts)
+      {:parts, content, size} -> upload(state, key, content, size, opts)
+      :too_large -> {:error, %Fil.InvalidRequestError{reason: "EntityTooLarge"}}
     end
   end
+
+  # Content in memory is one PutObject, up to S3's limit of 5 GiB for one. So is a stream of known size without a
+  # checksum, sent as it's read. A stream with a checksum is collected, because the checksum goes before the content.
+  # Anything else is uploaded in parts (see `upload/5`).
+  defp route(content, opts) do
+    if Content.iodata?(content) do
+      content
+      |> IO.iodata_length()
+      |> route_iodata(content)
+    else
+      route_stream(content, opts[:size], opts[:checksum])
+    end
+  end
+
+  defp route_iodata(size, _content) when size > @max_object, do: :too_large
+  defp route_iodata(size, content) when size > @max_put, do: {:parts, [IO.iodata_to_binary(content)], size}
+  defp route_iodata(_size, _content), do: :put
+
+  # A size over S3's limit is refused before the stream is read.
+  defp route_stream(_stream, size, _checksum) when is_integer(size) and size > @max_object, do: :too_large
+  defp route_stream(stream, size, _checksum) when is_integer(size) and size > @max_put, do: {:parts, stream, size}
+  defp route_stream(_stream, size, nil) when is_integer(size), do: :put_stream
+  defp route_stream(stream, size, nil), do: {:parts, stream, size}
+  defp route_stream(_stream, _size, _checksum), do: :collect
 
   # One PutObject with content in memory, signed with its SHA-256.
   defp put_object(state, key, content, opts) do
@@ -503,19 +530,22 @@ defmodule Fil.Adapter.S3 do
   ## Uploads in parts
   ## ------------------------------------------------------------------
 
-  # A stream without a size is read one part at a time (`Fil.Support.Parts`). One that ends within the first part goes
-  # out as one PutObject. A larger one starts a multipart upload once the second part begins, uploads each part when
-  # it's full, and completes the upload after the stream has ended, so nothing is written unless it ends.
+  # A stream without a size, and content over 5 GiB, is read one part at a time (`Fil.Support.Parts`), in parts of
+  # `:part_size`, or larger ones for known sizes that would need more than 10,000. Content that ends within the first
+  # part goes out as one PutObject. Anything larger starts a multipart upload once the second part begins, uploads
+  # each part when it's full, and completes the upload after the content has ended, so nothing is written unless it
+  # ends.
   #
   # A guard process (`start_guard/2`) creates the upload and is the only one that aborts it: when the write fails,
   # raises or is killed. The content is read and the parts are uploaded in the calling process.
-  defp upload(state, key, content, opts) do
+  defp upload(state, key, content, size, opts) do
     guard = start_guard(state, key)
     upload = %{key: key, guard: guard, id: nil, number: 0, parts: []}
+    part_size = Parts.size(size, state.part_size, state.max_parts)
 
     try do
       content
-      |> Parts.reduce(state.part_size, upload, &next_part(state, &1, &2, opts))
+      |> Parts.reduce(part_size, upload, &next_part(state, &1, &2, opts))
       |> finish_upload(state, opts)
     else
       :ok ->
