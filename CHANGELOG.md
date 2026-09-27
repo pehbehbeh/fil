@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- `Fil.Plug` answers `403` instead of `500` for signed URLs whose query parameters aren't plain strings.
+
 ## [0.1.0] - 2026-09-27
 
 ### Added

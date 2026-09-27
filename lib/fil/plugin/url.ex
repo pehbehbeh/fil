@@ -92,7 +92,7 @@ defmodule Fil.Plugin.URL do
   @spec verify(String.t(), :get | :put, String.t(), map()) :: :ok | {:error, :expired | :invalid_signature}
   def verify(secret, method, request_path, params) do
     with {:ok, expires} <- expires(params),
-         {:ok, signature} <- Map.fetch(params, "signature"),
+         {:ok, signature} when is_binary(signature) <- Map.fetch(params, "signature"),
          true <- :crypto.hash_equals(signature(secret, method, request_path, expires), signature) do
       if expires >= System.os_time(:second), do: :ok, else: {:error, :expired}
     else
@@ -139,7 +139,7 @@ defmodule Fil.Plugin.URL do
     end
   end
 
-  defp expires(%{"expires" => expires}) do
+  defp expires(%{"expires" => expires}) when is_binary(expires) do
     case Integer.parse(expires) do
       {expires, ""} -> {:ok, expires}
       _other -> :error

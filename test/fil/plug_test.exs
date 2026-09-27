@@ -84,6 +84,14 @@ defmodule Fil.PlugTest do
         assert request(:get, String.replace(url, ~r/&signature=.*/, ""), disk).status == 403
       end
 
+      test "query parameters that aren't strings are rejected", %{disk: disk} do
+        {:ok, _} = Fil.write(disk, "a.txt", "a")
+        {:ok, url} = Fil.signed_url(disk, "a.txt")
+
+        assert request(:get, String.replace(url, "expires=", "expires[]="), disk).status == 403
+        assert request(:get, String.replace(url, "signature=", "signature[]="), disk).status == 403
+      end
+
       test "an expired URL is rejected", %{disk: disk} do
         {:ok, _} = Fil.write(disk, "a.txt", "a")
         {:ok, url} = Fil.signed_url(disk, "a.txt", expires_in: 1)
