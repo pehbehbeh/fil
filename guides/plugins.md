@@ -91,6 +91,10 @@ disk = Fil.disk(adapter: Fil.Adapter.Local, root: "priv/storage") |> MyApp.Log.a
 
 `Fil.Plugin.ContentType` is a complete example of a plugin module.
 
+To log or measure the operations of every disk, attach a handler to the events in `Fil.Telemetry` instead of a
+plugin to each disk. `Fil.Telemetry.attach_default_logger/1` logs them. A plugin that emits events of its own uses a
+prefix of its own, because names under `[:fil, ...]` are kept for `Fil`.
+
 ## Order
 
 The first plugin attached is the outermost one. It sees an operation first on the way in and last on the way back:
@@ -183,6 +187,8 @@ sees every read and write.
 A stream is an enumerable of binaries. What a plugin can rely on:
 
   * chunks come in order, and none is empty
+  * its type says nothing: a `File.Stream` the caller passed may arrive wrapped in a `Stream`, so enumerate it and
+    don't match on its struct
   * their size depends on where the stream comes from (the caller's stream, an upload, the adapter, the network) and
     says nothing about the content: a chunk isn't a line, a record or a multiple of a block size. A transform that
     needs whole lines or blocks buffers them itself
@@ -251,4 +257,5 @@ before the adapter sees it, so a rewritten path can't escape the disk root eithe
 
 A `Fil.cp/3` or `Fil.rename/3` within one disk is a single `:cp` or `:rename` operation, with the destination in
 `op.dest`. Across two disks, `Fil` streams from the source disk and writes the stream to the destination disk (and
-deletes the source after a rename), so each disk's plugins see ordinary reads, writes and deletes.
+deletes the source after a rename), so each disk's plugins see ordinary reads, writes and deletes. In
+`Fil.Telemetry`, those operations are nested in a `:cp` or `:rename` event.

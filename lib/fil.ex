@@ -19,6 +19,7 @@ defmodule Fil do
   alias Fil.Support.Checksum
   alias Fil.Support.Content
   alias Fil.Support.Sized
+  alias Fil.Support.Telemetry
 
   @typedoc """
   An error from an adapter or from `Fil` itself. Each struct stands for what the caller can do about it, and means the
@@ -315,7 +316,7 @@ defmodule Fil do
   def stream(ref, opts) when is_list(opts) do
     opts = validate!(opts, @read_schema)
 
-    # A plugin may answer with iodata, and the caller still gets a stream.
+    # The chunks are binaries, even where a plugin's transform returns iodata.
     with {:ok, content} <- run(ref, :read, opts, streaming: true), do: {:ok, Content.chunks(content)}
   end
 
@@ -517,7 +518,8 @@ defmodule Fil do
     opts = validate!(opts, @write_schema)
     :ok = Content.validate!(content)
 
-    run(ref, :write, opts, content: check_size!(content, opts[:size]))
+    {content, size} = check_content!(content, opts[:size])
+    run(ref, :write, opts, [content: content], size)
   end
 
   @doc "Writes a file. See `write/2`."
@@ -993,23 +995,37 @@ defmodule Fil do
     end
   end
 
-  # The caller's content is checked against `:size` before plugins see it, so a plugin that collects or transforms a
-  # stream doesn't hide a wrong size. Iodata is checked right away, a stream while it's read
-  # (`Fil.Support.Content.sized/2`).
-  defp check_size!(content, nil), do: content
-
-  defp check_size!(content, size) do
-    cond do
-      not Content.iodata?(content) ->
-        Content.sized(content, size)
-
-      IO.iodata_length(content) != size ->
-        raise ArgumentError, "the content has #{IO.iodata_length(content)} bytes, but the :size option is #{size}"
-
-      true ->
-        content
+  # The caller's content is checked before plugins see it, so a plugin that collects, transforms or replaces it doesn't
+  # hide bad content or a wrong size. Iodata is measured once, here, and its size is also the `:bytes` of the write's
+  # events. A stream is checked against `:size` while it's read (`Fil.Support.Content.sized/3`). Returns the content
+  # and its size, if it's known.
+  defp check_content!(content, size) do
+    if Content.iodata?(content) do
+      {content, check_iodata_size!(content, size)}
+    else
+      {check_stream_size(content, size), size}
     end
   end
+
+  defp check_iodata_size!(content, size) do
+    case iodata_length!(content) do
+      length when size in [nil, length] -> length
+      length -> raise ArgumentError, "the content has #{length} bytes, but the :size option is #{size}"
+    end
+  end
+
+  defp iodata_length!(content) do
+    IO.iodata_length(content)
+  rescue
+    ArgumentError ->
+      reraise ArgumentError,
+              "expected the content to be iodata or an enumerable of iodata, got a list that isn't iodata: " <>
+                inspect(content),
+              __STACKTRACE__
+  end
+
+  defp check_stream_size(stream, nil), do: stream
+  defp check_stream_size(stream, size), do: Content.sized(stream, size)
 
   # Parameters that signed URLs already use on some disk. They're rejected on every disk, so a URL that works on one
   # works on all.
@@ -1042,25 +1058,40 @@ defmodule Fil do
     end
   end
 
-  defp run(ref, name, opts, fields \\ []) do
+  defp run(ref, name, opts, fields \\ [], size \\ nil) do
     with {:ok, %Ref{disk: disk, path: path}} <- resolve(ref, name) do
       %Op{disk: disk, name: name, path: path, options: opts}
       |> struct!(fields)
-      |> Op.run()
+      |> Op.run(size)
     end
   end
 
-  defp transfer(src, dest, opts, name) do
-    with {:ok, src_ref} <- resolve(src, name),
-         {:ok, dest_ref} <- resolve_dest(dest, src_ref, name) do
+  defp transfer(%Ref{} = src, dest, opts, name) do
+    dest = dest_ref(dest, src)
+    rejection = {%Op{disk: src.disk, name: name, path: src.path, dest: dest.path}, %{dest_disk: dest.disk}}
+
+    with {:ok, src_ref} <- resolve(src, name, rejection),
+         {:ok, dest_ref} <- resolve(dest, name, rejection) do
       if src_ref.disk == dest_ref.disk do
         run(src_ref, name, opts, dest: dest_ref.path)
       else
-        name
-        |> cross_disk(src_ref, dest_ref, opts)
-        |> name_op(name)
+        across_disks(src_ref, dest_ref, opts, name)
       end
     end
+  end
+
+  defp transfer(other, _dest, _opts, _name), do: not_a_ref!(other)
+
+  # A copy across disks is an operation of its own for `Fil.Telemetry`, with the read, the write and the delete nested
+  # in it.
+  defp across_disks(src, dest, opts, name) do
+    op = %Op{disk: src.disk, name: name, path: src.path, dest: dest.path}
+
+    Telemetry.span(op, [metadata: %{dest_disk: dest.disk}], fn _op, _metadata ->
+      name
+      |> cross_disk(src, dest, opts)
+      |> name_op(name)
+    end)
   end
 
   # A copy across disks runs as a read, a write and a delete, but the error reports the call the caller made.
@@ -1093,17 +1124,23 @@ defmodule Fil do
     %Fil.ConflictError{reason: :size_changed, op: :read, path: path, disk: disk}
   end
 
-  defp resolve(%Ref{} = ref, name) do
-    with {:error, error} <- Ref.normalize(ref), do: {:error, %{error | op: name}}
+  defp resolve(%Ref{} = ref, name), do: resolve(ref, name, {%Op{disk: ref.disk, name: name, path: ref.path}, %{}})
+  defp resolve(other, _name), do: not_a_ref!(other)
+
+  # A path that escapes the disk root never reaches `Fil.Op.run/1`, but it's still an operation that failed, so it emits
+  # the events of one, described by `rejection`: the op and extra metadata.
+  defp resolve(ref, name, {op, extra}) do
+    case Ref.normalize(ref) do
+      {:ok, ref} -> {:ok, ref}
+      {:error, error} -> Telemetry.span(op, [metadata: extra], fn _op, _metadata -> {:error, %{error | op: name}} end)
+    end
   end
 
-  defp resolve(other, _name) do
-    raise ArgumentError,
-          "expected a %Fil.Ref{}, got: #{inspect(other)}"
-  end
+  defp dest_ref(path, %Ref{disk: disk}) when is_binary(path), do: Ref.new(disk, path)
+  defp dest_ref(%Ref{} = ref, _src), do: ref
+  defp dest_ref(other, _src), do: not_a_ref!(other)
 
-  defp resolve_dest(path, %Ref{disk: disk}, name) when is_binary(path), do: resolve(Ref.new(disk, path), name)
-  defp resolve_dest(ref, _src, name), do: resolve(ref, name)
+  defp not_a_ref!(other), do: raise(ArgumentError, "expected a %Fil.Ref{}, got: #{inspect(other)}")
 
   defp unwrap!({:ok, value}), do: value
   defp unwrap!({:error, error}), do: raise(error)

@@ -38,6 +38,7 @@ defmodule Fil.MixProject do
       {:nimble_options, "~> 1.1"},
       {:req, "~> 0.7"},
       {:mime, "~> 2.0"},
+      {:telemetry, "~> 1.3"},
 
       # Optional: Fil.Plug serves signed URLs of Local and Memory disks, and Req.Test stubs are plugs.
       {:plug, "~> 1.14", optional: true},

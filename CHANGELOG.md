@@ -9,6 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Telemetry events for every operation on every disk, `[:fil, :op, :start]`, `[:fil, :op, :stop]` and
+  `[:fil, :op, :exception]`, with the operation, the disk, the path, the error and the bytes read or written. Each read
+  of a stream from `Fil.stream/3` is a `[:fil, :stream, ...]` span of its own, with the bytes read. See
+  `Fil.Telemetry`.
+  ([#12](https://github.com/pehbehbeh/fil/pull/12))
+- `Fil.Telemetry.attach_default_logger/1` logs every operation and every read of a stream, with its duration.
+  ([#12](https://github.com/pehbehbeh/fil/pull/12))
 - S3 uploads a stream without a size, and content over 5 GiB, in parts (a multipart upload), with one part in memory
   at a time: 8 MiB by default, set with the new `:part_size` option. A stream that fits in one part is still one
   PutObject. A part that fails because the storage is unavailable is sent once more, a second later. A failed upload
@@ -40,6 +47,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `Fil.write/4` raises `ArgumentError` for a list that isn't iodata, such as `[70_000]`, before any plugin sees it.
+  Before, a plugin that replaced the content or answered the call itself hid it.
+  ([#12](https://github.com/pehbehbeh/fil/pull/12))
 - S3 reads a stream with `checksum:` one part at a time instead of collecting it into memory. A `:crc32` checksum
   covers the whole file, however it's uploaded. A `:sha256` or `:sha1` checksum of an upload in parts covers each
   part, and S3 stores a checksum of those: `Fil.stat/3` returns `nil` for it, and `verify_checksum: true` checks the
