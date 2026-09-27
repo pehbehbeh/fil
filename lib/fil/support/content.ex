@@ -105,17 +105,19 @@ defmodule Fil.Support.Content do
     end
   end
 
-  # The accumulator counts the bytes the consumer took, and notes whether it asked to halt: a source may end with
+  # The accumulator counts the bytes handed to the consumer, and notes whether it asked to halt: a source may end with
   # `:halted` on its own (`Stream.flat_map/2` does). The consumer's exceptions travel through the stream as a throw
   # tagged with `ref`, with the count, and are raised again as they were once they're out of it.
   defp consumer(fun, ref) do
     fn element, {acc, bytes, _halted} ->
+      bytes = bytes + IO.iodata_length(element)
+
       try do
         fun.(element, acc)
       catch
         kind, reason -> throw({ref, kind, reason, __STACKTRACE__, bytes})
       else
-        {command, acc} -> {command, {acc, bytes + IO.iodata_length(element), command == :halt}}
+        {command, acc} -> {command, {acc, bytes, command == :halt}}
       end
     end
   end

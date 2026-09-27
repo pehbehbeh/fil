@@ -245,7 +245,7 @@ defmodule Fil.TelemetryTest do
       assert {:ok, stream} = Fil.stream(disk, "a.txt")
 
       assert_raise RuntimeError, "consumer", fn -> Enum.each(stream, fn _chunk -> raise "consumer" end) end
-      assert [{%{bytes: 0}, %{halted: true}}] = stream_stops()
+      assert [{%{bytes: 7}, %{halted: true}}] = stream_stops()
     end
 
     test "every enumeration is a span of its own", %{disk: disk} do

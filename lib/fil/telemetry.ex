@@ -78,18 +78,20 @@ defmodule Fil.Telemetry do
       * Measurements: `:monotonic_time`, `:system_time`
       * Metadata: the start metadata of the op, with a `:telemetry_span_context` of its own
     * `[:fil, :stream, :stop]` when the stream ended, or its consumer stopped reading
-      * Measurements: `:duration`, `:monotonic_time`, and `:bytes`, the bytes the consumer took
+      * Measurements: `:duration`, `:monotonic_time`, and `:bytes`, the bytes handed to the consumer
       * Metadata: the start's, plus `:halted`
     * `[:fil, :stream, :exception]` when reading the stream failed
       * Measurements: `:duration`, `:monotonic_time`
       * Metadata: the start's, plus `:kind`, `:reason` and `:stacktrace`. `:reason` is the exception the stream raises,
         with its context filled in
 
-  So the duration of a stream span includes the time to the first byte. `:halted` is `true` when the consumer stopped
-  before the end: `Enum.take/2`, a client of `Fil.Plug` that disconnected, or a write that failed, such as an S3 upload
-  in parts whose part was refused. An exception of the consumer ends the span with `halted: true` as well, because the
-  stream itself is fine. A span has no end if the process that reads the stream is killed, or if an enumeration that
-  was suspended (by `Stream.zip/2`, say) is dropped.
+  So the duration of a stream span includes the time to the first byte. `:halted` is `true` when the consumer asked to
+  stop before the end: `Enum.take/2`, a client of `Fil.Plug` that disconnected, or a write that failed, such as an S3
+  upload in parts whose part was refused. A consumer may ask for that after it has read every chunk (`Stream.zip/2`
+  can), so `halted: true` doesn't mean content is missing. An exception of the consumer ends the span with
+  `halted: true` as well, because the stream itself is fine, and its `:bytes` include the chunk it failed on. A span
+  has no end if the process that reads the stream is killed, or if an enumeration that was suspended (by
+  `Stream.zip/2`, say) is dropped.
 
   When a stream goes into `Fil.write/4` and the source fails, the write's `:stop` has the source's error, whose `:op`
   and `:path` name the source.
