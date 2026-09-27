@@ -42,8 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   raises one of `Fil`'s errors turns the read into that error. The plugins guide describes what a plugin can rely on.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `Fil.ConflictError`: the file changed while the operation used it, so reading it again and retrying can help. A write
-  of a stream whose size `Fil` found, and a copy across disks, return it when the file changes size meanwhile, and S3
-  when something else aborted an upload in parts. `Fil.Plug` answers it with a `409`.
+  of a stream whose size `Fil` found, and a copy across disks, return it when the file changes size meanwhile, and
+  write nothing. S3 returns it when something else aborted an upload in parts. `Fil.Plug` answers it with a `409`.
   ([#10](https://github.com/pehbehbeh/fil/pull/10), [#11](https://github.com/pehbehbeh/fil/pull/11),
   [#15](https://github.com/pehbehbeh/fil/pull/15))
 - `stream/3` is an optional adapter callback. Adapters without it stream the result of `read/3` as one chunk.
