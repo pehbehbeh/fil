@@ -37,6 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `Fil.Op.update_content/2` and `update_result/2` take `iodata:` instead of `binary:`, which now raises
+  `ArgumentError` like any unknown transform. The function gets the same argument as before.
+  ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `Fil.Plug` streams uploads into `Fil.write/4`, with the `content-length` as `size:`, and sends downloads as a chunked
   response, so neither has to fit in memory.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
@@ -51,12 +54,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - `Fil.Plug` refuses a signed URL with a query parameter that wasn't signed, as S3 does. URLs signed by 0.1 still work.
   ([#1](https://github.com/pehbehbeh/fil/pull/1))
-
-### Deprecated
-
-- `binary:` in `Fil.Op.update_content/2` and `update_result/2` is deprecated in favour of `iodata:`, which gets the
-  same argument. It will be removed in the first breaking release.
-  ([#10](https://github.com/pehbehbeh/fil/pull/10))
 
 ### Fixed
 

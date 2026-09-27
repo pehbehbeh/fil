@@ -7,6 +7,8 @@ The Hex package is `fil`.
 
 - **Return values:** every function that can fail returns `{:ok, result} | {:error, exception}`. Actions on files
   return `{:ok, %Fil.Ref{}}`. Bang variants raise the same exception.
+- **Before 1.0:** the best API takes priority over compatibility. Renaming or removing public API is fine, with a
+  `### Changed` or `### Removed` entry in the changelog.
 - **Names and semantics:** the API, the adapter callbacks and the `Fil.Op` names use `File`'s vocabulary (`read`,
   `write`, `stream`, `stat`, `ls`, `cp`, `rename`, `rm`, `rm_rf`, `exists?`, `dir?`), but the semantics follow the
   object store model on every adapter: `rm` is idempotent, `write` creates parents, paths are jailed to the disk root.

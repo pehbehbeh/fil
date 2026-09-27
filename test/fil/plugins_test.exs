@@ -444,29 +444,11 @@ defmodule Fil.PluginsTest do
       end
     end
 
-    test "binary: still works as a deprecated name for iodata:", %{disk: disk} do
+    test "binary:, the name of iodata: in 0.1, is an unknown transform", %{disk: disk} do
       op = %Op{disk: disk, name: :write, path: "a.txt", content: "abc"}
 
-      warning =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          assert Op.update_content(op, binary: &String.upcase/1).content == "ABC"
-        end)
-
-      assert warning =~ "the :binary transform of Fil.Op.update_content/2 and Fil.Op.update_result/2 is deprecated"
-      assert warning =~ "plugins_test.exs"
-
-      read = %Op{disk: disk, name: :read, path: "a.txt", streaming: true, result: {:ok, Stream.map(["ab", "c"], & &1)}}
-
-      read_warning =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          assert {:ok, stream} = Op.update_result(read, binary: &String.upcase/1).result
-          assert Enum.to_list(stream) == ["ABC"]
-        end)
-
-      assert [_once] = Regex.scan(~r/is deprecated/, read_warning)
-
-      assert_raise ArgumentError, ~r/not both/, fn ->
-        Op.update_content(op, iodata: &String.upcase/1, binary: &String.upcase/1)
+      assert_raise ArgumentError, "unknown transforms [:binary], expected :iodata, :chunk or :stream", fn ->
+        Op.update_content(op, binary: &String.upcase/1)
       end
     end
 

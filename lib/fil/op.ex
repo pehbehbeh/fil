@@ -151,8 +151,6 @@ defmodule Fil.Op do
   A stream prefers `stream:` over `chunk:`. The [Plugins guide](plugins.md#streams) describes what a chunk is.
   A transform drops the `:size` option of the write, because the size can change. A plugin that knows the new size
   declares it again with `put_option(op, :size, size)`.
-
-  `binary:`, the name of `iodata:` in 0.1, still works but is deprecated.
   """
   @spec update_content(t(), transform()) :: t()
   def update_content(%__MODULE__{name: :write, content: content} = op, funs) do
@@ -287,7 +285,7 @@ defmodule Fil.Op do
   defp drop_size(%__MODULE__{options: options} = op), do: %{op | options: Keyword.delete(options, :size)}
 
   defp validate_transform!(funs) when is_list(funs) do
-    case split_transforms(funs) do
+    case Keyword.split(funs, [:iodata, :chunk, :stream]) do
       {[_ | _] = valid, []} ->
         Enum.each(valid, fn
           {_key, fun} when is_function(fun, 1) ->
@@ -306,43 +304,6 @@ defmodule Fil.Op do
         raise ArgumentError,
               "unknown transforms #{inspect(Keyword.keys(unknown))}, expected :iodata, :chunk or :stream"
     end
-  end
-
-  defp split_transforms(funs) do
-    funs
-    |> deprecated_binary()
-    |> Keyword.split([:iodata, :chunk, :stream])
-  end
-
-  # `binary:` is the name `iodata:` had in 0.1. It warns once per call (the transforms are checked once per call, not
-  # per chunk), at the plugin that passed it.
-  defp deprecated_binary(funs) do
-    cond do
-      not Keyword.has_key?(funs, :binary) ->
-        funs
-
-      Keyword.has_key?(funs, :iodata) ->
-        raise ArgumentError, "pass :iodata or the deprecated :binary, not both"
-
-      true ->
-        IO.warn(
-          "the :binary transform of Fil.Op.update_content/2 and Fil.Op.update_result/2 is deprecated, " <>
-            "use :iodata, which gets the same argument",
-          caller_stacktrace()
-        )
-
-        Enum.map(funs, fn
-          {:binary, fun} -> {:iodata, fun}
-          transform -> transform
-        end)
-    end
-  end
-
-  # The stacktrace from the caller of `update_content/2` or `update_result/2` on, so the warning points at the plugin.
-  defp caller_stacktrace do
-    {:current_stacktrace, stacktrace} = Process.info(self(), :current_stacktrace)
-
-    Enum.drop_while(stacktrace, fn {module, _function, _arity, _location} -> module in [Process, __MODULE__] end)
   end
 
   ## ------------------------------------------------------------------
