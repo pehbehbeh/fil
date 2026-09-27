@@ -130,9 +130,11 @@ defmodule Fil.Adapter.S3 do
       for the composite checksum of an upload in parts.
     * `Fil.ls/3`: ListObjectsV2, with `delimiter=/` unless recursive, paginated internally.
     * `Fil.cp/4`: CopyObject. `if_exists: :error` sends `If-None-Match: *`, which AWS checks on copies since October
-      2025 (RustFS 1.0.0 does too). Copying a directory is a `Fil.NotFoundError`.
-    * `Fil.rename/4`: CopyObject, then DeleteObject. A copy that finds the destination with `if_exists: :error` fails
-      before the source is deleted.
+      2025 (RustFS 1.0.0 does too). Copying a directory is a `Fil.NotFoundError`. S3 refuses to copy an object onto
+      itself, so that's a `Fil.InvalidRequestError`, `reason: "InvalidRequest"`, with or without `if_exists: :error`
+      (the other adapters copy the file onto itself, or return a `Fil.AlreadyExistsError` with `if_exists: :error`).
+    * `Fil.rename/4`: CopyObject, then DeleteObject. A copy that fails, with `if_exists: :error` too, fails before the
+      source is deleted. Renaming an object onto itself fails like the copy.
     * `Fil.rm_rf/3`: ListObjectsV2, then one DeleteObject per key.
     * `Fil.url/3`: the object URL, without a signature, so it works for public objects only.
     * `Fil.signed_url/3`: a presigned GET or PUT URL, with `response-content-disposition` for `disposition:`, and the
@@ -200,7 +202,7 @@ defmodule Fil.Adapter.S3 do
   | `NoSuchBucket` | `Fil.ConfigurationError` |
   | a `400` for a copy whose source doesn't exist (checked with HeadObject) | `Fil.NotFoundError` |
   | `AccessDenied`, or `403` | `Fil.AccessDeniedError` |
-  | `EntityTooLarge`, `KeyTooLongError` | `Fil.InvalidRequestError` |
+  | `InvalidRequest`, `EntityTooLarge`, `KeyTooLongError` | `Fil.InvalidRequestError` |
   | a `size:` over 5 TiB | `Fil.InvalidRequestError`, `reason: "EntityTooLarge"` |
   | a stream without a size that needs more than 10,000 parts | `Fil.InvalidRequestError`, `reason: :too_many_parts` |
   | `PreconditionFailed`, `ConditionalRequestConflict` | `Fil.AlreadyExistsError` |
@@ -580,15 +582,20 @@ defmodule Fil.Adapter.S3 do
   defp existing_dest(result, _dest), do: result
 
   # AWS answers a missing source with `404 NoSuchKey`, but some S3-compatible servers (SeaweedFS) send a plain 400, so
-  # an unexplained 400 is checked against the source.
-  defp copy_error(state, src, %Fil.UnknownError{} = error) do
+  # an unexplained 400 is checked against the source. So is `InvalidRequest`, which doesn't say much more.
+  defp copy_error(state, src, %Fil.UnknownError{} = error), do: check_source(state, src, error)
+
+  defp copy_error(state, src, %Fil.InvalidRequestError{reason: "InvalidRequest"} = error),
+    do: check_source(state, src, error)
+
+  defp copy_error(_state, _src, error), do: {:error, error}
+
+  defp check_source(state, src, error) do
     case request(state, :head, key(state, src)) do
       {:ok, %{status: 404}} -> {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
       _other -> {:error, error}
     end
   end
-
-  defp copy_error(_state, _src, error), do: {:error, error}
 
   @impl Fil.Adapter
   def rename(state, src, dest, opts) do
@@ -1306,6 +1313,7 @@ defmodule Fil.Adapter.S3 do
     "NoSuchKey" => Fil.NotFoundError,
     "NoSuchBucket" => Fil.ConfigurationError,
     "AccessDenied" => Fil.AccessDeniedError,
+    "InvalidRequest" => Fil.InvalidRequestError,
     "EntityTooLarge" => Fil.InvalidRequestError,
     "KeyTooLongError" => Fil.InvalidRequestError,
     "PreconditionFailed" => Fil.AlreadyExistsError,

@@ -236,6 +236,7 @@ defmodule Fil.Adapter.S3Test do
       for {code, error} <- [
             {"NoSuchKey", Fil.NotFoundError},
             {"AccessDenied", Fil.AccessDeniedError},
+            {"InvalidRequest", Fil.InvalidRequestError},
             {"EntityTooLarge", Fil.InvalidRequestError},
             {"KeyTooLongError", Fil.InvalidRequestError},
             {"PreconditionFailed", Fil.AlreadyExistsError},
@@ -1177,6 +1178,20 @@ defmodule Fil.Adapter.S3Test do
       stub([response(400, error_xml("InvalidArgument")), response(200)])
 
       assert {:error, %Fil.UnknownError{reason: "InvalidArgument"}} = Fil.cp(disk(), "a.txt", "b.txt")
+    end
+
+    test "a copy onto itself is an invalid request, or not found without a source" do
+      stub([response(400, error_xml("InvalidRequest")), response(200)])
+
+      assert {:error, %Fil.InvalidRequestError{op: :cp, path: "a.txt", reason: "InvalidRequest"}} =
+               Fil.cp(disk(), "a.txt", "a.txt", if_exists: :error)
+
+      assert [%{method: "PUT"}, %{method: "HEAD"}] = requests()
+
+      stub([response(400, error_xml("InvalidRequest")), response(404)])
+
+      assert {:error, %Fil.NotFoundError{reason: {:http_status, 404}}} = Fil.rename(disk(), "a.txt", "a.txt")
+      assert [%{method: "PUT"}, %{method: "HEAD"}] = requests()
     end
 
     test "rename copies and then deletes" do
