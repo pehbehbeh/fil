@@ -312,10 +312,9 @@ defmodule Fil.PlugTest do
         |> put(body)
         |> call(disk, max_body_size: 2_000_000)
 
-      inbox = Path.join(tmp_dir, "inbox")
-
+      # No file, no temporary file, and not the directory the write created either.
       assert conn.status == 413
-      assert File.ls!(inbox) == []
+      assert File.ls!(tmp_dir) == []
     end
 
     test "a body longer than its content-length is a 400", %{memory: disk} do

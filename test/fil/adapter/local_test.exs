@@ -107,6 +107,31 @@ defmodule Fil.Adapter.LocalTest do
       assert File.ls!(inbox) == ["a.txt"]
     end
 
+    test "that fail remove the directories they created, and only those", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "kept/x.txt", "x")
+      failing = Stream.map([1, 2], fn _chunk -> raise "the upload broke off" end)
+
+      assert_raise RuntimeError, fn -> Fil.write(disk, "kept/new/deeper/a.txt", failing) end
+      assert_raise RuntimeError, fn -> Fil.write(disk, "fresh/a.txt", failing, if_exists: :error) end
+
+      root = Path.join(tmp_dir, "primary")
+      assert File.ls!(root) == ["kept"]
+
+      assert root
+             |> Path.join("kept")
+             |> File.ls!() == ["x.txt"]
+    end
+
+    test "under a file create no directories", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "file.txt", "content")
+
+      assert {:error, %Fil.InvalidRequestError{reason: :enotdir}} = Fil.write(disk, "file.txt/deeper/child.txt", "x")
+
+      assert tmp_dir
+             |> Path.join("primary")
+             |> File.ls!() == ["file.txt"]
+    end
+
     test "are atomic: readers never see a partial file", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "atomic.txt", "first content")
       assert {:ok, _} = Fil.write(disk, "atomic.txt", "second")

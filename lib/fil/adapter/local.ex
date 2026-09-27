@@ -31,9 +31,10 @@ defmodule Fil.Adapter.Local do
       checksums, so `verify_checksum: true` is ignored.
     * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read.
     * `Fil.write/4`: the content, whole or streamed, goes to a temporary file named `.fil-` and a unique suffix in the
-      destination directory, which `File.rename/2` then moves into place, so readers never see a partial file, and a
-      failed write leaves nothing behind. A writer that's killed before it's done (a request process that the server
-      stops when the client disconnects, for example) leaves its `.fil-` file behind. `if_exists: :error` hard-links
+      destination directory, which `File.rename/2` then moves into place, so readers never see a partial file. A failed
+      write leaves nothing behind, and removes the directories it created. A writer that's killed before it's done (a
+      request process that the server stops when the client disconnects, for example) leaves its `.fil-` file and
+      those directories behind. `if_exists: :error` hard-links
       the temporary file to the destination instead, which fails if it exists (on a filesystem without hard links, it
       creates the destination with `O_EXCL` first). `checksum:` is ignored. Writing over a directory, or to
       `report.txt/x` when `report.txt` is a file, is a `Fil.InvalidRequestError`.
@@ -167,24 +168,50 @@ defmodule Fil.Adapter.Local do
   end
 
   # The content goes to a temporary file next to the destination, which then takes its place in one step. Whatever
-  # happens in between (an error, or a stream that raises), the temporary file is removed and the destination is left
-  # as it was.
+  # happens in between (an error, or a stream that raises), the temporary file is removed, and so are the directories
+  # this write created, so the disk is left as it was.
   defp write_file(state, path, content, opts) do
     with {:ok, full} <- full_path(state, path),
-         :ok <- ensure_parent(full) do
-      tmp = tmp_path(full)
+         {:ok, created} <- make_parents(full) do
+      write_into(full, created, content, opts)
+    else
+      {:error, reason, created} ->
+        remove_dirs(created)
+        {:error, reason}
 
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp write_into(full, created, content, opts) do
+    tmp = tmp_path(full)
+
+    result =
       try do
-        with :ok <- write_tmp(tmp, content) do
-          case Keyword.get(opts, :if_exists, :overwrite) do
-            :overwrite -> File.rename(tmp, full)
-            :error -> create(tmp, full)
-          end
-        end
-      after
-        _ = File.rm(tmp)
+        place(tmp, full, content, opts)
+      catch
+        kind, reason ->
+          discard(tmp, created)
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+
+    if result == :ok, do: File.rm(tmp), else: discard(tmp, created)
+    result
+  end
+
+  defp place(tmp, full, content, opts) do
+    with :ok <- write_tmp(tmp, content) do
+      case Keyword.get(opts, :if_exists, :overwrite) do
+        :overwrite -> File.rename(tmp, full)
+        :error -> create(tmp, full)
       end
     end
+  end
+
+  defp discard(tmp, created) do
+    _ = File.rm(tmp)
+    remove_dirs(created)
   end
 
   defp rm_file(state, path) do
@@ -268,6 +295,37 @@ defmodule Fil.Adapter.Local do
   end
 
   # A parent that's a file is `:enotdir` on macOS and `:eexist` on Linux.
+  # Creates the missing parents of a file one by one, top down, and returns the ones it created, deepest first, so a
+  # failed write can remove them again. A directory another process created meanwhile isn't counted.
+  defp make_parents(full) do
+    full
+    |> Path.dirname()
+    |> missing_dirs([])
+    |> Enum.reduce_while({:ok, []}, &make_dir/2)
+  end
+
+  defp make_dir(dir, {:ok, created}) do
+    case File.mkdir(dir) do
+      :ok -> {:cont, {:ok, [dir | created]}}
+      {:error, :eexist} -> if File.dir?(dir), do: {:cont, {:ok, created}}, else: {:halt, {:error, :enotdir, created}}
+      {:error, reason} -> {:halt, {:error, reason, created}}
+    end
+  end
+
+  defp missing_dirs(dir, missing) do
+    parent = Path.dirname(dir)
+
+    if File.dir?(dir) or parent == dir, do: missing, else: missing_dirs(parent, [dir | missing])
+  end
+
+  # Removes empty directories, deepest first, and stops at the first one that isn't empty, because another write put
+  # something into it meanwhile.
+  defp remove_dirs(dirs) do
+    Enum.reduce_while(dirs, :ok, fn dir, :ok ->
+      if :file.del_dir(dir) == :ok, do: {:cont, :ok}, else: {:halt, :ok}
+    end)
+  end
+
   defp ensure_parent(full) do
     parent = Path.dirname(full)
 
