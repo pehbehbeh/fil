@@ -30,21 +30,24 @@ defmodule Fil.Adapter.Local do
     * `Fil.read/3`: `File.read/1`. Reading a directory is a `Fil.InvalidRequestError`. The filesystem stores no
       checksums, so `verify_checksum: true` is ignored.
     * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read.
-    * `Fil.write/4`: the content, whole or streamed, goes to a temporary file in the destination directory, which
-      `File.rename/2` then moves into place, so readers never see a partial file, and a failed write leaves nothing
-      behind. `if_exists: :error` hard-links the temporary file to the destination instead, which fails if it exists
-      (on a filesystem without hard links, it creates the destination with `O_EXCL` first). `checksum:` is ignored.
-      Writing over a directory, or to `report.txt/x` when `report.txt` is a file, is a `Fil.InvalidRequestError`.
+    * `Fil.write/4`: the content, whole or streamed, goes to a temporary file named `.fil-` and a unique suffix in the
+      destination directory, which `File.rename/2` then moves into place, so readers never see a partial file, and a
+      failed write leaves nothing behind. A writer that's killed before it's done (a request process that the server
+      stops when the client disconnects, for example) leaves its `.fil-` file behind. `if_exists: :error` hard-links
+      the temporary file to the destination instead, which fails if it exists (on a filesystem without hard links, it
+      creates the destination with `O_EXCL` first). `checksum:` is ignored. Writing over a directory, or to
+      `report.txt/x` when `report.txt` is a file, is a `Fil.InvalidRequestError`.
     * `Fil.rm/3`: `File.rm/1`, with a missing file mapped to success. Removing a directory is a
       `Fil.InvalidRequestError`.
     * `Fil.stat/3`: `File.stat/2`. `:etag` is a weak `"size-mtime"` tag: good enough to notice a change, but it can't
       prove there was none. `:content_type` is `nil`, because the filesystem doesn't store one (`Fil.Plug` guesses it
       from the extension). `checksum:` reads the whole file to compute the checksum.
-    * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too. A path that isn't a
-      directory lists nothing, the same as a missing one.
+    * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too, temporary `.fil-`
+      files of writes aren't. A path that isn't a directory lists nothing, the same as a missing one.
     * `Fil.cp/4`: `File.cp/2`. Copying a directory is a `Fil.InvalidRequestError`.
     * `Fil.rename/4`: `File.rename/2`.
-    * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed.
+    * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Temporary `.fil-` files are removed too, but not
+      counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
       `Fil.Plug` serves them.
 
@@ -74,6 +77,10 @@ defmodule Fil.Adapter.Local do
 
   # The size of the chunks `Fil.stream/3` reads.
   @chunk_size 65_536
+
+  # Writes go to a file with this prefix and a unique suffix, next to the destination. It's short, so a destination
+  # name that fits the filesystem's limit still leaves room, and listings skip it.
+  @tmp_prefix ".fil-"
 
   defstruct [:root]
 
@@ -165,7 +172,7 @@ defmodule Fil.Adapter.Local do
   defp write_file(state, path, content, opts) do
     with {:ok, full} <- full_path(state, path),
          :ok <- ensure_parent(full) do
-      tmp = full <> ".fil-" <> unique()
+      tmp = tmp_path(full)
 
       try do
         with :ok <- write_tmp(tmp, content) do
@@ -338,6 +345,12 @@ defmodule Fil.Adapter.Local do
     end
   end
 
+  defp tmp_path(full) do
+    full
+    |> Path.dirname()
+    |> Path.join(@tmp_prefix <> unique())
+  end
+
   defp unique do
     counter =
       [:positive]
@@ -369,10 +382,16 @@ defmodule Fil.Adapter.Local do
   end
 
   # A missing or unreadable directory lists nothing, the same as a prefix nobody wrote to on an object store.
+  # Temporary files of writes aren't files of the disk yet, so they're left out of listings and counts.
   defp names(full) do
     case File.ls(full) do
-      {:ok, names} -> Enum.sort(names)
-      {:error, _reason} -> []
+      {:ok, names} ->
+        names
+        |> Enum.reject(&String.starts_with?(&1, @tmp_prefix))
+        |> Enum.sort()
+
+      {:error, _reason} ->
+        []
     end
   end
 

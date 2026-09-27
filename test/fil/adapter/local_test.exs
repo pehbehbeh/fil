@@ -76,6 +76,37 @@ defmodule Fil.Adapter.LocalTest do
       assert leftovers == []
     end
 
+    test "hide the temporary file of a streamed write from listings", %{disk: disk, tmp_dir: tmp_dir} do
+      test = self()
+
+      stream =
+        Stream.map([:first, :second], fn
+          :first ->
+            "first"
+
+          :second ->
+            send(test, {:writing, self()})
+
+            receive do
+              :go -> "second"
+            end
+        end)
+
+      task = Task.async(fn -> Fil.write(disk, "inbox/a.txt", stream) end)
+      assert_receive {:writing, writer}
+
+      inbox = Path.join(tmp_dir, "primary/inbox")
+      assert [".fil-" <> _suffix] = File.ls!(inbox)
+      assert Fil.ls(disk, "inbox") == {:ok, []}
+      assert Fil.ls(disk, ".", recursive: true) == {:ok, []}
+
+      send(writer, :go)
+      assert {:ok, _} = Task.await(task)
+      assert {:ok, [written]} = Fil.ls(disk, "inbox")
+      assert written.path == "inbox/a.txt"
+      assert File.ls!(inbox) == ["a.txt"]
+    end
+
     test "are atomic: readers never see a partial file", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "atomic.txt", "first content")
       assert {:ok, _} = Fil.write(disk, "atomic.txt", "second")
