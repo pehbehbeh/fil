@@ -1,8 +1,8 @@
 defmodule Fil.Support.XML do
   @moduledoc false
 
-  # The little XML reading that object store listings need. S3 responds in XML, and `Fil` only ever asks for the
-  # children named X or the text of Y.
+  # The little XML that object stores need. S3 responds in XML, and `Fil` only ever asks for the children named X or
+  # the text of Y. The one document `Fil` sends, the part list that completes a multipart upload, uses `escape/1`.
   #
   # Parsing uses OTP's `:xmerl_sax_parser`, built into plain `{name, attributes, children}` tuples of strings. The SAX
   # parser reports names as charlists, so no atoms are created from what the server sent. Documents with a DTD are
@@ -69,5 +69,15 @@ defmodule Fil.Support.XML do
     children
     |> Enum.filter(&is_binary/1)
     |> Enum.join()
+  end
+
+  @doc "Escapes text for an element's content or an attribute value."
+  @spec escape(String.t()) :: String.t()
+  def escape(text) do
+    text
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+    |> String.replace("\"", "&quot;")
   end
 end

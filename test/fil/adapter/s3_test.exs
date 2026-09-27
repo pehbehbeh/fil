@@ -3,9 +3,13 @@ defmodule Fil.Adapter.S3Test do
 
   use ExUnit.Case, async: true
 
+  import Fil.AdapterCase, only: [chunked: 2]
   import Plug.Conn
 
   setup {Req.Test, :verify_on_exit!}
+
+  @mib 1_048_576
+  @part 5 * @mib
 
   @access_key_id "AKIDEXAMPLE"
   @secret_access_key "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
@@ -361,6 +365,243 @@ defmodule Fil.Adapter.S3Test do
                Fil.write(disk(), "a.txt", Stream.map(["x"], & &1), size: 1, if_exists: :error)
 
       assert header(request!(), "if-none-match") == "*"
+    end
+  end
+
+  describe "uploads in parts" do
+    test "a stream without a size larger than a part is uploaded in parts" do
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(200, completed_xml())
+      ])
+
+      content = :crypto.strong_rand_bytes(@part + 1)
+
+      assert {:ok, ref} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), content_type: "video/mp4")
+      assert ref.path == "a.bin"
+
+      [create, first, second, complete] = requests()
+
+      assert {create.method, create.request_path, create.query_params} == {"POST", "/a.bin", %{"uploads" => ""}}
+      assert header(create, "content-type") == "video/mp4"
+      assert header(create, "content-length") == "0"
+
+      assert {first.method, first.query_params} == {"PUT", %{"partNumber" => "1", "uploadId" => "UP"}}
+      assert first.assigns.body == binary_part(content, 0, @part)
+      assert header(first, "x-amz-content-sha256") == sha256(first.assigns.body)
+
+      assert second.query_params == %{"partNumber" => "2", "uploadId" => "UP"}
+      assert second.assigns.body == binary_part(content, @part, 1)
+
+      assert {complete.method, complete.query_params} == {"POST", %{"uploadId" => "UP"}}
+      assert completed_parts(complete) == [{"1", ~s("e1")}, {"2", ~s("e2")}]
+
+      for request <- [create, first, second, complete], do: assert(header(request, "if-none-match") == nil)
+    end
+
+    test "a stream of whole parts has no empty last part" do
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(200, completed_xml())
+      ])
+
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(:binary.copy("a", 2 * @part), @mib))
+
+      assert [_create, _first, second, complete] = requests()
+      assert byte_size(second.assigns.body) == @part
+      assert length(completed_parts(complete)) == 2
+    end
+
+    test "a stream that fits in one part is one PutObject" do
+      stub([response(200)])
+      content = :binary.copy("a", @part)
+
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), content_type: "video/mp4")
+
+      request = request!()
+      assert {request.method, request.query_params} == {"PUT", %{}}
+      assert request.assigns.body == content
+      assert header(request, "content-type") == "video/mp4"
+    end
+
+    test "if_exists: :error is checked when the upload completes" do
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(200, completed_xml())
+      ])
+
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", large_stream(), if_exists: :error)
+      assert Enum.map(requests(), &header(&1, "if-none-match")) == [nil, nil, nil, "*"]
+
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(412, error_xml("PreconditionFailed")),
+        response(204)
+      ])
+
+      assert {:error, %Fil.AlreadyExistsError{reason: "PreconditionFailed", op: :write, path: "a.bin"}} =
+               Fil.write(parts_disk(), "a.bin", large_stream(), if_exists: :error)
+
+      assert_aborted(requests())
+    end
+
+    test "a failed part aborts the upload and closes the stream" do
+      test = self()
+      stub([response(200, initiate_xml("UP")), response(500), response(503, error_xml("SlowDown")), response(204)])
+
+      stream =
+        Stream.resource(
+          fn -> 0 end,
+          fn count -> {[:binary.copy("a", @mib)], count + 1} end,
+          fn _count -> send(test, :closed) end
+        )
+
+      assert {:error, %Fil.UnavailableError{reason: "SlowDown"}} = Fil.write(parts_disk(), "a.bin", stream)
+      assert_received :closed
+
+      requests = requests()
+      assert Enum.map(requests, & &1.method) == ["POST", "PUT", "PUT", "DELETE"]
+      assert_aborted(requests)
+    end
+
+    test "a part that fails with an unavailable storage is sent once more" do
+      stub([
+        response(200, initiate_xml("UP")),
+        {:error, :closed},
+        part_response("e1"),
+        part_response("e2"),
+        response(200, completed_xml())
+      ])
+
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", large_stream())
+
+      assert [_create, failed, retried, _second, complete] = requests()
+      assert failed.assigns.body == retried.assigns.body
+      assert retried.query_params["partNumber"] == "1"
+      assert completed_parts(complete) == [{"1", ~s("e1")}, {"2", ~s("e2")}]
+    end
+
+    test "a stream that raises after a part aborts the upload" do
+      stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
+
+      assert_raise RuntimeError, "the upload broke off", fn ->
+        Fil.write(parts_disk(), "a.bin", raising_after(@part + 1, fn -> raise "the upload broke off" end))
+      end
+
+      assert_aborted(requests())
+
+      stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
+
+      assert {:error, %Fil.ConflictError{reason: :size_changed}} =
+               Fil.write(
+                 parts_disk(),
+                 "a.bin",
+                 raising_after(@part + 1, fn -> raise %Fil.ConflictError{reason: :size_changed} end)
+               )
+
+      assert_aborted(requests())
+    end
+
+    test "an error inside the 200 of the completion aborts the upload" do
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(200, "\n   \n" <> error_xml("InternalError")),
+        response(204)
+      ])
+
+      assert {:error, %Fil.UnavailableError{reason: "InternalError"}} = Fil.write(parts_disk(), "a.bin", large_stream())
+      assert_aborted(requests())
+    end
+
+    test "a completion with a result after whitespace succeeds" do
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(200, "\n  " <> completed_xml())
+      ])
+
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", large_stream())
+    end
+
+    test "a failed create has nothing to abort" do
+      stub([response(403, error_xml("AccessDenied"))])
+      assert {:error, %Fil.AccessDeniedError{reason: "AccessDenied"}} = Fil.write(parts_disk(), "a.bin", large_stream())
+      assert [%{method: "POST"}] = requests()
+
+      stub([response(200, "<InitiateMultipartUploadResult/>")])
+      assert {:error, %Fil.UnavailableError{reason: :invalid_xml}} = Fil.write(parts_disk(), "a.bin", large_stream())
+    end
+
+    test "a failed abort still returns the error of the write" do
+      stub([response(200, initiate_xml("UP")), response(400, error_xml("InvalidArgument")), response(500)])
+
+      assert {:error, %Fil.UnknownError{reason: "InvalidArgument"}} = Fil.write(parts_disk(), "a.bin", large_stream())
+      assert_aborted(requests())
+    end
+
+    test "an upload aborted from outside is a conflict" do
+      stub([response(200, initiate_xml("UP")), response(404, error_xml("NoSuchUpload")), response(404)])
+
+      assert {:error, %Fil.ConflictError{reason: "NoSuchUpload"}} = Fil.write(parts_disk(), "a.bin", large_stream())
+    end
+
+    test "a part without an ETag is an unknown error" do
+      stub([response(200, initiate_xml("UP")), response(200), response(204)])
+
+      assert {:error, %Fil.UnknownError{reason: :missing_etag}} = Fil.write(parts_disk(), "a.bin", large_stream())
+    end
+
+    test "a stream that needs more parts than S3 allows stops before the last one" do
+      disk = max_parts(parts_disk(), 2)
+
+      stub([
+        response(200, initiate_xml("UP")),
+        part_response("e1"),
+        part_response("e2"),
+        response(200, completed_xml())
+      ])
+
+      assert {:ok, _} = Fil.write(disk, "a.bin", chunked(:binary.copy("a", 2 * @part), @mib))
+
+      stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
+
+      assert {:error, %Fil.InvalidRequestError{reason: :too_many_parts}} =
+               Fil.write(disk, "a.bin", chunked(:binary.copy("a", 2 * @part + 1), @mib))
+
+      assert_aborted(requests())
+    end
+
+    test "the upload of a killed writer is aborted" do
+      test = self()
+      stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
+      disk = parts_disk()
+
+      writer =
+        spawn(fn ->
+          Process.put(:"$callers", [test])
+          Fil.write(disk, "a.bin", raising_after(@part + 1, fn -> Process.sleep(:infinity) end))
+        end)
+
+      assert_receive {__MODULE__, %{method: "PUT", query_params: %{"partNumber" => "1"}}}, 5_000
+      Process.exit(writer, :kill)
+
+      assert_receive {__MODULE__, %{method: "DELETE"} = abort}, 5_000
+      assert abort.query_params == %{"uploadId" => "UP"}
+    end
+
+    test "the part size is at least 5 MiB" do
+      assert_raise ArgumentError, ~r/invalid value for :part_size option/, fn -> disk(part_size: @part - 1) end
     end
   end
 
@@ -1006,6 +1247,64 @@ defmodule Fil.Adapter.S3Test do
     ]
     |> Keyword.merge(opts)
     |> Fil.disk()
+  end
+
+  defp parts_disk(opts \\ []), do: disk([part_size: @part] ++ opts)
+
+  # The adapter's limit of 10,000 parts can't be reached in a unit test, so the tests lower it in the disk's state.
+  defp max_parts(%Fil.Disk{adapter: {S3, state}} = disk, max_parts) do
+    %{disk | adapter: {S3, %{state | max_parts: max_parts}}}
+  end
+
+  # Two parts: a whole one and a byte.
+  defp large_stream do
+    @part
+    |> Kernel.+(1)
+    |> then(&:binary.copy("a", &1))
+    |> chunked(@mib)
+  end
+
+  # `size` bytes in chunks of 1 MiB, then calls `fun` for the next chunk.
+  defp raising_after(size, fun) do
+    size
+    |> then(&:binary.copy("a", &1))
+    |> chunked(@mib)
+    |> Stream.concat(Stream.map([:next], fn _next -> fun.() end))
+  end
+
+  defp assert_aborted(requests) do
+    abort = List.last(requests)
+
+    assert {abort.method, abort.request_path, abort.query_params} == {"DELETE", "/a.bin", %{"uploadId" => "UP"}}
+  end
+
+  defp part_response(etag), do: response(200, "", [{"etag", ~s("#{etag}")}])
+
+  defp initiate_xml(id) do
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+      <Bucket>bucket</Bucket><Key>a.bin</Key><UploadId>#{id}</UploadId>
+    </InitiateMultipartUploadResult>
+    """
+  end
+
+  defp completed_xml do
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+      <Bucket>bucket</Bucket><Key>a.bin</Key><ETag>"3858f62230ac3c915f300c664312c11f-2"</ETag>
+    </CompleteMultipartUploadResult>
+    """
+  end
+
+  # The part numbers and ETags of a CompleteMultipartUpload request, in order.
+  defp completed_parts(request) do
+    {:ok, completion} = Fil.Support.XML.parse(request.assigns.body)
+
+    for part <- Fil.Support.XML.children(completion, "Part") do
+      {Fil.Support.XML.text(part, "PartNumber"), Fil.Support.XML.text(part, "ETag")}
+    end
   end
 
   defp sha256(content) do

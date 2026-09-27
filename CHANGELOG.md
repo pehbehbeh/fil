@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- S3 uploads a stream without a size in parts (a multipart upload), with one part in memory at a time: 8 MiB by
+  default, set with the new `:part_size` option. A stream that fits in one part is still one PutObject. A part that
+  fails because the storage is unavailable is sent once more. A failed upload is aborted, and so is the upload of a
+  process that's killed.
+  ([#N](https://github.com/pehbehbeh/fil/pull/N))
 - `Fil.stream/1,2,3` and `Fil.stream!/1,2,3` return a file's content as a stream of binaries, on every disk. They
   check the file right away and read it when the stream is enumerated.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))

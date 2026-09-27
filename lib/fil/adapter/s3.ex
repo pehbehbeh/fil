@@ -51,6 +51,16 @@ defmodule Fil.Adapter.S3 do
               (`https://bucket.host/key`). Defaults to `true` when `:endpoint` is set, `false` otherwise.
               """
             ],
+            part_size: [
+              type: {:in, 5_242_880..5_368_709_120},
+              default: 8_388_608,
+              doc: """
+              The size in bytes of the parts a stream without `size:` is uploaded in, 8 MiB by default, and at least
+              5 MiB (S3's minimum). An upload holds one part in memory at a time. S3 allows 10,000 parts, so a stream
+              without a size can be at most 10,000 parts: 78 GiB at the default. Pass `size:` or raise `:part_size`
+              for larger ones.
+              """
+            ],
             req_options: [
               type: :keyword_list,
               default: [],
@@ -151,6 +161,7 @@ defmodule Fil.Adapter.S3 do
   alias Fil.Stat
   alias Fil.Support.Checksum
   alias Fil.Support.Content
+  alias Fil.Support.Parts
   alias Fil.Support.Relay
   alias Fil.Support.XML
 
@@ -158,6 +169,9 @@ defmodule Fil.Adapter.S3 do
   import Fil.Support.URL
 
   @checksum_mode {"x-amz-checksum-mode", "ENABLED"}
+
+  # S3's limit on the parts of a multipart upload.
+  @max_parts 10_000
 
   @derive {Inspect, only: [:bucket, :region, :prefix, :endpoint, :public_endpoint, :path_style]}
   defstruct [
@@ -170,7 +184,9 @@ defmodule Fil.Adapter.S3 do
     :access_key_id,
     :secret_access_key,
     :session_token,
-    :req_options
+    :part_size,
+    :req_options,
+    max_parts: @max_parts
   ]
 
   @type t :: %__MODULE__{}
@@ -192,6 +208,7 @@ defmodule Fil.Adapter.S3 do
          access_key_id: opts[:access_key_id],
          secret_access_key: opts[:secret_access_key],
          session_token: opts[:session_token],
+         part_size: opts[:part_size],
          req_options: opts[:req_options]
        }}
     end
@@ -212,34 +229,46 @@ defmodule Fil.Adapter.S3 do
 
   @impl Fil.Adapter
   def write(state, path, content, opts) do
-    {body, body_headers} = upload_body(content, opts)
+    key = key(state, path)
+
+    cond do
+      Content.iodata?(content) -> put_object(state, key, content, opts)
+      is_integer(opts[:size]) and is_nil(opts[:checksum]) -> put_stream(state, key, content, opts)
+      opts[:checksum] != nil -> put_object(state, key, Content.to_binary(content), opts)
+      true -> upload(state, key, content, opts)
+    end
+  end
+
+  # One PutObject with content in memory, signed with its SHA-256.
+  defp put_object(state, key, content, opts) do
+    checksum = checksum_header(opts, content)
 
     headers =
       opts
       |> content_type_header()
       |> put_if_exists(opts)
-      |> Kernel.++(body_headers)
+      |> Kernel.++(checksum)
 
-    case request(state, :put, key(state, path), headers: headers, body: body) do
+    put(state, key, headers, content)
+  end
+
+  # One PutObject that sends a stream of known size as it's read, with its `content-length`, signed with
+  # `UNSIGNED-PAYLOAD` (Req does that for a streamed body).
+  defp put_stream(state, key, content, opts) do
+    headers =
+      opts
+      |> content_type_header()
+      |> put_if_exists(opts)
+      |> Kernel.++([{"content-length", Integer.to_string(opts[:size])}])
+
+    put(state, key, headers, content)
+  end
+
+  defp put(state, key, headers, body) do
+    case request(state, :put, key, headers: headers, body: body) do
       {:ok, %{status: status}} when status in [200, 201] -> :ok
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  # Decides how the content goes out in one PutObject. A stream of known size without a checksum is sent as it's read,
-  # with its `content-length`, and signed with `UNSIGNED-PAYLOAD` (Req does that for a streamed body). Anything else is
-  # sent as one binary: a stream without a size is collected first, because a PutObject needs its length up front, and
-  # so is one with a checksum, whose header goes out before the content. Multipart uploads for streams of unknown size
-  # belong here.
-  defp upload_body(content, opts) do
-    case {Content.iodata?(content), opts[:size], opts[:checksum]} do
-      {false, size, nil} when is_integer(size) ->
-        {content, [{"content-length", Integer.to_string(size)}]}
-
-      _iodata_or_unknown_size ->
-        body = Content.to_binary(content)
-        {body, checksum_header(opts, body)}
     end
   end
 
@@ -413,7 +442,7 @@ defmodule Fil.Adapter.S3 do
     headers = [{"x-amz-copy-source", copy_source(state, src)}]
 
     case request(state, :put, key(state, dest), headers: headers) do
-      {:ok, %{status: 200} = response} -> copy_result(response)
+      {:ok, %{status: 200} = response} -> xml_result(response)
       {:ok, %{status: 400} = response} -> copy_error(state, src, error(response))
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
@@ -467,6 +496,231 @@ defmodule Fil.Adapter.S3 do
       {:error, %Fil.UnsupportedError{reason: :missing_credentials}}
     else
       {:ok, presign(state, key(state, path), opts)}
+    end
+  end
+
+  ## ------------------------------------------------------------------
+  ## Uploads in parts
+  ## ------------------------------------------------------------------
+
+  # A stream without a size is read one part at a time (`Fil.Support.Parts`). One that ends within the first part goes
+  # out as one PutObject. A larger one starts a multipart upload once the second part begins, uploads each part when
+  # it's full, and completes the upload after the stream has ended, so nothing is written unless it ends.
+  #
+  # A guard process (`start_guard/2`) creates the upload and is the only one that aborts it: when the write fails,
+  # raises or is killed. The content is read and the parts are uploaded in the calling process.
+  defp upload(state, key, content, opts) do
+    guard = start_guard(state, key)
+    upload = %{key: key, guard: guard, id: nil, number: 0, parts: []}
+
+    try do
+      content
+      |> Parts.reduce(state.part_size, upload, &next_part(state, &1, &2, opts))
+      |> finish_upload(state, opts)
+    else
+      :ok ->
+        stop_guard(guard, :done)
+
+      {:error, error} ->
+        stop_guard(guard, :abort)
+        {:error, error}
+    catch
+      kind, reason ->
+        stop_guard(guard, :abort)
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    end
+  end
+
+  # Called with every full part while the stream is read, so a failed request halts the stream instead of raising: the
+  # content is read inside `Fil.Op`, where a raised `Fil` error would count as the source's. A full part always has
+  # more content behind it, so the last part a stream can have is refused before it's uploaded.
+  defp next_part(state, part, upload, opts) do
+    result =
+      if upload.number + 1 >= state.max_parts,
+        do: {:error, %Fil.InvalidRequestError{reason: :too_many_parts}},
+        else: upload_part(state, part, upload, opts)
+
+    case result do
+      {:ok, upload} -> {:cont, upload}
+      {:error, error} -> {:halt, {:error, error}}
+    end
+  end
+
+  defp finish_upload({:halted, {:error, error}}, _state, _opts), do: {:error, error}
+  defp finish_upload({:done, last, %{id: nil, key: key}}, state, opts), do: put_object(state, key, last, opts)
+
+  defp finish_upload({:done, last, upload}, state, opts) do
+    with {:ok, upload} <- upload_part(state, last, upload, opts), do: complete_upload(state, upload, opts)
+  end
+
+  defp upload_part(state, part, upload, opts) do
+    with {:ok, upload} <- create_upload(upload, opts),
+         number = upload.number + 1,
+         {:ok, etag} <- send_part(state, upload, number, part) do
+      {:ok, %{upload | number: number, parts: [{number, etag} | upload.parts]}}
+    end
+  end
+
+  defp create_upload(%{id: nil, guard: guard} = upload, opts) do
+    headers = [{"content-length", "0"} | content_type_header(opts)]
+
+    with {:ok, id} <- call_guard(guard, {:create, headers}), do: {:ok, %{upload | id: id}}
+  end
+
+  defp create_upload(upload, _opts), do: {:ok, upload}
+
+  # A part is in memory and invisible until the upload completes, so a part that failed with `Fil.UnavailableError` is
+  # sent once more. The ETag goes into the completion as S3 sent it, quotes included.
+  defp send_part(state, upload, number, part, retries \\ 1) do
+    params = [{"partNumber", number}, {"uploadId", upload.id}]
+
+    result =
+      case request(state, :put, upload.key, params: params, body: part) do
+        {:ok, %{status: 200, headers: headers}} -> etag(headers)
+        {:ok, response} -> {:error, error(response)}
+        {:error, reason} -> {:error, reason}
+      end
+
+    case result do
+      {:error, %Fil.UnavailableError{}} when retries > 0 -> send_part(state, upload, number, part, retries - 1)
+      result -> result
+    end
+  end
+
+  defp etag(headers) do
+    case header(headers, "etag") do
+      nil -> {:error, %Fil.UnknownError{reason: :missing_etag}}
+      etag -> {:ok, etag}
+    end
+  end
+
+  # `if_exists: :error` can only be checked here: S3 takes `If-None-Match` on the completion, and not before.
+  defp complete_upload(state, upload, opts) do
+    headers = put_if_exists([], opts)
+    params = [{"uploadId", upload.id}]
+
+    case request(state, :post, upload.key, params: params, headers: headers, body: completion(upload)) do
+      {:ok, %{status: 200} = response} -> xml_result(response)
+      {:ok, response} -> {:error, error(response)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp completion(%{parts: parts}) do
+    parts =
+      parts
+      |> Enum.reverse()
+      |> Enum.map(fn {number, etag} ->
+        ["<Part><PartNumber>", Integer.to_string(number), "</PartNumber><ETag>", XML.escape(etag), "</ETag></Part>"]
+      end)
+
+    [~s(<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">), parts, "</CompleteMultipartUpload>"]
+  end
+
+  ## Guard
+
+  # The guard is a process of its own that creates the multipart upload and aborts it, so an upload whose writer is
+  # killed (a supervisor shutdown, a client that disconnects from a Cowboy request) is aborted too. It monitors the
+  # writer, and knows the upload from the moment it exists. It isn't linked, so it outlives a killed writer. The writer
+  # stops it with `:done` after completing, and with `:abort` on any failure, and waits until it's done, so no upload
+  # is left when a write returns. What a guard can't clean up (the node goes down, the abort fails) is left to the
+  # bucket's lifecycle rules.
+  defp start_guard(state, key) do
+    writer = self()
+    ref = make_ref()
+    # `$callers` lets the guard find what the writer was allowed, such as a `Req.Test` stub.
+    callers = [writer | Process.get(:"$callers", [])]
+
+    pid =
+      spawn(fn ->
+        Process.put(:"$callers", callers)
+        guard(%{state: state, key: key, ref: ref, writer: writer, monitor: Process.monitor(writer), id: nil})
+      end)
+
+    %{pid: pid, ref: ref}
+  end
+
+  defp guard(%{ref: ref, writer: writer, monitor: monitor} = guard) do
+    receive do
+      {^ref, {:create, headers}} ->
+        guard
+        |> create(headers)
+        |> guard()
+
+      {^ref, :done} ->
+        send(writer, {ref, :ok})
+
+      {^ref, :abort} ->
+        abort(guard)
+        send(writer, {ref, :ok})
+
+      {:DOWN, ^monitor, :process, _pid, _reason} ->
+        abort(guard)
+    end
+  end
+
+  # Creates the upload and tells the writer its id, which the guard keeps.
+  defp create(%{state: state, key: key, ref: ref, writer: writer} = guard, headers) do
+    result =
+      case request(state, :post, key, params: [{"uploads", ""}], headers: headers) do
+        {:ok, %{status: 200, body: body}} -> upload_id(body)
+        {:ok, response} -> {:error, error(response)}
+        {:error, reason} -> {:error, reason}
+      end
+
+    send(writer, {ref, result})
+
+    case result do
+      {:ok, id} -> %{guard | id: id}
+      {:error, _error} -> guard
+    end
+  end
+
+  defp upload_id(body) do
+    with {:ok, result} <- parse_xml(body) do
+      case XML.text(result, "UploadId") do
+        id when id in [nil, ""] -> {:error, %Fil.UnavailableError{reason: :invalid_xml}}
+        id -> {:ok, id}
+      end
+    end
+  end
+
+  # Once the upload is completed or aborted, S3 answers `404 NoSuchUpload`, which is fine too. A failed abort is left
+  # to the lifecycle rules: the write's own error is what the caller needs.
+  defp abort(%{id: nil}), do: :ok
+
+  defp abort(%{state: state, key: key, id: id}) do
+    _result = request(state, :delete, key, params: [{"uploadId", id}])
+    :ok
+  end
+
+  # The guard crashes only on a bug, such as bad `:req_options`, which the writer then raises.
+  defp call_guard(guard, message) do
+    case ask_guard(guard, message) do
+      {:down, reason} -> crashed!(reason)
+      reply -> reply
+    end
+  end
+
+  # A guard that crashed has nothing left to stop, and its error was raised already.
+  defp stop_guard(guard, message) do
+    case ask_guard(guard, message) do
+      {:down, _reason} -> :ok
+      reply -> reply
+    end
+  end
+
+  defp ask_guard(%{pid: pid, ref: ref}, message) do
+    monitor = Process.monitor(pid)
+    send(pid, {ref, message})
+
+    receive do
+      {^ref, reply} ->
+        Process.demonitor(monitor, [:flush])
+        reply
+
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        {:down, reason}
     end
   end
 
@@ -640,9 +894,10 @@ defmodule Fil.Adapter.S3 do
 
   defp copy_source(state, src), do: "/" <> state.bucket <> "/" <> encode_path(key(state, src))
 
-  # CopyObject can report failure inside a `200`, after the status has gone out. Only an `<Error>` document is a
-  # failure: once the copy may have happened, a body that can't be read doesn't turn it into an error.
-  defp copy_result(response) do
+  # CopyObject and CompleteMultipartUpload can report failure inside a `200`, after the status has gone out. Only an
+  # `<Error>` document is a failure: once the object may have been written, a body that can't be read doesn't turn it
+  # into an error.
+  defp xml_result(response) do
     case XML.parse(response.body) do
       {:ok, {"Error", _attributes, _children}} -> {:error, error(response)}
       _result_or_unreadable -> :ok
@@ -787,6 +1042,7 @@ defmodule Fil.Adapter.S3 do
     "PreconditionFailed" => Fil.AlreadyExistsError,
     "ConditionalRequestConflict" => Fil.AlreadyExistsError,
     "BadDigest" => Fil.ChecksumMismatchError,
+    "NoSuchUpload" => Fil.ConflictError,
     "SlowDown" => Fil.UnavailableError,
     "OperationAborted" => Fil.UnavailableError,
     "InternalError" => Fil.UnavailableError,
