@@ -55,10 +55,11 @@ defmodule Fil.Adapter.S3 do
               type: {:in, 5_242_880..5_368_709_120},
               default: 8_388_608,
               doc: """
-              The size in bytes of the parts a stream without `size:` is uploaded in, 8 MiB by default and at least
-              5 MiB (S3's minimum). An upload keeps one part in memory at a time. S3 allows 10,000 parts, so a stream
-              without a size can be at most 78 GiB at the default. Pass `size:` or raise `:part_size` for larger ones.
-              See [Uploads in parts](#module-uploads-in-parts).
+              The size in bytes of the parts an upload in parts uses (a stream without `size:` or with `checksum:`,
+              and content over 5 GiB), 8 MiB by default and at least 5 MiB (S3's minimum). An upload keeps one part in
+              memory at a time. S3 allows 10,000 parts, so a stream without a size can be at most 78 GiB at the
+              default. Pass `size:` or raise `:part_size` for larger ones: with `size:`, the parts grow to fit. See
+              [Uploads in parts](#module-uploads-in-parts).
               """
             ],
             req_options: [
