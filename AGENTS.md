@@ -102,18 +102,22 @@ bin/release 0.2.0
 ```
 
 It checks that `main` is clean, in sync with `origin` and has a green CI run, refuses a version that is tagged or on
-Hex, and a changelog without entries under Unreleased. Then it bumps `@version` in `mix.exs`, renames `## [Unreleased]`
+Hex, and a changelog without entries under Unreleased, and asks before releasing while the milestone `v0.2.0` has open
+issues or pull requests. Then it bumps `@version` in `mix.exs`, renames `## [Unreleased]`
 in `CHANGELOG.md` to `## [0.2.0] - date` and adds its compare link, commits "Release v0.2.0", tags `v0.2.0`, runs
 `mix hex.publish` (package and docs, with your own Hex login and 2FA), commits a fresh `## [Unreleased]` heading, pushes
-branch and tag and creates the GitHub release from the changelog section. Nothing is pushed before Hex accepted the
-package, and on failure the script prints how to undo the local commits. Pushing to a protected `main` needs your
-account on the ruleset's bypass list.
+branch and tag, creates the GitHub release from the changelog section and closes the milestone. Nothing is pushed
+before Hex accepted the package, and on failure the script prints how to undo the local commits. The release commits
+go to `main` directly, which the ruleset allows only for repository admins (its bypass list).
 
 - **Changelog:** `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first,
   one entry per user-visible change under `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, added
   under `## [Unreleased]` in the same commit as the change. Released sections are headed `## [0.2.0] - 2026-10-01`.
   `bin/release` keeps the link definitions at the end, which compare each version with the one before. The file is in
   the Hex package and a Guides tab on HexDocs, so each published version includes its changelog.
+- **Milestones:** one per planned release, named after its tag (`v0.2.0`), with the issues and pull requests meant to
+  ship in it. Issues without a milestone are the backlog, and a patch release needs no milestone. Before a release,
+  close what's left in the milestone or move it to the next one.
 - **Hotfix:** a normal fix on `main`, then `bin/release 0.2.1`.
 - **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix with its changelog entry under a new
   `## [Unreleased]`, push the branch, then `bin/release 0.1.1` on it. A `v0.N` branch keeps its own changelog and is

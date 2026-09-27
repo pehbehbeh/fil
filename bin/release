@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Releases Fil from the current branch: bumps the version, rolls the changelog, commits, tags, publishes to Hex, reopens
-# the changelog, pushes and creates the GitHub release. See "Releasing" in AGENTS.md.
+# the changelog, pushes, creates the GitHub release and closes its milestone. See "Releasing" in AGENTS.md.
 #
 #   bin/release [VERSION]
 #
@@ -77,6 +77,20 @@ source_url=$(sed -n 's/^  @source_url "\(.*\)"$/\1/p' mix.exs)
 # The previous release, from the `[unreleased]` link, or none before the first release.
 previous=$(sed -n 's|^\[unreleased\]: .*/compare/\(.*\)\.\.\.HEAD$|\1|p' CHANGELOG.md)
 
+# The open milestone named after the tag. Patch releases usually have none.
+milestone=$(gh api "repos/{owner}/{repo}/milestones?state=open&per_page=100" --jq '.[] | "\(.number) \(.title)"' |
+  awk -v t="$tag" '$2 == t { print $1 }')
+if [ -n "$milestone" ]; then
+  open_items=$(gh api "repos/{owner}/{repo}/issues?milestone=$milestone&state=open&per_page=100" \
+    --jq '.[] | "  #\(.number) \(.title)"')
+  if [ -n "$open_items" ]; then
+    printf '\nThe milestone %s still has open issues or pull requests:\n%s\n' "$tag" "$open_items"
+    confirm "Release anyway? (Otherwise close them, or move them to the next milestone.)" || exit 1
+  fi
+else
+  echo "There's no open milestone $tag on GitHub."
+fi
+
 echo
 confirm "Release $tag from $branch?" || exit 1
 
@@ -128,6 +142,16 @@ gh release create "$tag" --title "$tag" --notes-file "$notes"
 rm -f "$notes"
 
 trap - ERR
+
+# After the release, so a failure here can't leave it half done.
+if [ -n "$milestone" ]; then
+  if gh api -X PATCH "repos/{owner}/{repo}/milestones/$milestone" -f state=closed > /dev/null; then
+    echo "Closed the milestone $tag."
+  else
+    echo "Couldn't close the milestone $tag, close it on GitHub."
+  fi
+fi
+
 say "Released $tag"
 echo "https://hex.pm/packages/fil/$version"
 echo "https://fil.hexdocs.pm/$version"
