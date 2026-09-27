@@ -43,6 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `if_exists: :error` on a local disk writes to a temporary file and hard-links it into place, so a failed write no
   longer leaves a partial file behind.
   ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
+- Local writes name their temporary file `.fil-` and a short suffix, which listings skip, so a name near the
+  filesystem's limit works. A failed write also removes the directories it created.
+  ([#TBD](https://github.com/pehbehbeh/fil/pull/TBD))
 - `Fil.Plug` refuses a signed URL with a query parameter that wasn't signed, as S3 does. URLs signed by 0.1 still work.
   ([#1](https://github.com/pehbehbeh/fil/pull/1))
 
