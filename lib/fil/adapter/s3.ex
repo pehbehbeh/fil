@@ -58,7 +58,7 @@ defmodule Fil.Adapter.S3 do
               Options for every [Req](https://req.hexdocs.pm) request the disk makes, such as `:receive_timeout`,
               `:connect_options` or a shared `:finch` pool. The adapter always sets `:method`, `:url`, `:headers` and
               `:body`, plus `retry: false` (retrying is up to the caller) and `raw: true` (no decompression and no body
-              decoding, so a file reads back exactly as it was written).
+              decoding, so a file reads back exactly as it was written). Streamed uploads need HTTP/1, see above.
               """
             ]
           )
@@ -80,6 +80,12 @@ defmodule Fil.Adapter.S3 do
 
   Requests are sent and signed (SigV4) by [Req](https://req.hexdocs.pm), configured with `:req_options`. Listings are
   parsed with OTP's `:xmerl_sax_parser`.
+
+  Streamed uploads need an HTTP/1 connection pool, which is what Req uses unless `:req_options` asks for HTTP/2 (for
+  example with `connect_options: [protocols: [:http2]]` or a `:finch` pool for HTTP/2). On HTTP/2, Finch reads a request
+  body in the pool's process instead of the caller's, and a stream that only the caller's process can read fails or
+  stalls there: a `Fil.Plug` upload, or a stream from another S3 disk in a copy across disks. Whole content and streams
+  that any process can read, such as a `File.Stream`, are fine.
 
   ## Options
 

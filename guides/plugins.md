@@ -182,10 +182,11 @@ A stream is an enumerable of binaries. What a plugin can rely on:
   * a transform returns iodata of any size, including none, so it may change the chunk boundaries. `Fil` drops empty
     chunks before the adapter or the caller sees them. Return output as it's ready, in pieces, rather than holding it
     back, so memory use doesn't grow with the file
-  * the functions run lazily, in the process that reads the stream: on a write the one that called `Fil.write/4`,
-    on a read whichever process enumerates the stream from `Fil.stream/3`, which may not be the one that called it.
-    A resource that belongs to a process, such as a `:zlib` port, is opened and closed while the stream is read, not
-    in the callback
+  * the functions run lazily, in the process that reads the stream. On a write that's usually the one that called
+    `Fil.write/4`, but an HTTP client may read the content in a process of its own (an S3 disk on HTTP/2, see
+    `Fil.Adapter.S3`). On a read it's whichever process enumerates the stream from `Fil.stream/3`, which may not be
+    the one that called it. A resource that belongs to a process, such as a `:zlib` port, is opened and closed while
+    the stream is read, not in the callback
   * a stream from `Fil.stream/3` can be read more than once, and the functions then run again from the start. State
     for one pass goes into the start function of `Stream.transform/5`, not into the callback
   * errors are `Fil`'s error structs, such as `Fil.ChecksumMismatchError` for content that fails a check. On whole
