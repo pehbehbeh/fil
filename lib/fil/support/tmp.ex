@@ -12,16 +12,23 @@ defmodule Fil.Support.Tmp do
   #   * owners, `{pid}` rows for the processes this server monitors, so a process calls the server only the first time
   #     it puts an entry. Later entries go straight into the table.
   #
-  # When an owner exits, the server takes its entries out of the table and removes them in a process of its own, so a
-  # slow filesystem never blocks the next registration. Finding them scans the table, which only holds what's in use
-  # right now. `init/1` monitors every owner in both tables, so a restarted server still cleans up after the processes
-  # it knew. Removing calls `File` directly, not `Fil`: a `.fil-` file isn't a file of its disk yet, so there are no
-  # plugins to run and no operation to report to telemetry.
+  # When an owner exits, the server takes its entries out of the table (a scan, but the table only holds what's in use
+  # right now) and removes them in a process of its own, so a slow filesystem never blocks the next registration. That
+  # process removes them twice, a second apart: a process that's killed during a file operation (a dirty NIF, such as
+  # the `open` that creates a `.fil-` file) is `:DOWN` before the operation returns, so the file can appear after the
+  # first pass. An operation that takes longer than that can still leave its file behind.
+  #
+  # `init/1` monitors every owner in both tables, so a restarted server still cleans up after the processes it knew.
+  # Removing calls `File` directly, not `Fil`: a `.fil-` file isn't a file of its disk yet, so there are no plugins to
+  # run and no operation to report to telemetry.
 
   use GenServer, shutdown: 30_000
 
   @entries __MODULE__
   @owners Fil.Support.Tmp.Owners
+
+  # How long a cleanup waits before it removes everything a second time.
+  @grace 1_000
 
   @doc "Creates the tables. The calling process owns them, so it has to outlive the server."
   @spec create_tables() :: :ok
@@ -57,10 +64,20 @@ defmodule Fil.Support.Tmp do
 
   @doc """
   Waits until the entries of every process that's gone are removed, also of those whose `:DOWN` hasn't arrived yet.
-  For tests.
+  Running cleanups make their second pass right away instead of after the grace period. For tests, so they neither
+  sleep nor crash when another test restarts the server.
   """
-  @spec sync() :: :ok
-  def sync, do: GenServer.call(__MODULE__, :sync, :infinity)
+  @spec sync(GenServer.server()) :: :ok
+  def sync(server \\ __MODULE__) do
+    GenServer.call(server, :sync, :infinity)
+  catch
+    :exit, {:noproc, _call} ->
+      Process.sleep(1)
+      sync(server)
+
+    :exit, {:killed, _call} ->
+      sync(server)
+  end
 
   @doc """
   Removes empty directories, deepest first, and stops at the first one that isn't empty, because another write put
@@ -96,7 +113,7 @@ defmodule Fil.Support.Tmp do
     |> Enum.uniq()
     |> Enum.each(&monitor/1)
 
-    {:ok, %{cleanups: MapSet.new(), syncs: []}}
+    {:ok, %{cleanups: %{}, syncs: []}}
   end
 
   @impl GenServer
@@ -114,16 +131,18 @@ defmodule Fil.Support.Tmp do
       |> Enum.reject(&Process.alive?/1)
       |> Enum.reduce(state, &down/2)
 
-    if MapSet.size(state.cleanups) == 0 do
+    if state.cleanups == %{} do
       {:reply, :ok, state}
     else
-      {:noreply, %{state | syncs: [{from, state.cleanups} | state.syncs]}}
+      Enum.each(state.cleanups, fn {_ref, pid} -> send(pid, :now) end)
+      pending = MapSet.new(state.cleanups, fn {ref, _pid} -> ref end)
+      {:noreply, %{state | syncs: [{from, pending} | state.syncs]}}
     end
   end
 
   @impl GenServer
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
-    if MapSet.member?(state.cleanups, ref) do
+    if Map.has_key?(state.cleanups, ref) do
       {:noreply, cleaned_up(ref, state)}
     else
       {:noreply, down(pid, state)}
@@ -147,7 +166,7 @@ defmodule Fil.Support.Tmp do
     |> :ets.tab2list()
     |> Enum.each(&remove/1)
 
-    for ref <- state.cleanups do
+    for {ref, _pid} <- state.cleanups do
       receive do
         {:DOWN, ^ref, :process, _, _} -> :ok
       end
@@ -167,8 +186,8 @@ defmodule Fil.Support.Tmp do
       state
     else
       Enum.each(entries, &:ets.delete_object(@entries, &1))
-      {_pid, ref} = spawn_monitor(fn -> Enum.each(entries, &remove/1) end)
-      %{state | cleanups: MapSet.put(state.cleanups, ref)}
+      {pid, ref} = spawn_monitor(fn -> clean_up(entries) end)
+      %{state | cleanups: Map.put(state.cleanups, ref, pid)}
     end
   end
 
@@ -179,7 +198,20 @@ defmodule Fil.Support.Tmp do
       |> Enum.split_with(fn {_from, pending} -> MapSet.size(pending) == 0 end)
 
     Enum.each(done, fn {from, _pending} -> GenServer.reply(from, :ok) end)
-    %{state | cleanups: MapSet.delete(state.cleanups, ref), syncs: syncs}
+    %{state | cleanups: Map.delete(state.cleanups, ref), syncs: syncs}
+  end
+
+  # `sync/1` sends `:now` to skip the wait.
+  defp clean_up(entries) do
+    Enum.each(entries, &remove/1)
+
+    receive do
+      :now -> :ok
+    after
+      @grace -> :ok
+    end
+
+    Enum.each(entries, &remove/1)
   end
 
   # The write may have placed the file already (renamed or linked), which only makes the `File.rm/1` a no-op, since the
