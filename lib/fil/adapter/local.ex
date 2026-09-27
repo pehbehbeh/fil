@@ -44,11 +44,12 @@ defmodule Fil.Adapter.Local do
       prove there was none. `:content_type` is `nil`, because the filesystem doesn't store one (`Fil.Plug` guesses it
       from the extension). `checksum:` reads the whole file to compute the checksum.
     * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too, temporary `.fil-`
-      files of writes aren't. A path that isn't a directory lists nothing, the same as a missing one.
+      files of writes aren't. The disk reserves that prefix, so a file of your own whose name starts with `.fil-` is
+      skipped as well. A path that isn't a directory lists nothing, the same as a missing one.
     * `Fil.cp/4`: `File.cp/2`. Copying a directory is a `Fil.InvalidRequestError`.
     * `Fil.rename/4`: `File.rename/2`.
-    * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Temporary `.fil-` files are removed too, but not
-      counted.
+    * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Files whose name starts with `.fil-` are removed
+      too, but not counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
       `Fil.Plug` serves them.
 
