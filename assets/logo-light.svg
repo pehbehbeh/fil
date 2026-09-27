@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 278.98 129.00" width="865" height="400">
+
+<g transform="translate(0.00,0.00) scale(1.0000)">
+<rect x="44" y="0" width="32" height="21" rx="3.5" fill="#8B5CF6"/>
+<rect x="80" y="0" width="18" height="21" rx="3.5" fill="#8B5CF6"/>
+<rect x="10" y="27" width="16" height="21" rx="3.5" fill="#A78BFA"/>
+<rect x="30" y="27" width="28" height="21" rx="3.5" fill="#A78BFA"/>
+<rect x="62" y="27" width="21" height="21" rx="3.5" fill="#C026D3"/>
+<rect x="101" y="27" width="32" height="21" rx="3.5" fill="#F43F5E"/>
+<rect x="0" y="54" width="26" height="21" rx="3.5" fill="#C026D3"/>
+<rect x="30" y="54" width="16" height="21" rx="3.5" fill="#F43F5E"/>
+<rect x="64" y="54" width="36" height="21" rx="3.5" fill="#F97316"/>
+<rect x="118" y="54" width="18" height="21" rx="3.5" fill="#F97316"/>
+<rect x="14" y="81" width="21" height="21" rx="3.5" fill="#F43F5E"/>
+<rect x="39" y="81" width="38" height="21" rx="3.5" fill="#EA580C"/>
+<rect x="96" y="81" width="28" height="21" rx="3.5" fill="#F59E0B"/>
+<rect x="34" y="108" width="18" height="21" rx="3.5" fill="#F97316"/>
+<rect x="74" y="108" width="30" height="21" rx="3.5" fill="#F59E0B"/>
+</g>
+<g fill="#1C1917" transform="translate(173.869,102.000) scale(0.107143,-0.107143)"><path transform="translate(0.000,0)" d="M149 -10Q119 -10 99.5 9.5Q80 29 80 59V631Q80 660 100.0 680.0Q120 700 149 700H218V59Q218 29 198.5 9.5Q179 -10 149 -10ZM171 576V700H448Q475 700 492.5 683.0Q510 666 510 638Q510 611 492.5 593.5Q475 576 448 576ZM172 286V411H429Q456 411 473.5 393.0Q491 375 491 348Q491 321 473.5 303.5Q456 286 429 286Z"/><path transform="translate(525.000,0)" d="M137 -10Q109 -10 89.5 10.0Q70 30 70 57V459Q70 486 89.5 505.5Q109 525 137 525Q164 525 183.5 505.5Q203 486 203 459V57Q203 30 183.5 10.0Q164 -10 137 -10ZM136 576Q105 576 85.0 596.0Q65 616 65 653Q65 689 85.0 709.5Q105 730 136 730Q169 730 189.0 709.5Q209 689 209 653Q209 616 189.0 596.0Q169 576 136 576Z"/><path transform="translate(778.000,0)" d="M136 -10Q108 -10 89.0 9.5Q70 29 70 58V664Q70 692 89.0 711.0Q108 730 136 730Q165 730 184.0 711.0Q203 692 203 664V58Q203 29 184.0 9.5Q165 -10 136 -10Z"/></g>
+</svg>

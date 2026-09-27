@@ -3,6 +3,12 @@
 This guide sets up `Fil` in an application with two disks, `uploads` and `backups`. They're local directories in
 development, in memory in tests and S3 buckets in production.
 
+> #### Info {: .info}
+>
+> This guide shows one way to set up `Fil`, and `Fil` doesn't require any of it. A disk is a plain value, so you can
+> build it wherever it suits your application: from config as below, at runtime or inline. You also decide what the
+> module and the config keys are called, and where to attach plugins.
+
 ## Adding the dependency
 
 Add `fil` to your dependencies in `mix.exs`:
@@ -173,5 +179,5 @@ process has to be allowed in:
 Fil.Adapter.Memory.allow(self(), MyApp.Thumbnailer)
 ```
 
-The adapters differ only in edge cases, listed in
-[Where the adapters differ](Fil.Adapter.html#module-where-the-adapters-differ).
+The adapters differ only in edge cases, listed under Operations on each adapter's page (`Fil.Adapter.Memory` for the
+tests, `Fil.Adapter.S3` for production).

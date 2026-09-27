@@ -41,22 +41,28 @@ defmodule Fil.Adapter.Memory do
   The disk itself only holds the root, so it can be built anywhere (in `config/test.exs`, for example), and every disk
   built in the test sees the same store.
 
-  ## Behaviour
-
-    * directories exist only as prefixes, like on an object store. There are no empty directories, and a stat on a
-      directory returns `%Fil.Stat{type: :directory}` with every other field `nil`.
-    * writes are atomic, and `if_exists: :error` uses `:ets.insert_new/2`, so its check is atomic too.
-    * `stat/3` sets `:etag` to the MD5 of the content in hex (the ETag S3 returns for a single-part upload), and
-      `:content_type` to the `content_type:` the write stored.
-    * checksums work as on S3: a write with `checksum:` stores the checksum of the content, `stat/3` with the same
-      algorithm returns it (and `nil` for another algorithm or a file written without one), and `verify_checksum: true`
-      on a read compares it with the content. A copy keeps the checksum.
-    * a memory store has no URLs. Attach `Fil.Plugin.URL` for public and signed URLs, and `Fil.Plug` serves them, in
-      a test through `Phoenix.ConnTest` too.
-
   ## Options
 
   #{NimbleOptions.docs(@schema)}
+
+  ## Operations
+
+  Where this list says nothing else, an operation follows the [contract](Fil.Adapter.html#module-contract). Directories
+  exist only as prefixes, like on an object store, so there are no empty directories.
+
+    * `Fil.read/3`: the content from the store. Reading a directory is a `Fil.NotFoundError`. `verify_checksum: true`
+      compares the content with the checksum the write stored.
+    * `Fil.write/4`: one `:ets.insert/2`, so writes are atomic. `if_exists: :error` uses `:ets.insert_new/2`, so its
+      check is atomic too. `checksum:` stores the checksum of the content. Writing to `report.txt/x` when `report.txt`
+      is a file writes a second file and leaves the first alone.
+    * `Fil.rm/3`: removing a directory succeeds and removes nothing.
+    * `Fil.stat/3`: `:etag` is the MD5 of the content in hex (the ETag S3 returns for a single-part upload), and
+      `:content_type` is the `content_type:` the write stored. `checksum:` returns the stored checksum if the write
+      used the same algorithm, and `nil` otherwise. A stat on a directory returns `%Fil.Stat{type: :directory}` with
+      every other field `nil`.
+    * `Fil.cp/4`: the copy keeps the content type and the checksum. Copying a directory is a `Fil.NotFoundError`.
+    * `Fil.url/3` and `Fil.signed_url/3`: a memory store has no URLs. Attach `Fil.Plugin.URL` to build them, and
+      `Fil.Plug` serves them, in a test through `Phoenix.ConnTest` too.
 
   ## Errors
 

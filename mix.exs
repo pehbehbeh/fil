@@ -65,6 +65,8 @@ defmodule Fil.MixProject do
     [
       main: "Fil",
       api_reference: false,
+      logo: "assets/icon.svg",
+      favicon: "assets/icon.svg",
       source_ref: "v#{@version}",
       extra_section: "Guides",
       extras: ["guides/installation.md", "guides/plugins.md", "CHANGELOG.md"],

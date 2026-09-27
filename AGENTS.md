@@ -26,8 +26,15 @@ The Hex package is `fil`.
 - **Same behaviour on every adapter:** critical behaviour (read, write, list, copy, checksums, public and signed URLs)
   works on every disk. When the storage lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.URL` builds and
   signs URLs for Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with a
-  `Fil.UnsupportedError`. Differences that remain are edge cases, documented in the "Where the adapters differ" table
-  in `Fil.Adapter` and nowhere else. New behaviour gets a conformance test in `Fil.AdapterCase`.
+  `Fil.UnsupportedError`. Differences that remain are edge cases, documented on the adapter's own page and nowhere
+  else. A table with a column per adapter stops fitting on a page once there are many adapters, and readers usually
+  care about one or two. New behaviour gets a conformance test in
+  `Fil.AdapterCase`.
+- **Adapter docs:** every adapter's `@moduledoc` has the same sections: an intro with an example, Options (generated),
+  Operations and Errors. Operations lists each `Fil` function the adapter implements (`Fil.read/3`, not `read/3`):
+  the storage call and where the adapter departs from the contract in `Fil.Adapter`. The callbacks stay without
+  `@doc` (`@impl` hides them), because users call `Fil`, never the adapter; calling it directly would skip path
+  checks, plugins and the error fields `Fil.Op` fills in.
 - **Storage features stay in adapters:** anything the storage has to do itself (checksums, conditional writes,
   URLs) is an adapter option, not a plugin. So is addressing (root, bucket, prefix).
 - **Wording:** "adapter" is the module (`Fil.Adapter.S3`), "storage" is what's behind it (S3, the filesystem): "the same

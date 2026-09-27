@@ -15,21 +15,9 @@ defmodule Fil.Adapter.Local do
 
       disk = Fil.disk(adapter: Fil.Adapter.Local, root: "priv/storage")
 
-  ## Behaviour
-
-    * writes are atomic: content goes to a temporary file in the destination directory and is then renamed into place,
-      so readers never see a partial file. Missing parent directories are created first.
-    * `if_exists: :error` skips the temporary file and opens the destination with `O_EXCL` instead. If something is
-      already there, the write returns a `Fil.AlreadyExistsError`.
-    * every path is checked against the root again after expansion. `Fil` has already rejected `../` escapes, so this is
-      defense in depth. The check only looks at the path string: a symlink inside the root can still point outside it.
-    * listing a missing directory, or a path that isn't a directory, returns `{:ok, []}`, the same as a missing prefix
-      on an object store.
-    * `stat/3` sets `:etag` to a weak `"size-mtime"` tag. It's good enough to notice a change, but it can't prove there
-      was none. `:content_type` is always `nil`, because the filesystem doesn't store one.
-    * the filesystem has no URLs. Attach `Fil.Plugin.URL` for public and signed URLs, and `Fil.Plug` serves them.
-    * the filesystem stores no checksums. `checksum:` on a write is accepted and ignored, and so is
-      `verify_checksum: true` on a read. `checksum:` on a stat reads the whole file to compute it.
+  Unlike on an object store, directories exist on their own and can be empty. Every path is checked against the root
+  again after expansion. `Fil` has already rejected `../` escapes, so this is defense in depth. The check only looks at
+  the path string: a symlink inside the root can still point outside it.
 
   ## Options
 
@@ -37,16 +25,26 @@ defmodule Fil.Adapter.Local do
 
   ## Operations
 
-  | `Fil` | Local |
-  | --- | --- |
-  | `read/3` | `File.read/1` |
-  | `write/4` | temporary file, then `File.rename/2` (`:file.open/2` with `:exclusive` for `if_exists: :error`) |
-  | `rm/3` | `File.rm/1`, a missing file mapped to success |
-  | `stat/3` | `File.stat/2`, plus a pass over the file for `checksum:` |
-  | `ls/3` | `File.ls/1`, walked depth-first when recursive |
-  | `cp/4` | `File.cp/2` |
-  | `rename/4` | `File.rename/2` |
-  | `rm_rf/3` | `File.rm_rf/1`, counting the files it removed |
+  Where this list says nothing else, an operation follows the [contract](Fil.Adapter.html#module-contract).
+
+    * `Fil.read/3`: `File.read/1`. Reading a directory is a `Fil.InvalidRequestError`. The filesystem stores no
+      checksums, so `verify_checksum: true` is ignored.
+    * `Fil.write/4`: the content goes to a temporary file in the destination directory, which `File.rename/2` then moves
+      into place, so readers never see a partial file. `if_exists: :error` opens the destination with `:exclusive`
+      (`O_EXCL`) instead. `checksum:` is ignored. Writing over a directory, or to `report.txt/x` when `report.txt` is a
+      file, is a `Fil.InvalidRequestError`.
+    * `Fil.rm/3`: `File.rm/1`, with a missing file mapped to success. Removing a directory is a
+      `Fil.InvalidRequestError`.
+    * `Fil.stat/3`: `File.stat/2`. `:etag` is a weak `"size-mtime"` tag: good enough to notice a change, but it can't
+      prove there was none. `:content_type` is `nil`, because the filesystem doesn't store one (`Fil.Plug` guesses it
+      from the extension). `checksum:` reads the whole file to compute the checksum.
+    * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too. A path that isn't a
+      directory lists nothing, the same as a missing one.
+    * `Fil.cp/4`: `File.cp/2`. Copying a directory is a `Fil.InvalidRequestError`.
+    * `Fil.rename/4`: `File.rename/2`.
+    * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed.
+    * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
+      `Fil.Plug` serves them.
 
   ## Errors
 

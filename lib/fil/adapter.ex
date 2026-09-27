@@ -48,23 +48,10 @@ defmodule Fil.Adapter do
 
   `Fil.AdapterCase` (internal for now) tests this contract against a live disk.
 
-  ## Where the adapters differ
-
   Every adapter `Fil` ships reads, writes, lists, copies and checks checksums, and every disk builds public and signed
   URLs (S3 itself, the others with `Fil.Plugin.URL`), so code written against one disk runs on the others. What's left
-  are edge cases:
-
-  | Situation | `Fil.Adapter.Local` | `Fil.Adapter.S3` | `Fil.Adapter.Memory` |
-  | --- | --- | --- | --- |
-  | directories | exist on their own, can be empty | prefixes only | prefixes only |
-  | `c:rm/3` on a directory | `Fil.InvalidRequestError` | `:ok`, removes nothing | `:ok`, removes nothing |
-  | `c:read/3` or `c:cp/4` of a directory | `Fil.InvalidRequestError` | `Fil.NotFoundError` | `Fil.NotFoundError` |
-  | `c:write/4` to `report.txt/x` when `report.txt` is a file | `Fil.InvalidRequestError` | writes both | writes both |
-  | `c:stat/3` with `checksum:` | computed from the content | the checksum the write stored, or `nil` | same as S3 |
-  | `verify_checksum: true` | ignored | compared with the stored checksum | compared with the stored checksum |
-  | `:content_type` in a stat | `nil` (`Fil.Plug` guesses from the extension) | from the write | from the write |
-  | `:etag` in a stat | weak, `"size-mtime"` | from S3 | MD5 of the content |
-  | URLs | with `Fil.Plugin.URL`, served by `Fil.Plug` | by S3 | with the plugin, served by `Fil.Plug` |
+  are edge cases, such as whether directories exist on their own, and each adapter lists them under Operations on its
+  own page.
 
   ## Errors
 
@@ -92,9 +79,8 @@ defmodule Fil.Adapter do
 
   A failure that fits a struct is returned as that struct, whatever the storage reported: `Fil.Adapter.Local` turns
   the `:eperm` that deleting a directory gives into `:eisdir`, and `Fil.Adapter.S3` checks a copy that the server
-  refused with a plain `400` for a missing source. Directories only exist as prefixes on S3 and in memory, so directory
-  errors only come from storage with directories of its own (see
-  [Where the adapters differ](#module-where-the-adapters-differ)).
+  refused with a plain `400` for a missing source. Directory errors only come from storage with directories of its own,
+  such as the filesystem. Where directories are only key prefixes, reading or copying one is a `Fil.NotFoundError`.
   """
 
   alias Fil.Stat

@@ -84,8 +84,8 @@ defmodule Fil do
                    default: false,
                    doc: """
                    Checks the content against the checksum stored with it and returns `Fil.ChecksumMismatchError` if
-                   they differ. Only S3 stores checksums (see the `:checksum` option of `write/4`). Content without a
-                   stored checksum is returned unchecked.
+                   they differ. Content without a stored checksum (see the `:checksum` option of `write/4`), or on
+                   storage that stores none, is returned unchecked.
                    """
                  ]
                )

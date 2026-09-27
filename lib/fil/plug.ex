@@ -20,9 +20,18 @@ if Code.ensure_loaded?(Plug) do
                 type: :boolean,
                 default: false,
                 doc: """
-                Serves `GET` and `HEAD` without a signature, so every file on the disk can be downloaded by anyone who
-                knows its path. That's where the URLs of `Fil.url/2` point. Uploads still need a URL signed by
-                `Fil.Plugin.URL`.
+                Serves `GET` and `HEAD` without a signature, like `Plug.Static` for a disk, so every file on the disk
+                can be downloaded by anyone who knows its path:
+
+                    plug Fil.Plug, at: "/avatars", disk: &MyApp.Storage.avatars/0, public: true
+
+                `GET /avatars/1.png` then returns `1.png` from the disk, on every adapter. There are no directory
+                listings, and a path can't leave the disk root. With `Fil.Plugin.URL` and
+                `base_url: "http://localhost:4000/avatars"` on the disk, `Fil.url/2` builds these URLs.
+
+                Uploads still need a signed URL, and without a `:secret` for `Fil.Plugin.URL` on the disk, a `PUT` gets
+                a `403`. A signed download URL that has expired or was changed still works on a public disk, but
+                without the `content-disposition` it was signed with.
                 """
               ],
               max_body_size: [
@@ -38,48 +47,38 @@ if Code.ensure_loaded?(Plug) do
     @moduledoc """
     Serves the files of a disk over HTTP: the URLs `Fil.Plugin.URL` signs, or with `public: true`, every file.
 
+        plug Fil.Plug, at: "/storage/uploads", disk: &MyApp.Storage.uploads/0
+
     Signed URLs make direct downloads and uploads work on every disk: local and memory disks, which can't sign URLs
     themselves, and S3 disks whose files should go through your application.
 
-    In a Phoenix app, put it in the endpoint before `Plug.Parsers`, at the path the plugin's `:base_url` points to:
+    Needs [Plug](https://plug.hexdocs.pm), an optional dependency of `Fil`.
+
+    ## Options
+
+    #{NimbleOptions.docs(@schema)}
+
+    ## Mounting
+
+    In a Phoenix app, the plug goes into the endpoint or behind a route. The endpoint takes uploads in any format, and
+    the router lets plugs of your own run first, such as authentication.
+
+    <!-- tabs-open -->
+
+    ### Via Endpoint
+
+    Put it in the endpoint before `Plug.Parsers`, at the path the plugin's `:base_url` points to:
 
         plug Fil.Plug, at: "/storage/uploads", disk: &MyApp.Storage.uploads/0
 
-    The `:base_url` of the disk's `Fil.Plugin.URL` is then `"http://localhost:4000/storage/uploads"`, and every
-    URL `Fil.signed_url/3` builds for it is served here. To run plugs of your own first, such as authentication, use
-    a router instead (see [In a router](#module-in-a-router)).
-
-    What it answers:
-
-      * `GET` and `HEAD` on a URL signed for `:get` return the file, with its stored content type or one guessed from
-        the extension, and the `content-disposition` the URL was signed with (`disposition:`)
-      * `PUT` on a URL signed for `:put` writes the request body, with the request's `content-type`, the same as a
-        presigned PUT on S3. Plugins attached to the disk run as for any other write
-      * a request that doesn't match its signature, or comes after the URL expired, gets a `403`
-      * an upload larger than `:max_body_size` gets a `413`, and one whose body something else already read (see
-        [In a router](#module-in-a-router)) a `400`. Neither writes anything
-      * a missing file gets a `404`, and so does a file the storage denies access to, so a client can't tell which
-        files exist
-      * a failed write gets a `409` if the file already exists, `507` if the storage is full and `503` if it's
-        unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
+    The `:base_url` of the disk's `Fil.Plugin.URL` is then `"http://localhost:4000/storage/uploads"`, and every URL
+    `Fil.signed_url/3` builds for it is served here.
 
     Requests pass through untouched when the disk doesn't sign URLs with `Fil.Plugin.URL` (and the plug isn't public).
     An S3 disk without it signs URLs that go to S3 directly, so the plug can stay in the endpoint when production uses
     S3.
 
-    ## Public disks
-
-    With `public: true`, the plug serves downloads without a signature, like `Plug.Static` for a disk:
-
-        plug Fil.Plug, at: "/avatars", disk: &MyApp.Storage.avatars/0, public: true
-
-    `GET /avatars/1.png` then returns `1.png` from the disk, on every adapter. There are no directory listings, and a
-    path can't leave the disk root. With `Fil.Plugin.URL` and `base_url: "http://localhost:4000/avatars"` on the disk,
-    `Fil.url/2` builds these URLs. Uploads still need a signed URL, and without a `:secret` for `Fil.Plugin.URL` on the
-    disk, a `PUT` gets a `403`. A signed download URL that has expired or was changed still works on a public disk, but
-    without the `content-disposition` it was signed with.
-
-    ## In a router
+    ### Via Router
 
     `forward` runs the plug behind a router pipeline, for example to let only signed-in users download from a public
     disk:
@@ -106,11 +105,21 @@ if Code.ensure_loaded?(Plug) do
       * the `:browser` pipeline's `protect_from_forgery` rejects a `PUT` without a CSRF token. Use a pipeline of your
         own, as above.
 
-    Needs [Plug](https://plug.hexdocs.pm), an optional dependency of `Fil`.
+    <!-- tabs-close -->
 
-    ## Options
+    ## Responses
 
-    #{NimbleOptions.docs(@schema)}
+      * `GET` and `HEAD` on a URL signed for `:get` return the file, with its stored content type or one guessed from
+        the extension, and the `content-disposition` the URL was signed with (`disposition:`)
+      * `PUT` on a URL signed for `:put` writes the request body, with the request's `content-type`, the same as a
+        presigned PUT on S3. Plugins attached to the disk run as for any other write
+      * a request that doesn't match its signature, or comes after the URL expired, gets a `403`
+      * an upload larger than `:max_body_size` gets a `413`, and one whose body something else already read (see
+        [Mounting](#module-mounting)) a `400`. Neither writes anything
+      * a missing file gets a `404`, and so does a file the storage denies access to, so a client can't tell which
+        files exist
+      * a failed write gets a `409` if the file already exists, `507` if the storage is full and `503` if it's
+        unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
     """
 
     @behaviour Plug

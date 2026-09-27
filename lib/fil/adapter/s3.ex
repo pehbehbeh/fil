@@ -64,10 +64,10 @@ defmodule Fil.Adapter.S3 do
           )
 
   @moduledoc """
-  Amazon S3 and services that implement its API, such as [MinIO](https://github.com/minio/minio),
-  [Adobe S3Mock](https://github.com/adobe/S3Mock), [Cloudflare R2](https://developers.cloudflare.com/r2/),
-  [Backblaze B2](https://www.backblaze.com/cloud-storage), [Tigris](https://www.tigrisdata.com) and
-  [Ceph](https://ceph.io).
+  Amazon S3 and services that implement its API, such as [RustFS](https://github.com/rustfs/rustfs),
+  [SeaweedFS](https://github.com/seaweedfs/seaweedfs), [Adobe S3Mock](https://github.com/adobe/S3Mock),
+  [Cloudflare R2](https://developers.cloudflare.com/r2/), [Backblaze B2](https://www.backblaze.com/cloud-storage),
+  [Tigris](https://www.tigrisdata.com) and [Ceph](https://ceph.io).
 
       disk =
         Fil.disk(
@@ -81,32 +81,34 @@ defmodule Fil.Adapter.S3 do
   Requests are sent and signed (SigV4) by [Req](https://req.hexdocs.pm), configured with `:req_options`. Listings are
   parsed with OTP's `:xmerl_sax_parser`.
 
-  ## Checksums
-
-  S3 stores a checksum with an object when the write sends one. With `checksum: :sha256` (or `:sha1`, `:crc32`),
-  `Fil.write/4` sends the checksum of the content, S3 rejects the upload if what it received doesn't match, and
-  `Fil.stat/3` with the same `:checksum` option returns the stored value. `Fil.read/3` with `verify_checksum: true` asks
-  S3 for the stored checksum and compares it with the downloaded content. Objects stored with another algorithm, or with
-  none, are read without a check.
-
   ## Options
 
   #{NimbleOptions.docs(@schema)}
 
   ## Operations
 
-  | `Fil` | S3 |
-  | --- | --- |
-  | `read/3` | GetObject (`x-amz-checksum-mode: ENABLED` for `verify_checksum: true`) |
-  | `write/4` | PutObject (`If-None-Match: *` for `if_exists: :error`, `x-amz-checksum-*` for `checksum:`) |
-  | `rm/3` | DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error) |
-  | `stat/3` | HeadObject (`x-amz-checksum-mode: ENABLED` for `checksum:`), then a prefix probe so `dir?/1` works |
-  | `ls/3` | ListObjectsV2, `delimiter=/` unless recursive, paginated internally |
-  | `cp/4` | CopyObject |
-  | `rename/4` | CopyObject, then DeleteObject |
-  | `rm_rf/3` | ListObjectsV2, then one DeleteObject per key |
-  | `url/2` | the object URL, without a signature (works for public objects only) |
-  | `signed_url/3` | a presigned GET or PUT URL, `response-content-disposition` for `disposition:`, and `query:` |
+  Where this list says nothing else, an operation follows the [contract](Fil.Adapter.html#module-contract). Directories
+  exist only as key prefixes, so there are no empty directories.
+
+    * `Fil.read/3`: GetObject. Reading a directory is a `Fil.NotFoundError`. `verify_checksum: true` asks S3 for the
+      stored checksum (`x-amz-checksum-mode: ENABLED`) and compares it with the downloaded content. Objects stored with
+      another algorithm, or with none, are read without a check.
+    * `Fil.write/4`: PutObject. `if_exists: :error` sends `If-None-Match: *`. `checksum:` (`:sha256`, `:sha1` or
+      `:crc32`) sends the checksum of the content in `x-amz-checksum-*`, S3 rejects the upload if what it received
+      doesn't match, and stores the checksum with the object. Writing to `report.txt/x` when `report.txt` is an object
+      writes a second object and leaves the first alone.
+    * `Fil.rm/3`: DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error).
+      Removing a directory succeeds and removes nothing.
+    * `Fil.stat/3`: HeadObject, then a prefix probe if there's no object, so `Fil.dir?/1` works. `:etag` and
+      `:content_type` are the ones S3 returns. `checksum:` returns the checksum S3 stored if the write used the same
+      algorithm, and `nil` otherwise.
+    * `Fil.ls/3`: ListObjectsV2, with `delimiter=/` unless recursive, paginated internally.
+    * `Fil.cp/4`: CopyObject. Copying a directory is a `Fil.NotFoundError`.
+    * `Fil.rename/4`: CopyObject, then DeleteObject.
+    * `Fil.rm_rf/3`: ListObjectsV2, then one DeleteObject per key.
+    * `Fil.url/3`: the object URL, without a signature, so it works for public objects only.
+    * `Fil.signed_url/3`: a presigned GET or PUT URL, with `response-content-disposition` for `disposition:`, and the
+      `query:` parameters.
 
   ## Errors
 
