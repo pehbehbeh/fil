@@ -9,7 +9,7 @@ defmodule Fil.Emulator do
   #     mix test.integration
 
   @emulators %{
-    s3: %{name: "SeaweedFS", service: "seaweedfs", url: "http://127.0.0.1:8333"}
+    s3: %{name: "RustFS", service: "rustfs", url: "http://127.0.0.1:9000"}
   }
 
   @s3_access_key_id "filaccesskey"
@@ -113,8 +113,8 @@ defmodule Fil.Emulator do
   @spec create_s3_bucket(String.t()) :: :ok | {:error, term()}
   def create_s3_bucket(bucket), do: s3_request(:put, "/" <> bucket)
 
-  # S3 and S3Mock refuse to delete a bucket that isn't empty (SeaweedFS doesn't), so the objects go first. A bucket
-  # that doesn't exist counts as deleted.
+  # S3 and RustFS refuse to delete a bucket that isn't empty, so the objects go first. A bucket that doesn't exist
+  # counts as deleted.
   @spec delete_s3_bucket(String.t()) :: :ok | {:error, term()}
   def delete_s3_bucket(bucket) do
     disk = Fil.disk([adapter: Fil.Adapter.S3, bucket: bucket, endpoint: url(:s3), path_style: true] ++ s3_credentials())
