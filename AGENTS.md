@@ -22,7 +22,8 @@ The Hex package is `fil`.
 - Options come only from `attach`; there are no registered or global options. Callbacks
   match on `op.name` and change content only through the `Fil.Op` helpers (`update_content/2`, `update_result/2`),
   so they keep working once streaming lands. Every operation goes through `Fil.Op.run/1`. Plugin docs live in
-  `guides/plugins.md` only, not in the README.
+  `guides/plugins.md` only, not in the README. A new plugin goes into the list of shipped plugins at the top of that
+  guide, by hand.
 - **Same behaviour on every adapter:** critical behaviour (read, write, list, copy, checksums, public and signed URLs)
   works on every disk. When the storage lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.URL` builds and
   signs URLs for Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with a

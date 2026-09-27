@@ -8,7 +8,7 @@ anonymous function in a script:
 
 ```elixir
 disk =
-  Fil.disk(adapter: Fil.Adapter.Memory)
+  Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
   |> Fil.attach(:shout, fn op, next, _opts ->
     op |> Fil.Op.update_content(binary: &String.upcase/1) |> next.()
   end)
@@ -17,6 +17,11 @@ Fil.write!(disk, "hello.txt", "world")
 Fil.read(disk, "hello.txt")
 #=> {:ok, "WORLD"}
 ```
+
+`Fil` ships these plugins:
+
+  * `Fil.Plugin.ContentType`: sets the content type of a write from the file extension
+  * `Fil.Plugin.URL`: builds URLs for any disk, served by `Fil.Plug` from your application
 
 ## The callback
 
@@ -30,7 +35,8 @@ A plugin callback takes three arguments:
 Whatever the callback does before `next.(op)` happens on the way in, and whatever it does after happens on the way
 back, with the result in `op.result`. The callback returns the op.
 
-Every operation passes through every plugin, so a callback matches on `op.name` and passes the rest on unchanged:
+Every operation passes through every plugin, so a callback matches on `op.name` (see `t:Fil.Op.name/0` for the
+operations) and passes the rest on unchanged:
 
 ```elixir
 def call(%Fil.Op{name: :write} = op, next, _opts) do
