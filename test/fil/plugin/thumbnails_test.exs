@@ -14,11 +14,12 @@ defmodule Fil.Plugin.ThumbnailsTest do
   end
 
   defp disk(opts \\ []) do
-    opts = Keyword.put_new(opts, :variants, small: [width: 100])
+    {disk_opts, plugin_opts} = Keyword.split(opts, [:root])
 
     [adapter: Memory]
+    |> Keyword.merge(disk_opts)
     |> Fil.disk()
-    |> Thumbnails.attach(opts)
+    |> Thumbnails.attach(Keyword.put_new(plugin_opts, :variants, small: [width: 100]))
   end
 
   # A black image of the given size, encoded by its extension. libvips adds EXIF data to it.
@@ -219,6 +220,88 @@ defmodule Fil.Plugin.ThumbnailsTest do
                {_, _, %{op: :write, path: "thumbnails/large/photo.png"}},
                {_, _, %{op: :write, path: "photo.png"}}
              ] = events()
+    end
+  end
+
+  describe "deletes, copies and renames" do
+    setup do
+      disk = disk()
+      Fil.write!(disk, "cats/tom.png", image(400, 200))
+      %{disk: disk}
+    end
+
+    test "rm deletes the variants", %{disk: disk} do
+      assert {:ok, _tom} = Fil.rm(disk, "cats/tom.png")
+
+      refute Fil.exists?(disk, "thumbnails/small/cats/tom.png")
+    end
+
+    test "rm_rf deletes the variants under the path", %{disk: disk} do
+      Fil.write!(disk, "cats/felix.png", image(400, 200))
+
+      assert Fil.rm_rf(disk, "cats") == {:ok, 2}
+      assert Fil.ls!(disk, "thumbnails/small") == []
+    end
+
+    test "rm and cp of other files leave the variants alone", %{disk: disk} do
+      Fil.write!(disk, "notes.txt", "notes")
+      Fil.write!(disk, "thumbnails/small/notes.txt", "not a variant")
+
+      Fil.cp!(disk, "notes.txt", "copy.txt")
+      Fil.rm!(disk, "notes.txt")
+
+      assert Fil.exists?(disk, "thumbnails/small/notes.txt")
+      refute Fil.exists?(disk, "thumbnails/small/copy.txt")
+    end
+
+    test "cp and rename take the variants along", %{disk: disk} do
+      Fil.cp!(disk, "cats/tom.png", "cats/copy.PNG")
+      Fil.rename!(disk, "cats/tom.png", "cats/moved.png")
+
+      assert variant_size(disk, "cats/copy.PNG", :small) == {100, 50}
+      assert variant_size(disk, "cats/moved.png", :small) == {100, 50}
+      refute Fil.exists?(disk, "thumbnails/small/cats/tom.png")
+    end
+
+    test "to another extension, rename deletes the variants and cp leaves them", %{disk: disk} do
+      Fil.cp!(disk, "cats/tom.png", "cats/copy.jpg")
+      assert Fil.exists?(disk, "thumbnails/small/cats/tom.png")
+      refute Fil.exists?(disk, "thumbnails/small/cats/copy.jpg")
+
+      Fil.rename!(disk, "cats/tom.png", "cats/tom.bin")
+      refute Fil.exists?(disk, "thumbnails/small/cats/tom.png")
+      refute Fil.exists?(disk, "thumbnails/small/cats/tom.bin")
+    end
+
+    test "a missing variant is fine", %{disk: disk} do
+      Fil.rm!(disk, "thumbnails/small/cats/tom.png")
+
+      assert {:ok, _moved} = Fil.rename(disk, "cats/tom.png", "cats/moved.png")
+    end
+
+    test "across disks, the destination makes its own variants", %{disk: disk} do
+      other = disk(root: "other", variants: [large: [width: 200]])
+
+      Fil.cp!(disk, "cats/tom.png", Fil.ref(other, "tom.png"))
+      assert variant_size(other, "tom.png", :large) == {200, 100}
+
+      Fil.rename!(disk, "cats/tom.png", Fil.ref(other, "moved.png"))
+      refute Fil.exists?(disk, "thumbnails/small/cats/tom.png")
+      assert variant_size(other, "moved.png", :large) == {200, 100}
+    end
+
+    test "return the error of a variant", %{disk: disk} do
+      disk =
+        Fil.attach(disk, :failing, fn
+          %Op{name: :rm, path: "thumbnails/" <> _rest} = op, _next, _opts ->
+            Op.put_result(op, {:error, %Fil.UnavailableError{reason: :test}})
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      assert {:error, %Fil.UnavailableError{path: "thumbnails/small/cats/tom.png"}} = Fil.rm(disk, "cats/tom.png")
+      refute Fil.exists?(disk, "cats/tom.png")
     end
   end
 

@@ -108,6 +108,18 @@ defmodule Fil.Plugin.Thumbnails do
   one `:write` plus one per variant, nested in it (see
   [Nested operations](Fil.Telemetry.html#module-nested-operations)).
 
+  ## Deletes, copies and renames
+
+  Once an image is deleted, copied or renamed on its disk, the plugin does the same with its variants. `Fil.rm_rf/1`
+  deletes the variants under the path too. Its count is what the operation itself deleted, so variants only count
+  when the prefix is in the deleted directory.
+
+  A copy or a rename to another extension doesn't fit the variants any more: a rename deletes them, and a copy leaves
+  the source's alone. A missing variant is skipped, since an image written before the plugin was attached has none.
+
+  Across disks, `Fil` copies with a read and a write, so a disk with the plugin makes the variants of the copy itself,
+  and a rename deletes the source's variants with the source.
+
   ## Memory and order
 
   libvips needs the whole image, so an image write collects its content into memory with `Fil.Op.materialize/1`: up
@@ -128,7 +140,7 @@ defmodule Fil.Plugin.Thumbnails do
       older than 8.15, say)
     * when the image can't be written, no variant is written either
     * when a variant can't be written, the image stays written and the write returns the variant's error, with the
-      variant's path
+      variant's path. The same goes for a variant that can't be deleted, copied or renamed
 
   ## Options
 
@@ -217,6 +229,43 @@ defmodule Fil.Plugin.Thumbnails do
     end
   end
 
+  # The paths are taken before `next`, because a plugin after this one may rewrite them.
+  def call(%Op{name: :rm, path: path} = op, next, opts) do
+    opts = validate!(opts)
+    op = next.(op)
+
+    if image?(path, opts), do: each_variant(op, variants(op.disk, path, opts), &Fil.rm/1), else: op
+  end
+
+  def call(%Op{name: :rm_rf, path: path} = op, next, opts) do
+    opts = validate!(opts)
+    op = next.(op)
+
+    if under_prefix?(path, opts[:prefix]), do: op, else: each_variant(op, variants(op.disk, path, opts), &Fil.rm_rf/1)
+  end
+
+  def call(%Op{name: :cp, path: path, dest: dest} = op, next, opts) do
+    opts = validate!(opts)
+    op = next.(op)
+
+    if follows?(path, dest, opts) do
+      each_variant(op, pairs(op.disk, path, dest, opts), &Fil.cp(&1.from, &1.to))
+    else
+      op
+    end
+  end
+
+  def call(%Op{name: :rename, path: path, dest: dest} = op, next, opts) do
+    opts = validate!(opts)
+    op = next.(op)
+
+    cond do
+      follows?(path, dest, opts) -> each_variant(op, pairs(op.disk, path, dest, opts), &Fil.rename(&1.from, &1.to))
+      image?(path, opts) -> each_variant(op, variants(op.disk, path, opts), &Fil.rm/1)
+      true -> op
+    end
+  end
+
   def call(op, next, _opts), do: next.(op)
 
   @doc false
@@ -232,11 +281,13 @@ defmodule Fil.Plugin.Thumbnails do
 
   def normalize_prefix(other), do: {:error, "expected a string, got: #{inspect(other)}"}
 
-  # Runs `fun` on each item once the operation succeeded, and stops at the first error, which becomes the result.
+  # Runs `fun` on each item once the operation succeeded, and stops at the first error, which becomes the result. A
+  # missing variant is fine: an image written before the plugin was attached has none.
   defp each_variant(%Op{result: {:ok, _value}} = op, items, fun) do
     Enum.reduce_while(items, op, fn item, op ->
       case fun.(item) do
         {:ok, _value} -> {:cont, op}
+        {:error, %Fil.NotFoundError{}} -> {:cont, op}
         {:error, error} -> {:halt, Op.put_result(op, {:error, error})}
       end
     end)
@@ -249,14 +300,16 @@ defmodule Fil.Plugin.Thumbnails do
     Fil.write(variant, data, content_type: content_type)
   end
 
-  # An image by its extension, outside the prefix, so the plugin's own writes pass through.
-  defp image?(path, opts) do
-    extension =
-      path
-      |> Path.extname()
-      |> String.downcase()
+  # An image by its extension, outside the prefix, so the plugin's own operations pass through.
+  defp image?(path, opts), do: extension(path) in opts[:extensions] and not under_prefix?(path, opts[:prefix])
 
-    extension in opts[:extensions] and not under_prefix?(path, opts[:prefix])
+  # A copy or a rename keeps the variants when they still fit: the destination is an image of the same format.
+  defp follows?(path, dest, opts), do: image?(path, opts) and image?(dest, opts) and extension(path) == extension(dest)
+
+  defp extension(path) do
+    path
+    |> Path.extname()
+    |> String.downcase()
   end
 
   defp under_prefix?(path, prefix), do: path == prefix or String.starts_with?(path, prefix <> "/")
@@ -267,6 +320,16 @@ defmodule Fil.Plugin.Thumbnails do
     variant_path = Path.join([opts[:prefix], Atom.to_string(name), path])
 
     Fil.ref(disk, variant_path <> extension)
+  end
+
+  defp variants(disk, path, opts) do
+    for {name, _variant} <- opts[:variants], do: variant_ref(disk, path, name, opts)
+  end
+
+  defp pairs(disk, path, dest, opts) do
+    for {name, _variant} <- opts[:variants] do
+      %{from: variant_ref(disk, path, name, opts), to: variant_ref(disk, dest, name, opts)}
+    end
   end
 
   # Makes every variant in memory before anything is written, as `{name, ref, binary}`.
@@ -310,11 +373,7 @@ defmodule Fil.Plugin.Thumbnails do
     height = variant[:height] || if(variant[:crop], do: width, else: @max_coordinate)
     crop = if variant[:crop], do: [crop: @crop[variant[:crop]]], else: []
 
-    extension =
-      variant_path
-      |> Path.extname()
-      |> String.downcase()
-
+    extension = extension(variant_path)
     quality = if variant[:quality] && extension in ~w(.jpg .jpeg .webp), do: [Q: variant[:quality]], else: []
 
     with {:ok, image} <- Operation.thumbnail_buffer(content, width, [height: height, size: :VIPS_SIZE_DOWN] ++ crop) do
