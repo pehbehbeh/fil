@@ -112,7 +112,7 @@ defmodule Fil.Support.TmpServerTest do
     assert_raise RuntimeError, ~r/needs the :fil application/, fn -> Fil.tmp("report.pdf") end
     assert_raise ArgumentError, ~r/removed already/, fn -> Fil.Tmp.path(frames) end
     assert_raise ArgumentError, ~r/removed already/, fn -> Fil.Tmp.give_away(frames, self()) end
-    assert Fil.Tmp.cleanup() == []
+    assert Fil.Tmp.cleanup() == :ok
   end
 
   test "a restarted server removes the temporary directories of the owners the tables name" do

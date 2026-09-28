@@ -28,6 +28,14 @@ defmodule Fil.TmpTest do
   # The temporary directory a ref is on.
   defp dir(tmp), do: Fil.Tmp.path(tmp.disk, ".")
 
+  # The temporary directories `pid` owns.
+  defp owned(pid) do
+    Tmp
+    |> :ets.match({{pid, {:tmp, :"$1"}}, :_})
+    |> List.flatten()
+    |> Enum.sort()
+  end
+
   # A pid on a node that isn't connected, decoded from the external term format (`NEW_PID_EXT`).
   defp remote_pid do
     node = "other@example"
@@ -123,7 +131,7 @@ defmodule Fil.TmpTest do
       assert_raise ArgumentError, ~r/expected a relative path inside the temporary directory/, fn -> Fil.tmp(name) end
     end
 
-    assert Fil.Tmp.cleanup() == []
+    assert owned(self()) == []
   end
 
   test "the directory is removed when its owner exits" do
@@ -168,7 +176,9 @@ defmodule Fil.TmpTest do
     dir = dir(report)
 
     assert Fil.Tmp.give_away(report, new_owner) == :ok
-    assert Fil.Tmp.cleanup() == []
+    assert owned(self()) == []
+    assert owned(new_owner) == [dir]
+    assert Fil.Tmp.cleanup() == :ok
     assert Fil.read(report) == {:ok, "pdf"}
 
     kill(new_owner)
@@ -216,7 +226,7 @@ defmodule Fil.TmpTest do
     frames = Fil.tmp()
 
     assert Fil.Tmp.give_away(frames, self()) == :ok
-    assert Fil.Tmp.cleanup() == [frames]
+    assert owned(self()) == [dir(frames)]
   end
 
   test "give_away/2 raises for a directory the caller doesn't own" do
@@ -228,6 +238,7 @@ defmodule Fil.TmpTest do
     # Also when the directory would go to the process that owns it.
     assert_raise ArgumentError, ~r/doesn't own/, fn -> Fil.Tmp.give_away(frames, owner) end
     assert_raise ArgumentError, ~r/from Fil.tmp/, fn -> Fil.Tmp.give_away(other, owner) end
+    assert owned(owner) == [dir(frames)]
   end
 
   test "give_away/2 raises for a process on another node" do
@@ -237,23 +248,19 @@ defmodule Fil.TmpTest do
     assert_raise ArgumentError, ~r/only exists on/, fn -> Fil.Tmp.give_away(frames, pid) end
   end
 
-  test "cleanup/1 removes the directories of a process now and returns them" do
+  test "cleanup/1 removes the directories of a process now" do
     frames = Fil.tmp()
     report = Fil.tmp("report.pdf")
     Fil.write!(report, "pdf")
     dirs = [dir(frames), dir(report)]
-    {_owner, other} = spawn_owner(&Fil.tmp/0)
+    {owner, other} = spawn_owner(&Fil.tmp/0)
 
-    cleaned = Fil.Tmp.cleanup()
+    assert Fil.Tmp.cleanup() == :ok
 
-    assert Enum.sort(cleaned) == Enum.sort([frames, %{report | path: "."}])
     refute Enum.any?(dirs, &File.exists?/1)
-
-    assert other
-           |> dir()
-           |> File.dir?()
-
-    assert Fil.Tmp.cleanup() == []
+    assert owned(self()) == []
+    assert owned(owner) == [dir(other)]
+    assert Fil.Tmp.cleanup() == :ok
     assert_raise ArgumentError, ~r/removed already/, fn -> Fil.Tmp.path(frames) end
   end
 
@@ -261,8 +268,9 @@ defmodule Fil.TmpTest do
     {owner, frames} = spawn_owner(&Fil.tmp/0)
     dir = dir(frames)
 
-    assert Fil.Tmp.cleanup(owner) == [frames]
+    assert Fil.Tmp.cleanup(owner) == :ok
     refute File.exists?(dir)
+    assert owned(owner) == []
   end
 
   @tag :tmp_dir
@@ -292,7 +300,10 @@ defmodule Fil.TmpTest do
     assert_receive {:created, frames}
     assert_receive :writing
 
-    assert Fil.Tmp.cleanup(writer) == [frames]
+    dir = dir(frames)
+
+    assert Fil.Tmp.cleanup(writer) == :ok
+    refute File.exists?(dir)
     send(writer, :go)
 
     assert_receive {:written, {:ok, _}}

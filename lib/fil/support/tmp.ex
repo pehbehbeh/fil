@@ -114,19 +114,20 @@ defmodule Fil.Support.Tmp do
   end
 
   @doc """
-  Removes the temporary directories of `owner` now and returns them. Its other entries stay, so a write in progress
-  keeps its file.
+  Removes the temporary directories of `owner` now. Its other entries stay, so a write in progress keeps its file.
   """
-  @spec remove_tmp(pid()) :: [Path.t()]
+  @spec remove_tmp(pid()) :: :ok
   def remove_tmp(owner) do
-    # Each entry goes once its directory is gone, so if the caller is killed meanwhile, the server removes the rest.
-    for {{_owner, {:tmp, root}}, _data} = entry <- :ets.match_object(@entries, {{owner, {:tmp, :_}}, :_}) do
+    # Each entry goes once its directory is gone. If the caller is killed meanwhile, the rest stays until `owner` exits,
+    # and the server removes it then.
+    @entries
+    |> :ets.match_object({{owner, {:tmp, :_}}, :_})
+    |> Enum.each(fn {{_owner, {:tmp, root}}, _data} = entry ->
       _result = File.rm_rf(root)
       :ets.delete_object(@entries, entry)
-      root
-    end
+    end)
   rescue
-    ArgumentError -> []
+    ArgumentError -> :ok
   end
 
   @doc "Deletes an entry of the calling process, once it removed what the entry stands for itself."

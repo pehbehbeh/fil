@@ -37,7 +37,8 @@ defmodule Fil.Tmp do
     * a temporary file created inside a `Task` is gone when the task returns. Create it in the caller and pass it in, or
       hand it to the caller with `give_away/2`.
     * a long-lived process (a GenServer, a LiveView, a channel) keeps its temporary files for as long as it runs. Call
-      `cleanup/1` once it's done with them.
+      `cleanup/1` once it's done with them. A write to a temporary ref after that creates an ordinary directory, with
+      the default mode, which `Fil` doesn't remove.
     * `Fil.rm_rf/1` on the directory removes it, but it stays registered to its owner, and a later write creates it
       again without the `0o700` mode. `cleanup/1` removes both.
     * a temporary ref works only on the node that created it.
@@ -87,7 +88,7 @@ defmodule Fil.Tmp do
   Returns the absolute path of a ref on a temporary directory: of the directory itself, a file in it or anything else
   on its disk.
 
-  It raises `ArgumentError` for a ref on another disk and after the directory was removed.
+  It raises `ArgumentError` for a ref on another disk, and after `cleanup/1` or the owner's exit.
   """
   @spec path(Ref.t()) :: Path.t()
   def path(%Ref{disk: disk, path: path}) do
@@ -134,24 +135,17 @@ defmodule Fil.Tmp do
   end
 
   @doc """
-  Removes the temporary directories of `pid` now, and returns refs to them (with path `"."`), in no particular order.
+  Removes the temporary directories of `pid` now. Returns `:ok`.
 
   For processes that run long after they're done with their temporary files. It never fails: a directory that can't
   be removed completely is left as it is. It leaves the temporary files of `Fil.Adapter.Local` writes in progress
   alone, so a write of `pid` still works.
-  """
-  @spec cleanup(pid()) :: [Ref.t()]
-  def cleanup(pid \\ self()) when is_pid(pid) do
-    pid
-    |> Tmp.remove_tmp()
-    |> Enum.map(&dir_ref/1)
-  end
 
-  defp dir_ref(root) do
-    root
-    |> disk()
-    |> Ref.new(".")
-  end
+  Don't use the refs afterwards. A write to one creates an ordinary directory in its place, with the default mode,
+  which `Fil` doesn't remove.
+  """
+  @spec cleanup(pid()) :: :ok
+  def cleanup(pid \\ self()) when is_pid(pid), do: Tmp.remove_tmp(pid)
 
   defp name!(name) do
     normalized = if Path.type(name) == :relative, do: Fil.Support.Path.normalize(name), else: {:error, :absolute}
@@ -180,6 +174,9 @@ defmodule Fil.Tmp do
 
   # The entry comes before the directory, so an owner that's killed during `mkdir` leaves nothing behind. The directory
   # is empty until the `chmod`, so nobody can read anything in it before.
+  #
+  # The `:eexist` retry, a failed `mkdir` and a failed `chmod` have no tests: `System.tmp_dir!/0` only returns a
+  # writable directory, and the names are random, so none of them is easy to provoke.
   defp create_dir(parent, attempts) do
     dir =
       parent
