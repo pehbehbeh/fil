@@ -225,6 +225,8 @@ defmodule Fil.TmpTest do
     other = Fil.ref(local, ".")
 
     assert_raise ArgumentError, ~r/doesn't own/, fn -> Fil.Tmp.give_away(frames, self()) end
+    # Also when the directory would go to the process that owns it.
+    assert_raise ArgumentError, ~r/doesn't own/, fn -> Fil.Tmp.give_away(frames, owner) end
     assert_raise ArgumentError, ~r/from Fil.tmp/, fn -> Fil.Tmp.give_away(other, owner) end
   end
 

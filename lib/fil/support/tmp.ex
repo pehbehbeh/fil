@@ -77,18 +77,18 @@ defmodule Fil.Support.Tmp do
 
   @doc """
   Makes `pid` the owner of an entry of the calling process. Returns `:error` if the calling process doesn't own it.
-  Giving an entry to the process that owns it already does nothing.
+  Giving an entry to the calling process itself does nothing.
   """
   @spec give_away(term(), pid()) :: :ok | :error
   def give_away(key, pid) do
-    # The entry moves before `pid` is monitored, so its `:DOWN` finds the entry, also when `pid` is dead already. A
-    # server that's down is made up for the same way as in `put/2`.
-    if move(key, pid) or :ets.member(@entries, {pid, key}) do
-      if !monitor(pid), do: monitor(pid)
-      :ok
-    else
-      :error
-    end
+    # As in `put/2`, `pid` is monitored before its row goes in, so a caller killed anywhere in between leaves rows
+    # whose owners are monitored. The second call covers a `:DOWN` the server handled before the move (`pid` was dead
+    # already) and a server that was down for the first one. It returns at once when `pid` is still monitored.
+    monitor(pid)
+    moved = move(key, pid)
+    monitor(pid)
+
+    if moved, do: :ok, else: :error
   rescue
     ArgumentError -> :error
   end
