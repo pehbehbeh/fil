@@ -307,6 +307,18 @@ defmodule Fil.Kino.BrowserTest do
       assert Fil.read(disk, "a.txt") == {:ok, "old"}
     end
 
+    test "shows an error when the browser is gone", %{disk: disk} do
+      %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(disk, ".", writable: true)
+      {input, frame} = upload_field(field)
+      connect(browser)
+
+      Process.exit(browser.pid, :kill)
+      upload(input, "a.txt", "a")
+
+      assert status(frame) == "the browser is gone, so there's no directory to upload to"
+      refute Fil.exists?(disk, "a.txt")
+    end
+
     test "deletes a file, but not a directory", %{disk: disk} do
       Fil.write!(disk, "a.txt", "a")
       Fil.write!(disk, "reports/q3.pdf", "%PDF")

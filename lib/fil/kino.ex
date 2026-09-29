@@ -144,7 +144,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
           on_upload: fn _ref -> Kino.JS.Live.cast(browser, :refresh) end
         ]
 
-        upload = Fil.Kino.Upload.new(ref.disk, fn -> Kino.JS.Live.call(browser, :path) end, upload_opts, self())
+        dir = fn -> Kino.JS.Live.call(browser, :path, :infinity) end
+        upload = Fil.Kino.Upload.new(ref.disk, dir, upload_opts, self())
         Kino.Layout.grid([browser, upload])
       else
         browser

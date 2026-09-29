@@ -18,7 +18,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       frame = Kino.Frame.new(placeholder: false)
 
       Kino.listen(input, fn event ->
-        # The listener runs in a process Kino starts, so it needs the caller in `$callers` for a memory disk.
+        # The listener runs in a process Kino starts, so it needs the caller in `$callers` for a memory disk. That
+        # process only exists inside `Kino.listen/2`, so this function is the first place that can set it.
         Process.put(:"$callers", [caller])
         handle(event, disk, dir, frame, opts)
       end)
@@ -28,9 +29,12 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
     # The value is `nil` when the upload is cleared.
     defp handle(%{value: %{file_ref: file_ref, client_name: name}}, disk, dir, frame, opts) do
-      dir = if is_function(dir, 0), do: dir.(), else: dir
+      result =
+        with {:ok, dir} <- resolve(dir) do
+          write(disk, dir, name, Kino.Input.file_path(file_ref), opts[:if_exists])
+        end
 
-      case write(disk, dir, name, Kino.Input.file_path(file_ref), opts[:if_exists]) do
+      case result do
         {:ok, ref, size} ->
           Kino.Frame.render(frame, Kino.Text.new("Wrote #{ref.path} (#{format_size(size)})"))
           if on_upload = opts[:on_upload], do: on_upload.(ref)
@@ -41,6 +45,16 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     end
 
     defp handle(_event, _disk, _dir, _frame, _opts), do: :ok
+
+    # The browser's current directory. The browser may be busy with a download or a slow listing, so the call waits for
+    # it, and a browser that's gone (its cell was evaluated again) is an error in the status line.
+    defp resolve(dir) when is_function(dir, 0) do
+      {:ok, dir.()}
+    catch
+      :exit, _reason -> {:error, "the browser is gone, so there's no directory to upload to"}
+    end
+
+    defp resolve(dir), do: {:ok, dir}
 
     # Writes the uploaded file at `source` to `dir`, under the name the browser sent.
     defp write(disk, dir, name, source, if_exists) do
@@ -78,10 +92,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp message(message) when is_binary(message), do: message
     defp message(error), do: Exception.message(error)
 
-    @doc false
-    @spec format_size(non_neg_integer()) :: String.t()
-    def format_size(bytes) when bytes < 1000, do: "#{bytes} B"
-    def format_size(bytes), do: format_size(bytes / 1000, ~w(KB MB GB TB))
+    defp format_size(bytes) when bytes < 1000, do: "#{bytes} B"
+    defp format_size(bytes), do: format_size(bytes / 1000, ~w(KB MB GB TB))
 
     defp format_size(size, [unit]), do: "#{Float.round(size, 1)} #{unit}"
     defp format_size(size, [unit | _rest]) when size < 1000, do: "#{Float.round(size, 1)} #{unit}"
