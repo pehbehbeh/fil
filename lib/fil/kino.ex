@@ -14,7 +14,11 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
     `browser/3` shows one directory of a disk at a time: breadcrumbs back to the root, and a table with the name, size,
     modification time and type of each entry. Clicking a directory opens it. Clicking a file shows a preview below the
-    table, for images (PNG, JPEG, GIF and WebP) and text, and each file has a download button. The browser only reads.
+    table, for images (PNG, JPEG, GIF and WebP) and text, and each file has a download button.
+
+    The browser only reads by default, so a stray click in a notebook can't change a production disk. With
+    `writable: true`, each file also gets a delete button, and an upload field below the table writes into the current
+    directory.
 
     It lists the directory when it's shown and when you open another one, so files that other cells write show up
     after a click on Refresh.
@@ -53,6 +57,15 @@ if Code.ensure_loaded?(Kino.JS.Live) do
                         download reads the whole file into memory and sends it to the browser through Livebook, so
                         large files are better copied with `Fil.cp/3` or read with `Fil.stream/3`. The size is checked
                         against the listing, so a file that grew since isn't caught.
+                        """
+                      ],
+                      writable: [
+                        type: :boolean,
+                        default: false,
+                        doc: """
+                        Adds a delete button to each file, and an upload field for the current directory below the
+                        browser (see `upload/3`). A delete asks for confirmation first, and only deletes files, never
+                        directories. The upload never replaces a file.
                         """
                       ]
                     )
@@ -95,35 +108,51 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
         Fil.Kino.browser(disk)
         Fil.Kino.browser(disk, "reports")
-        Fil.Kino.browser(disk, "reports", max_preview_size: 10_000_000)
+        Fil.Kino.browser(disk, "reports", writable: true)
         Fil.Kino.browser(reports)
         Fil.Kino.browser(reports, max_download_size: 1_000_000_000)
 
-    It's a `Kino.JS.Live`, so it renders as the result of a cell, with `Kino.render/1` and inside a `Kino.Layout` or a
-    `Kino.Frame`. Building it does no I/O: the directory is listed when the browser is shown, and a storage error
-    shows up in the browser instead of raising.
+    It's a `Kino.JS.Live`, and with `writable: true` a `Kino.Layout` of the browser and the upload field. Both render as
+    the result of a cell, with `Kino.render/1` and inside a `Kino.Layout` or a `Kino.Frame`. Building the browser does
+    no I/O: the directory is listed when the browser is shown, and a storage error shows up in the browser instead of
+    raising.
 
     ## Options
 
     #{NimbleOptions.docs(@browser_schema)}
     """
-    @spec browser(Fil.Disk.t() | Fil.Ref.t()) :: Kino.JS.Live.t()
+    @spec browser(Fil.Disk.t() | Fil.Ref.t()) :: Kino.JS.Live.t() | Kino.Layout.t()
     def browser(%Fil.Disk{} = disk), do: browser(Fil.ref(disk, "."), [])
     def browser(%Fil.Ref{} = ref), do: browser(ref, [])
 
     @doc "Returns a file browser. See `browser/1`."
-    @spec browser(Fil.Disk.t(), Path.t()) :: Kino.JS.Live.t()
-    @spec browser(Fil.Ref.t(), keyword()) :: Kino.JS.Live.t()
+    @spec browser(Fil.Disk.t(), Path.t()) :: Kino.JS.Live.t() | Kino.Layout.t()
+    @spec browser(Fil.Ref.t(), keyword()) :: Kino.JS.Live.t() | Kino.Layout.t()
     def browser(%Fil.Disk{} = disk, path) when is_binary(path), do: browser(Fil.ref(disk, path), [])
 
     def browser(%Fil.Ref{} = ref, opts) when is_list(opts) do
       opts = validate!(opts, @browser_schema)
+      browser = Kino.JS.Live.new(Fil.Kino.Browser, {ref.disk, ref.path, opts, self()})
 
-      Kino.JS.Live.new(Fil.Kino.Browser, {ref.disk, ref.path, opts, self()})
+      if opts[:writable] do
+        # The field writes into the directory the browser shows at the time of the upload, and then has the browser
+        # list it again.
+        upload_opts = [
+          label: "Upload to the current directory",
+          accept: :any,
+          if_exists: :error,
+          on_upload: fn _ref -> Kino.JS.Live.cast(browser, :refresh) end
+        ]
+
+        upload = Fil.Kino.Upload.new(ref.disk, fn -> Kino.JS.Live.call(browser, :path) end, upload_opts, self())
+        Kino.Layout.grid([browser, upload])
+      else
+        browser
+      end
     end
 
     @doc "Returns a file browser. See `browser/1`."
-    @spec browser(Fil.Disk.t(), Path.t(), keyword()) :: Kino.JS.Live.t()
+    @spec browser(Fil.Disk.t(), Path.t(), keyword()) :: Kino.JS.Live.t() | Kino.Layout.t()
     def browser(%Fil.Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
       browser(Fil.ref(disk, path), opts)
     end

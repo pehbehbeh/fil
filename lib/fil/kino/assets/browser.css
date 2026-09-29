@@ -127,6 +127,12 @@
   text-align: right;
 }
 
+.fil-actions span {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .fil-table td.fil-empty {
   font-family: var(--font-sans);
   text-align: left;
