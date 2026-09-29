@@ -46,6 +46,13 @@ defmodule Fil.MixProject do
       {:vix, "~> 0.33", optional: true},
       # Optional: Fil.Kino browses disks in Livebook and adds a smart cell.
       {:kino, "~> 0.19", optional: true},
+      # Optional: Fil.LiveView stores LiveView uploads on a disk. Phoenix comes with LiveView, which sets its version.
+      # It's listed only so `mix compile --no-optional-deps` leaves it out: it needs Plug, which that flag leaves out.
+      {:phoenix_live_view, "~> 1.2", optional: true},
+      {:phoenix, "~> 1.6", optional: true},
+
+      # Test
+      {:lazy_html, ">= 0.1.0", only: :test},
 
       # Development
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
@@ -74,7 +81,7 @@ defmodule Fil.MixProject do
       favicon: "assets/icon.svg",
       source_ref: "v#{@version}",
       extra_section: "Guides",
-      extras: ["guides/installation.md", "guides/plugins.md", "CHANGELOG.md"],
+      extras: ["guides/installation.md", "guides/plugins.md", "guides/phoenix.md", "CHANGELOG.md"],
       groups_for_docs: [
         Building: &(&1[:section] == :building),
         Operations: &(&1[:section] == :operations),
@@ -83,7 +90,7 @@ defmodule Fil.MixProject do
       groups_for_modules: [
         Adapters: ~r/^Fil\.Adapter(\.\w+)?$/,
         Plugins: ~r/^Fil\.Plugin\./,
-        Integrations: [Fil.Plug, Fil.Kino],
+        Integrations: [Fil.Plug, Fil.Kino, Fil.LiveView],
         Errors: ~r/^Fil\.\w+Error$/
       ]
     ]

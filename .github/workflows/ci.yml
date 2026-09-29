@@ -36,10 +36,11 @@ jobs:
       - run: mix credo
       - run: mix docs --warnings-as-errors
 
-      # Fil.Plug, Fil.Kino and Fil.Plugin.Thumbnails use optional dependencies, so they must compile without them, too.
-      # A separate build path, because the flag recompiles everything and must not touch the build `mix docs` uses.
-      # `MIX_ENV=prod` leaves out the development tools. Elixir 1.20 prints "cannot infer signatures from :plug because
-      # it is not loaded" (and :kino and :vix) without failing, so those warnings are expected.
+      # Fil.Plug, Fil.Kino, Fil.LiveView and Fil.Plugin.Thumbnails use optional dependencies, so they must compile
+      # without them, too. A separate build path, because the flag recompiles everything and must not touch the build
+      # `mix docs` uses. `MIX_ENV=prod` leaves out the development tools. Elixir 1.20 prints "cannot infer signatures
+      # from :plug because it is not loaded" (and :kino, :phoenix_live_view and :vix) without failing, so those warnings
+      # are expected.
       - name: Compile without optional dependencies
         run: MIX_ENV=prod MIX_BUILD_PATH=_build/no_optional mix compile --no-optional-deps --warnings-as-errors
 
