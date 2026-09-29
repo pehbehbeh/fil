@@ -218,6 +218,9 @@ defmodule Fil.Adapter.Local do
   # with `:enoent` then, or with `:einval` on macOS when the directory is removed during the open.
   defp open_tmp(full, tmp, created, retry) do
     missing = missing_parents(full)
+    # On the retry, the directories this write created and another one removed are missing again. They're taken out of
+    # `created`, so they're listed once.
+    created = created -- missing
     planned = Enum.reverse(missing, created)
     Tmp.put({:file, tmp}, planned)
 
