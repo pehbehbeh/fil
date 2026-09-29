@@ -1,78 +1,31 @@
 defmodule Fil.LiveViewTest do
-  alias Fil.LiveViewTest.UploadLive
   alias Fil.Plugin.URL
   alias Phoenix.LiveView.UploadEntry
 
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()
 
-  import ExUnit.CaptureLog
-  import Phoenix.ConnTest
+  import Fil.LiveViewHelper
   import Phoenix.LiveViewTest
+
+  @moduletag :tmp_dir
 
   @endpoint Fil.LiveViewTest.Endpoint
 
   @base_url "http://localhost/storage"
 
-  @empty_list """
-  <?xml version="1.0" encoding="UTF-8"?>
-  <ListBucketResult><KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>
-  """
-
   # The memory disk needs no `allow/2`: the LiveView process finds the test's store through `$callers`.
-  setup do
-    Fil.Adapter.Memory.checkout()
-    {:ok, disk: Fil.disk(adapter: Fil.Adapter.Memory)}
+  setup context do
+    {:ok, disk: Fil.DiskHelper.disk(context)}
   end
-
-  # Mounts `UploadLive` with the upload options, and a function the "save" event calls with the socket.
-  defp mount_upload(allow, consume) do
-    config = %{test: self(), name: :avatar, allow: allow, consume: consume}
-    agent = start_supervised!({Agent, fn -> config end}, id: make_ref())
-    {:ok, view, _html} = live_isolated(build_conn(), UploadLive, session: %{"config" => agent})
-    view
-  end
-
-  # Uploads the files through the channel, submits the form and returns what the consume function returned.
-  defp upload(files, allow, consume) do
-    view = mount_upload(allow, consume)
-    select_and_upload(view, files)
-    submit(view)
-  end
-
-  defp select_and_upload(view, files) do
-    input = file_input(view, "#form", :avatar, Enum.map(files, &file/1))
-
-    for file <- files do
-      render_upload(input, file.name)
-    end
-
-    input
-  end
-
-  defp submit(view) do
-    view
-    |> element("#form")
-    |> render_submit()
-
-    assert_receive {:consumed, result}
-    result
-  end
-
-  defp file(file), do: Map.put_new(file, :type, MIME.from_path(file.name))
-
-  defp client_name(entry), do: entry.client_name
-
-  defp files(names), do: Enum.map(names, &%{name: &1, content: "content of #{&1}"})
 
   describe "consume_uploaded_entries/4" do
-    test "writes a file at filename/1 with the content type of its path", %{disk: disk} do
+    test "writes a file at filename/1", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
 
       assert {:ok, [avatar]} = upload([%{name: "Me.PNG", content: "png"}], [accept: ~w(.png)], consume)
 
       assert avatar.path =~ ~r/\A[0-9a-f-]{36}\.png\z/
       assert Fil.read(avatar) == {:ok, "png"}
-      assert {:ok, %Fil.Stat{content_type: "image/png"}} = Fil.stat(avatar)
     end
 
     test "returns the refs in the order of the file input", %{disk: disk} do
@@ -103,18 +56,6 @@ defmodule Fil.LiveViewTest do
 
       assert avatar.path == "users/1/avatars/a.txt"
       assert Fil.read(disk, "users/1/avatars/a.txt") == {:ok, "content of a.txt"}
-    end
-
-    test "resolves a disk from an MFA or a function", %{disk: disk} do
-      mfa = {Fil, :disk, [[adapter: Fil.Adapter.Memory]]}
-      from_mfa = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, mfa, path: fn _entry -> "mfa.txt" end)
-      from_fun = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, fn -> disk end, path: fn _entry -> "fun.txt" end)
-
-      assert {:ok, [_ref]} = upload(files(["a.txt"]), [accept: :any], from_mfa)
-      assert {:ok, [_ref]} = upload(files(["a.txt"]), [accept: :any], from_fun)
-
-      assert Fil.exists?(disk, "mfa.txt")
-      assert Fil.exists?(disk, "fun.txt")
     end
 
     test "writes where entry_ref/3 said", %{disk: disk} do
@@ -241,19 +182,6 @@ defmodule Fil.LiveViewTest do
       refute Fil.exists?(disk, "a.txt")
     end
 
-    test "raises for bad options before writing anything", %{disk: disk} do
-      consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk, if_exists: :append)
-
-      assert {:raised, %NimbleOptions.ValidationError{}} = upload(files(["a.txt"]), [accept: :any], consume)
-      assert Fil.ls(disk, ".") == {:ok, []}
-    end
-
-    test "raises for an upload that isn't allowed", %{disk: disk} do
-      view = mount_upload([accept: :any], &Fil.LiveView.consume_uploaded_entries(&1, :photos, disk))
-
-      assert {:raised, %ArgumentError{message: "no upload allowed for :photos"}} = submit(view)
-    end
-
     test "returns a storage error as it is", %{disk: disk} do
       error = %Fil.UnavailableError{reason: :timeout}
 
@@ -350,97 +278,6 @@ defmodule Fil.LiveViewTest do
       assert [%Fil.InvalidRequestError{reason: :extension}] =
                upload([%{name: "a.png", content: "png"}], [accept: :any], consume)
     end
-
-    test "raises for a meta without a path", %{disk: disk} do
-      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.txt"}
-
-      # The meta of another external uploader.
-      assert_raise ArgumentError, ~r/Other external uploads \(external: in allow_upload\/3\)/, fn ->
-        Fil.LiveView.store_entry(disk, %{uploader: "S3", url: "https://example.com"}, entry)
-      end
-    end
-  end
-
-  describe "external/2" do
-    setup %{disk: disk} do
-      {:ok, signing: URL.attach(disk, base_url: @base_url, secret: "secret")}
-    end
-
-    test "signs an upload URL bound to the file", %{signing: disk} do
-      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "Me.PNG", client_size: 3, upload_config: :avatar}
-
-      assert {:ok, meta, _socket} = Fil.LiveView.external(disk).(entry, socket(accept: ~w(.png)))
-
-      assert %{uploader: "Fil", path: "0b2e8b8e.png", url: url, signed_at: signed_at} = meta
-      assert_in_delta signed_at, System.os_time(:second), 5
-      assert meta.headers == %{"content-type" => "image/png", "if-none-match" => "*"}
-
-      %URI{path: path, query: query} = URI.parse(url)
-      assert path == "/storage/0b2e8b8e.png"
-      assert URL.verify("secret", :put, path, query) == :ok
-
-      assert %{"content_type" => "image/png", "size" => "3", "if_exists" => "error", "expires" => expires} =
-               URI.decode_query(query)
-
-      assert_in_delta String.to_integer(expires), System.os_time(:second) + 300, 5
-    end
-
-    test "leaves if-none-match out with if_exists: :overwrite", %{signing: disk} do
-      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png", client_size: 3, upload_config: :avatar}
-
-      assert {:ok, meta, _socket} = Fil.LiveView.external(disk, if_exists: :overwrite).(entry, socket())
-
-      assert meta.headers == %{"content-type" => "image/png"}
-      refute meta.url =~ "if_exists"
-    end
-
-    test "presigns a PUT on S3, at the public endpoint", %{disk: _disk} do
-      disk =
-        Fil.disk(
-          adapter: Fil.Adapter.S3,
-          bucket: "bucket",
-          access_key_id: "AKIDEXAMPLE",
-          secret_access_key: "secret",
-          endpoint: "http://s3:9000",
-          public_endpoint: "http://localhost:9000",
-          path_style: true
-        )
-
-      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png", client_size: 3, upload_config: :avatar}
-      external = Fil.LiveView.external(disk, path: &"avatars/#{&1.uuid}.png", expires_in: 60)
-
-      assert {:ok, meta, _socket} = external.(entry, socket())
-      assert "http://localhost:9000/bucket/avatars/0b2e8b8e.png?" <> query = meta.url
-
-      query = URI.decode_query(query)
-      assert query["X-Amz-Expires"] == "60"
-      assert query["X-Amz-SignedHeaders"] == "content-length;content-type;host;if-none-match"
-      assert meta.path == "avatars/0b2e8b8e.png"
-    end
-
-    test "gives the error meta for a refused extension or a disk that can't sign", %{disk: disk, signing: signing} do
-      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "evil.html", client_size: 3, upload_config: :avatar}
-
-      # LiveView sends the meta to the browser, so it has a reason, and the message, which names the disk and the path,
-      # goes to the log. A refused extension comes from the user's file and isn't logged.
-      signed = Fil.LiveView.external(signing)
-      assert {{:error, meta, _socket}, log} = with_log(fn -> signed.(entry, socket(accept: ~w(.png))) end)
-      assert meta == %{reason: :extension}
-      # The log of an async test has the other tests' messages too, so only this one's are checked.
-      refute log =~ "Fil.LiveView.external/2"
-
-      unsigned = Fil.LiveView.external(disk)
-      png = %{entry | client_name: "a.png"}
-      assert {{:error, error_meta, _socket}, log} = with_log(fn -> unsigned.(png, socket(accept: ~w(.png))) end)
-      assert error_meta == %{reason: :error}
-      assert log =~ "Fil.LiveView.external/2: "
-      assert log =~ "0b2e8b8e.png"
-    end
-
-    test "raises for bad options", %{disk: disk} do
-      assert_raise NimbleOptions.ValidationError, fn -> Fil.LiveView.external(disk, expires_in: 0) end
-      assert_raise NimbleOptions.ValidationError, fn -> Fil.LiveView.external(disk, max_file_size: 1) end
-    end
   end
 
   describe "direct uploads" do
@@ -457,7 +294,6 @@ defmodule Fil.LiveViewTest do
       assert {:ok, [avatar]} = submit(view)
       assert avatar.path == meta.path
       assert Fil.read(avatar) == {:ok, "png"}
-      assert {:ok, %Fil.Stat{content_type: "image/png"}} = Fil.stat(avatar)
 
       # The URL writes once.
       assert put_direct(meta, "new", disk).status == 409
@@ -552,7 +388,164 @@ defmodule Fil.LiveViewTest do
 
       assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
     end
+  end
+end
 
+defmodule Fil.LiveViewTest.Setup do
+  alias Fil.Plugin.URL
+  alias Phoenix.LiveView.UploadEntry
+
+  use ExUnit.Case, async: true
+
+  import ExUnit.CaptureLog
+  import Fil.LiveViewHelper
+
+  @base_url "http://localhost/storage"
+
+  @empty_list """
+  <?xml version="1.0" encoding="UTF-8"?>
+  <ListBucketResult><KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>
+  """
+
+  setup do
+    Fil.Adapter.Memory.checkout()
+    {:ok, disk: Fil.disk(adapter: Fil.Adapter.Memory)}
+  end
+
+  test "stores the content type of the path, consumed or uploaded directly", %{disk: disk} do
+    consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
+
+    assert {:ok, [avatar]} = upload([%{name: "Me.PNG", content: "png"}], [accept: ~w(.png)], consume)
+    assert {:ok, %Fil.Stat{content_type: "image/png"}} = Fil.stat(avatar)
+
+    signing = URL.attach(disk, base_url: @base_url, secret: "secret")
+    view = mount_direct(signing, [accept: ~w(.png)], &Fil.LiveView.consume_uploaded_entries(&1, :avatar, signing))
+    meta = select_direct(view, %{name: "Me.PNG", content: "png"})
+
+    assert put_direct(meta, "png", signing).status == 200
+    assert {:ok, [direct]} = submit(view)
+    assert {:ok, %Fil.Stat{content_type: "image/png"}} = Fil.stat(direct)
+  end
+
+  test "resolves a disk from an MFA or a function", %{disk: disk} do
+    mfa = {Fil, :disk, [[adapter: Fil.Adapter.Memory]]}
+    from_mfa = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, mfa, path: fn _entry -> "mfa.txt" end)
+    from_fun = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, fn -> disk end, path: fn _entry -> "fun.txt" end)
+
+    assert {:ok, [_ref]} = upload(files(["a.txt"]), [accept: :any], from_mfa)
+    assert {:ok, [_ref]} = upload(files(["a.txt"]), [accept: :any], from_fun)
+
+    assert Fil.exists?(disk, "mfa.txt")
+    assert Fil.exists?(disk, "fun.txt")
+  end
+
+  describe "option errors" do
+    test "raises for bad options before writing anything", %{disk: disk} do
+      consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk, if_exists: :append)
+
+      assert {:raised, %NimbleOptions.ValidationError{}} = upload(files(["a.txt"]), [accept: :any], consume)
+      assert Fil.ls(disk, ".") == {:ok, []}
+    end
+
+    test "raises for an upload that isn't allowed", %{disk: disk} do
+      view = mount_upload([accept: :any], &Fil.LiveView.consume_uploaded_entries(&1, :photos, disk))
+
+      assert {:raised, %ArgumentError{message: "no upload allowed for :photos"}} = submit(view)
+    end
+
+    test "raises for a meta without a path", %{disk: disk} do
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.txt"}
+
+      # The meta of another external uploader.
+      assert_raise ArgumentError, ~r/Other external uploads \(external: in allow_upload\/3\)/, fn ->
+        Fil.LiveView.store_entry(disk, %{uploader: "S3", url: "https://example.com"}, entry)
+      end
+    end
+  end
+
+  describe "external/2" do
+    setup %{disk: disk} do
+      {:ok, signing: URL.attach(disk, base_url: @base_url, secret: "secret")}
+    end
+
+    test "signs an upload URL bound to the file", %{signing: disk} do
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "Me.PNG", client_size: 3, upload_config: :avatar}
+
+      assert {:ok, meta, _socket} = Fil.LiveView.external(disk).(entry, socket(accept: ~w(.png)))
+
+      assert %{uploader: "Fil", path: "0b2e8b8e.png", url: url, signed_at: signed_at} = meta
+      assert_in_delta signed_at, System.os_time(:second), 5
+      assert meta.headers == %{"content-type" => "image/png", "if-none-match" => "*"}
+
+      %URI{path: path, query: query} = URI.parse(url)
+      assert path == "/storage/0b2e8b8e.png"
+      assert URL.verify("secret", :put, path, query) == :ok
+
+      assert %{"content_type" => "image/png", "size" => "3", "if_exists" => "error", "expires" => expires} =
+               URI.decode_query(query)
+
+      assert_in_delta String.to_integer(expires), System.os_time(:second) + 300, 5
+    end
+
+    test "leaves if-none-match out with if_exists: :overwrite", %{signing: disk} do
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png", client_size: 3, upload_config: :avatar}
+
+      assert {:ok, meta, _socket} = Fil.LiveView.external(disk, if_exists: :overwrite).(entry, socket())
+
+      assert meta.headers == %{"content-type" => "image/png"}
+      refute meta.url =~ "if_exists"
+    end
+
+    test "presigns a PUT on S3, at the public endpoint", %{disk: _disk} do
+      disk =
+        Fil.disk(
+          adapter: Fil.Adapter.S3,
+          bucket: "bucket",
+          access_key_id: "AKIDEXAMPLE",
+          secret_access_key: "secret",
+          endpoint: "http://s3:9000",
+          public_endpoint: "http://localhost:9000",
+          path_style: true
+        )
+
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png", client_size: 3, upload_config: :avatar}
+      external = Fil.LiveView.external(disk, path: &"avatars/#{&1.uuid}.png", expires_in: 60)
+
+      assert {:ok, meta, _socket} = external.(entry, socket())
+      assert "http://localhost:9000/bucket/avatars/0b2e8b8e.png?" <> query = meta.url
+
+      query = URI.decode_query(query)
+      assert query["X-Amz-Expires"] == "60"
+      assert query["X-Amz-SignedHeaders"] == "content-length;content-type;host;if-none-match"
+      assert meta.path == "avatars/0b2e8b8e.png"
+    end
+
+    test "gives the error meta for a refused extension or a disk that can't sign", %{disk: disk, signing: signing} do
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "evil.html", client_size: 3, upload_config: :avatar}
+
+      # LiveView sends the meta to the browser, so it has a reason, and the message, which names the disk and the path,
+      # goes to the log. A refused extension comes from the user's file and isn't logged.
+      signed = Fil.LiveView.external(signing)
+      assert {{:error, meta, _socket}, log} = with_log(fn -> signed.(entry, socket(accept: ~w(.png))) end)
+      assert meta == %{reason: :extension}
+      # The log of an async test has the other tests' messages too, so only this one's are checked.
+      refute log =~ "Fil.LiveView.external/2"
+
+      unsigned = Fil.LiveView.external(disk)
+      png = %{entry | client_name: "a.png"}
+      assert {{:error, error_meta, _socket}, log} = with_log(fn -> unsigned.(png, socket(accept: ~w(.png))) end)
+      assert error_meta == %{reason: :error}
+      assert log =~ "Fil.LiveView.external/2: "
+      assert log =~ "0b2e8b8e.png"
+    end
+
+    test "raises for bad options", %{disk: disk} do
+      assert_raise NimbleOptions.ValidationError, fn -> Fil.LiveView.external(disk, expires_in: 0) end
+      assert_raise NimbleOptions.ValidationError, fn -> Fil.LiveView.external(disk, max_file_size: 1) end
+    end
+  end
+
+  describe "store_entry/4 of a direct upload" do
     @tag :tmp_dir
     test "store_entry/4 refuses a file older than the upload URL on a local disk", %{tmp_dir: tmp_dir} do
       disk = Fil.disk(adapter: Fil.Adapter.Local, root: tmp_dir)
@@ -639,66 +632,11 @@ defmodule Fil.LiveViewTest do
     end
   end
 
-  # The meta `external/2` returns for a direct upload to `path`, signed at `signed_at` (Unix seconds).
-  defp direct_meta(path, signed_at \\ System.os_time(:second)) do
-    %{uploader: "Fil", path: path, url: "http://localhost/storage/#{path}", headers: %{}, signed_at: signed_at}
-  end
-
   # Answers a HEAD for an object of 3 bytes last modified at `datetime`.
   defp s3_head(conn, datetime) do
     conn
     |> Plug.Conn.put_resp_header("content-length", "3")
     |> Plug.Conn.put_resp_header("last-modified", Calendar.strftime(datetime, "%a, %d %b %Y %H:%M:%S GMT"))
     |> Plug.Conn.send_resp(200, "")
-  end
-
-  # A socket with the upload `:avatar`, for calling the function of `external/2` without a LiveView.
-  defp socket(allow \\ [accept: :any]) do
-    Phoenix.LiveView.allow_upload(%Phoenix.LiveView.Socket{}, :avatar, allow)
-  end
-
-  # Mounts `UploadLive` with a direct upload to `disk`. The external function sends the meta to the test, which plays
-  # the browser: `render_upload/3` only reports progress, and the test PUTs the file itself.
-  defp mount_direct(disk, allow, consume) do
-    test = self()
-
-    external = fn entry, socket ->
-      result = Fil.LiveView.external(disk).(entry, socket)
-      send(test, {:external, entry.client_name, result})
-      result
-    end
-
-    mount_upload([external: external] ++ allow, consume)
-  end
-
-  defp select_direct(view, files) when is_list(files) do
-    select_and_upload(view, files)
-
-    for file <- files do
-      assert_receive {:external, name, {:ok, meta, _socket}} when name == file.name
-      meta
-    end
-  end
-
-  defp select_direct(view, file) do
-    [meta] = select_direct(view, [file])
-    meta
-  end
-
-  # Sends the upload the way the browser does, with the meta's headers and the length of the body.
-  defp put_direct(meta, body, disk) do
-    uri = URI.parse(meta.url)
-    headers = Map.put(meta.headers, "content-length", Integer.to_string(byte_size(body)))
-
-    conn =
-      Enum.reduce(headers, Plug.Test.conn(:put, uri.path <> "?" <> uri.query, body), fn {name, value}, conn ->
-        Plug.Conn.put_req_header(conn, name, value)
-      end)
-
-    Fil.Plug.call(conn, Fil.Plug.init(at: "/storage", disk: disk))
-  end
-
-  defp consume_by_name(socket, disk, opts \\ []) do
-    Fil.LiveView.consume_uploaded_entries(socket, :avatar, disk, [path: &client_name/1] ++ opts)
   end
 end
