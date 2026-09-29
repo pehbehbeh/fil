@@ -36,7 +36,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
       case result do
         {:ok, ref, size} ->
-          Kino.Frame.render(frame, Kino.Text.new("Wrote #{ref.path} (#{format_size(size)})"))
+          Kino.Frame.render(frame, Kino.Text.new("Wrote #{ref.path} (#{Fil.Support.Size.format(size)})"))
           if on_upload = opts[:on_upload], do: on_upload.(ref)
 
         {:error, error} ->
@@ -91,12 +91,5 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
     defp message(message) when is_binary(message), do: message
     defp message(error), do: Exception.message(error)
-
-    defp format_size(bytes) when bytes < 1000, do: "#{bytes} B"
-    defp format_size(bytes), do: format_size(bytes / 1000, ~w(KB MB GB TB))
-
-    defp format_size(size, [unit]), do: "#{Float.round(size, 1)} #{unit}"
-    defp format_size(size, [unit | _rest]) when size < 1000, do: "#{Float.round(size, 1)} #{unit}"
-    defp format_size(size, [_unit | rest]), do: format_size(size / 1000, rest)
   end
 end
