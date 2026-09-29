@@ -244,11 +244,20 @@ defmodule Fil.Adapter.Local do
   defp place(tmp, io, full, fill, opts) do
     with :ok <- write_tmp(tmp, io, fill) do
       case Keyword.get(opts, :if_exists, :overwrite) do
-        :overwrite -> File.rename(tmp, full)
-        :error -> create(tmp, full)
+        :overwrite ->
+          File.rename(tmp, full)
+
+        :error ->
+          tmp
+          |> create(full)
+          |> placed()
       end
     end
   end
+
+  # A write only needs to know that the file is in place, not how it got there.
+  defp placed({:ok, _how}), do: :ok
+  defp placed(error), do: error
 
   defp discard(tmp, created) do
     _ = File.rm(tmp)
@@ -315,14 +324,18 @@ defmodule Fil.Adapter.Local do
     end
   end
 
-  # A hard link claims the destination only if it doesn't exist, and removing the source then completes the move (see
-  # `create/2`, which falls back to `O_EXCL` without hard links). Directories can't be hard-linked, so they're moved
-  # with `File.rename/2`.
+  # A hard link claims the destination only if it doesn't exist, and removing the source then completes the move.
+  # Without hard links, `create/2` claims the destination with `O_EXCL` and moves the file there, which completes the
+  # move by itself. Directories can't be hard-linked, so they're moved with `File.rename/2`.
   defp move_new(from, to) do
     if File.dir?(from) do
       move_dir(from, to)
     else
-      with :ok <- create(from, to), do: remove_source(from, to)
+      case create(from, to) do
+        {:ok, :linked} -> remove_source(from, to)
+        {:ok, :moved} -> :ok
+        error -> error
+      end
     end
   end
 
@@ -338,7 +351,8 @@ defmodule Fil.Adapter.Local do
   # Until the source is removed, it's the same file as the link. A write that replaced the source after the link was
   # made put a new file there, which stays: the move removes its link and fails with a conflict. A write between that
   # check and the removal is still lost. Whatever fails, the link is removed only while it's still the file this move
-  # linked, so both files stay as they were. After the `O_EXCL` fallback, the source is already gone.
+  # linked, so both files stay as they were. A source that something else removed meanwhile leaves the link as the
+  # only copy, so the move stands.
   defp remove_source(from, to) do
     with {:ok, linked} <- file_id(to) do
       case file_id(from) do
@@ -532,10 +546,11 @@ defmodule Fil.Adapter.Local do
 
   # A hard link to the finished temporary file creates the destination only if it doesn't exist yet, in one step, so an
   # exclusive write never shows a partial file either. Filesystems without hard links (some network shares) claim the
-  # name with `O_EXCL` instead and then move the content in, so the file is empty until the move.
+  # name with `O_EXCL` instead and then move the content in, so the file is empty until the move. The result says which
+  # happened: after `:linked` the file is still at `tmp` too, after `:moved` it's gone from there.
   defp create(tmp, full) do
     case :file.make_link(tmp, full) do
-      :ok -> :ok
+      :ok -> {:ok, :linked}
       {:error, :eexist} -> {:error, directory_or(full, :eexist)}
       {:error, reason} when reason in [:enotsup, :eperm] -> claim(tmp, full)
       {:error, reason} -> {:error, reason}
@@ -557,7 +572,7 @@ defmodule Fil.Adapter.Local do
   end
 
   # A move that fails leaves the empty file behind, which is removed again.
-  defp claimed(:ok, _full), do: :ok
+  defp claimed(:ok, _full), do: {:ok, :moved}
 
   defp claimed(error, full) do
     _ = File.rm(full)
