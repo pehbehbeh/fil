@@ -2,8 +2,10 @@ if Code.ensure_loaded?(Kino.JS.Live) do
   defmodule Fil.Kino.Browser do
     @moduledoc false
 
-    # The server of `Fil.Kino.browser/3`. The client lists, previews and downloads through events, and the server only
-    # reads files that are in the current listing, so the widget isn't a generic read API for the page.
+    # The server of `Fil.Kino.browser/3`. The client lists, previews, downloads and deletes through events, and the
+    # server only reads or deletes files that are in the current listing, so the widget isn't a generic API for the
+    # page. The upload field of `writable: true` is a `Fil.Kino.Upload` next to the widget, which asks for the current
+    # directory with `call(browser, :path)` and has it list again with `cast(browser, :refresh)`.
 
     use Kino.JS, assets_path: "lib/fil/kino/assets", entrypoint: "browser.js"
     use Kino.JS.Live
@@ -28,7 +30,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
          listed: %{},
          more: 0,
          max_preview_size: opts[:max_preview_size],
-         max_download_size: opts[:max_download_size]
+         max_download_size: opts[:max_download_size],
+         writable: opts[:writable]
        )}
     end
 
@@ -69,11 +72,31 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       {:noreply, ctx}
     end
 
+    # Events that change the disk are refused on the server too, not only hidden in the client.
+    def handle_event("delete", %{"path" => path}, %{assigns: %{writable: true}} = ctx) when is_binary(path) do
+      with {:ok, file} <- listed_file(ctx, path),
+           {:ok, _ref} <- safely(fn -> Fil.rm(file) end) do
+        {:noreply, open(ctx, ctx.assigns.path)}
+      else
+        {:error, error} ->
+          send_error(ctx, error)
+          {:noreply, ctx}
+      end
+    end
+
     # Anything else comes from a client that doesn't match this server, so it's ignored instead of crashing.
     def handle_event(_event, _payload, ctx), do: {:noreply, ctx}
 
+    @impl Kino.JS.Live
+    def handle_call(:path, _from, ctx), do: {:reply, ctx.assigns.path, ctx}
+
+    # After an upload.
+    @impl Kino.JS.Live
+    def handle_cast(:refresh, ctx), do: {:noreply, open(ctx, ctx.assigns.path)}
+
     # Lists `path` and sends the listing to every client, so they all show the same directory. An error goes to the
-    # client that asked, and the listing stays as it was.
+    # client that asked, or to all of them when no client asked (a refresh after an upload), and the listing stays as
+    # it was.
     defp open(ctx, path) do
       case list(ctx, path) do
         {:ok, ctx} ->
@@ -107,6 +130,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         path: ctx.assigns.path,
         entries: Enum.map(ctx.assigns.entries, &entry(&1, ctx.assigns)),
         more: ctx.assigns.more,
+        writable: ctx.assigns.writable,
         error: error
       }
     end
@@ -169,6 +193,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp text_type?("text/" <> _subtype), do: true
     defp text_type?(type), do: type in @text_types
 
+    defp send_error(%{origin: nil} = ctx, error), do: broadcast_event(ctx, "error", %{message: message(error)})
     defp send_error(ctx, error), do: send_event(ctx, ctx.origin, "error", %{message: message(error)})
 
     defp message(message) when is_binary(message), do: message

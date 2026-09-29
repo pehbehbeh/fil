@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   when it's killed. `Fil.Tmp.path/1` returns the path for tools that need one, `Fil.Tmp.give_away/2` hands the
   directory to another process, and `Fil.Tmp.cleanup/1` removes it earlier.
   ([#18](https://github.com/pehbehbeh/fil/pull/18))
+- `Fil.Kino.upload/3` is a file field for Livebook that writes each upload to a directory of a disk, streamed from the
+  file Livebook keeps. `writable: true` on `Fil.Kino.browser/3` adds it below the browser, together with a delete
+  button for each file. ([#20](https://github.com/pehbehbeh/fil/pull/20))
 - `Fil.Kino.browser/3` browses a disk in Livebook: one directory at a time, with a preview of images and text and a
   download button. Kino is a new optional dependency. ([#19](https://github.com/pehbehbeh/fil/pull/19))
 - `Fil.Plugin.Thumbnails` writes smaller copies of images when they're written, sized per variant, and deletes, copies

@@ -55,6 +55,13 @@
   outline: none;
 }
 
+.fil-button--danger:hover,
+.fil-button--danger:focus-visible {
+  color: var(--red-600);
+  background-color: var(--red-50);
+  border-color: var(--red-300);
+}
+
 .fil-link {
   padding: 0;
   font: inherit;
@@ -125,6 +132,12 @@
 
 .fil-table td:last-child {
   text-align: right;
+}
+
+.fil-actions span {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .fil-table td.fil-empty {

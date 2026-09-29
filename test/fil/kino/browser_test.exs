@@ -1,9 +1,11 @@
 defmodule Fil.Kino.BrowserTest do
   use ExUnit.Case, async: true
 
+  import Fil.KinoHelper
   import Kino.Test
 
   setup :configure_livebook_bridge
+  setup :configure_uploads
 
   setup do
     Fil.Adapter.Memory.checkout()
@@ -250,7 +252,7 @@ defmodule Fil.Kino.BrowserTest do
       browser = Fil.Kino.browser(disk)
       connect(browser)
 
-      push_event(browser, "delete", %{"path" => "a.txt"})
+      push_event(browser, "rename", %{"path" => "a.txt"})
       push_event(browser, "open", %{"path" => 1})
       push_event(browser, "refresh", %{})
 
@@ -258,9 +260,112 @@ defmodule Fil.Kino.BrowserTest do
     end
   end
 
+  describe "read-only" do
+    test "has no upload field and refuses delete", %{disk: disk} do
+      Fil.write!(disk, "a.txt", "a")
+      browser = Fil.Kino.browser(disk)
+
+      assert %Kino.JS.Live{} = browser
+      assert %{writable: false} = connect(browser)
+
+      push_event(browser, "delete", %{"path" => "a.txt"})
+      push_event(browser, "refresh", %{})
+
+      assert_broadcast_event(browser, "listing", %{entries: [%{name: "a.txt"}]})
+      assert Fil.exists?(disk, "a.txt")
+    end
+  end
+
+  describe "writable: true" do
+    test "uploads into the current directory and lists it again", %{disk: disk} do
+      Fil.write!(disk, "reports/q2.pdf", "%PDF-2")
+      %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(disk, ".", writable: true)
+      {input, frame} = upload_field(field)
+
+      assert %{writable: true} = connect(browser)
+      assert input.attrs.label == "Upload to the current directory"
+
+      push_event(browser, "open", %{"path" => "reports"})
+      assert_broadcast_event(browser, "listing", %{path: "reports"})
+
+      upload(input, "q3.pdf", "%PDF-3")
+
+      assert status(frame) == "Wrote reports/q3.pdf (6 B)"
+      assert_broadcast_event(browser, "listing", %{path: "reports", entries: [%{name: "q2.pdf"}, %{name: "q3.pdf"}]})
+      assert Fil.read(disk, "reports/q3.pdf") == {:ok, "%PDF-3"}
+    end
+
+    test "keeps an existing file on upload", %{disk: disk} do
+      Fil.write!(disk, "a.txt", "old")
+      %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(disk, ".", writable: true)
+      {input, frame} = upload_field(field)
+      connect(browser)
+
+      upload(input, "a.txt", "new")
+
+      assert status(frame) =~ "already exists"
+      assert Fil.read(disk, "a.txt") == {:ok, "old"}
+    end
+
+    test "shows an error when the browser is gone", %{disk: disk} do
+      %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(disk, ".", writable: true)
+      {input, frame} = upload_field(field)
+      connect(browser)
+
+      Process.exit(browser.pid, :kill)
+      upload(input, "a.txt", "a")
+
+      assert status(frame) == "the browser is gone, so there's no directory to upload to"
+      refute Fil.exists?(disk, "a.txt")
+    end
+
+    test "shows a failed listing after an upload to every client", %{disk: disk} do
+      # Listing fails once `fail` exists, so the browser connects fine and the refresh after the upload fails.
+      failing =
+        Fil.attach(disk, :fail_ls, fn
+          %{name: :ls} = op, next, _opts ->
+            if Fil.exists?(disk, "fail"),
+              do: Fil.Op.put_result(op, {:error, %Fil.UnavailableError{reason: :timeout}}),
+              else: next.(op)
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(failing, ".", writable: true)
+      {input, frame} = upload_field(field)
+      connect(browser)
+
+      upload(input, "fail", "x")
+
+      assert status(frame) == "Wrote fail (1 B)"
+      assert_broadcast_event(browser, "error", %{message: message})
+      assert message =~ "the storage is unavailable"
+    end
+
+    test "deletes a file, but not a directory", %{disk: disk} do
+      Fil.write!(disk, "a.txt", "a")
+      Fil.write!(disk, "reports/q3.pdf", "%PDF")
+      %Kino.Layout{items: [browser, _field]} = Fil.Kino.browser(disk, ".", writable: true)
+      connect(browser)
+
+      push_event(browser, "delete", %{"path" => "a.txt"})
+      assert_broadcast_event(browser, "listing", %{entries: [%{name: "reports"}]})
+      refute Fil.exists?(disk, "a.txt")
+
+      push_event(browser, "delete", %{"path" => "reports"})
+      assert_send_event(browser, "error", %{message: "reports is a directory"})
+      assert Fil.exists?(disk, "reports/q3.pdf")
+
+      push_event(browser, "delete", %{"path" => "reports/q3.pdf"})
+      assert_send_event(browser, "error", %{message: "reports/q3.pdf is not in the current listing" <> _rest})
+      assert Fil.exists?(disk, "reports/q3.pdf")
+    end
+  end
+
   test "bad options raise ArgumentError", %{disk: disk} do
     assert_raise ArgumentError, ~r/max_preview_size/, fn -> Fil.Kino.browser(disk, ".", max_preview_size: 0) end
-    assert_raise ArgumentError, ~r/unknown options \[:writable\]/, fn -> Fil.Kino.browser(disk, ".", writable: true) end
+    assert_raise ArgumentError, ~r/writable/, fn -> Fil.Kino.browser(disk, ".", writable: "yes") end
   end
 
   # Lists every file without a size, as a storage might that doesn't report one.
