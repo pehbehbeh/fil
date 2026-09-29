@@ -105,9 +105,9 @@ bin/release 0.2.0           # releases main to Hex (see Releasing)
 
 `.github/workflows/ci.yml` checks formatting, `mix credo`, `mix docs --warnings-as-errors` and `bin/check-changelog` on
 the latest Elixir, and runs `mix test` on every supported Elixir minor version (1.18 and later), each with the newest
-OTP it supports. The library supports every OTP that Elixir 1.18 supports, and the test suite needs OTP 27 or later
-(`:proc_lib.get_label/1`). The integration suite runs once, on the latest Elixir, against RustFS started from
-`compose.yml`. When `elixir:` in `mix.exs` changes, update the matrix.
+OTP it supports. Fil supports the last three OTP releases, the ones OTP still maintains (27, 28 and 29 now), and the
+matrix covers each of them. The integration suite runs once, on the latest Elixir, against RustFS started from
+`compose.yml`. When `elixir:` in `mix.exs` changes or a new OTP release comes out, update the matrix.
 
 The checks job also compiles `fil` without its optional dependencies (`mix compile --no-optional-deps` in its own build
 path), so a module that uses Plug, Vix or Kino without a compile guard (`if Code.ensure_loaded?(...)`) fails the build.
