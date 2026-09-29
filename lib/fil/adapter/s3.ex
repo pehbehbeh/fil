@@ -27,13 +27,7 @@ defmodule Fil.Adapter.S3 do
               """
             ],
             secret_access_key: [type: :string, doc: "The secret matching `:access_key_id`."],
-            session_token: [
-              type: :string,
-              doc: """
-              The session token, for temporary STS credentials. A new token makes another disk for `Fil.Ecto.Ref`: its
-              fields refuse refs built from a disk with the old token.
-              """
-            ],
+            session_token: [type: :string, doc: "The session token, for temporary STS credentials."],
             endpoint: [
               type: :string,
               doc: """

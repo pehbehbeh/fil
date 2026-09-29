@@ -8,7 +8,7 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
                 #{Fil.Support.DiskOption.doc([:remote_fun, :mfa])} Ecto compiles field options into the schema module,
                 so an anonymous function or a disk raises at compile time, and the arguments of an MFA end up in the
                 compiled code: `{MyApp.Storage, :disk, [:uploads]}` is fine, credentials in the arguments are not. The
-                function has to return an equal disk each time (see [Same storage](#module-same-storage)).
+                function has to return a disk on the same storage each time (see [Same storage](#module-same-storage)).
                 """
               ]
             )
@@ -87,14 +87,11 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
 
     ## Same storage
 
-    A ref fits the field when its disk is the same storage as the field's disk: the same adapter with equal options.
-    Plugins don't count, so a ref from the disk with another plugin attached fits, and a ref on a local disk with
-    another root doesn't.
-
-    The options include the credentials and, on S3, `:session_token` and `:req_options`. If the disk function returns
-    a disk with other credentials than before, refs built from the old disk are "on another disk". With temporary
-    credentials that change while a page is open, a `put_change(:photos, user.photos ++ new_photos)` then fails. Build
-    the refs from the current disk, or reload the record, before you put them back.
+    A ref fits the field when its disk is the same storage as the field's disk, as `Fil.Disk.same_storage?/2` decides:
+    the same adapter and the same address, such as the same root, or the same bucket and prefix. Plugins, credentials
+    and other options that only change how the storage is reached don't count. So a ref from the disk with another
+    plugin attached fits, and so does one from a disk built before the S3 credentials were rotated. A ref on a local
+    disk with another root doesn't.
 
     ## Loading
 
@@ -183,7 +180,7 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
     @impl Ecto.ParameterizedType
     def cast(nil, _params), do: {:ok, nil}
 
-    def cast(%Fil.Ref{path: path} = ref, params) when is_binary(path) do
+    def cast(%Fil.Ref{disk: %Fil.Disk{}, path: path} = ref, params) when is_binary(path) do
       case check(ref, params) do
         {:ok, ref} -> {:ok, ref}
         {:error, :disk} -> {:error, message: "is on another disk"}
@@ -210,7 +207,7 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
     @impl Ecto.ParameterizedType
     def dump(nil, _dumper, _params), do: {:ok, nil}
 
-    def dump(%Fil.Ref{path: path} = ref, _dumper, params) when is_binary(path) do
+    def dump(%Fil.Ref{disk: %Fil.Disk{}, path: path} = ref, _dumper, params) when is_binary(path) do
       case check(ref, params) do
         {:ok, ref} -> {:ok, ref.path}
         {:error, _reason} -> :error
@@ -235,12 +232,8 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
     defp check(ref, %{disk: source}) do
       disk = Fil.Disk.resolve(source)
 
-      if same_storage?(ref.disk, disk), do: normalize(ref), else: {:error, :disk}
+      if Fil.Disk.same_storage?(ref.disk, disk), do: normalize(ref), else: {:error, :disk}
     end
-
-    # The adapter module and its state (options and credentials) have to be equal, the plugins don't count.
-    defp same_storage?(%Fil.Disk{adapter: adapter}, %Fil.Disk{adapter: adapter}), do: true
-    defp same_storage?(_disk, _other), do: false
 
     defp normalize(ref) do
       case Fil.Ref.normalize(ref) do

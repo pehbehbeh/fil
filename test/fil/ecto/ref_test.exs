@@ -135,6 +135,20 @@ defmodule Fil.Ecto.RefTest do
       assert changeset.changes.avatar.disk == attached
     end
 
+    test "takes and dumps a ref on the same storage with other credentials" do
+      s3 = [adapter: Fil.Adapter.S3, bucket: "uploads", region: "eu-central-1", session_token: "old"]
+      type = Ecto.ParameterizedType.init(Fil.Ecto.Ref, disk: {Fil, :disk, [s3]})
+
+      rotated =
+        s3
+        |> Keyword.put(:session_token, "new")
+        |> Fil.disk()
+        |> Fil.ref("a.png")
+
+      assert {:ok, %Fil.Ref{path: "a.png"}} = Ecto.Type.cast(type, rotated)
+      assert Ecto.Type.dump(type, rotated) == {:ok, "a.png"}
+    end
+
     test "takes a list of refs in order, and nil in it", %{disk: disk} do
       photos = [Fil.ref(disk, "3.png"), nil, Fil.ref(disk, "1.png")]
 

@@ -11,8 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `Fil.Ecto.Ref` stores refs in Ecto schemas: the column holds the path, and loading returns a `Fil.Ref` on the disk
   the field names. `{:array, Fil.Ecto.Ref}` holds several files in order, and `Fil.Ecto.Ref.removed/2` returns the refs
-  a changeset drops, to delete after the commit. Ecto is a new optional dependency.
-  ([#25](https://github.com/pehbehbeh/fil/pull/25))
+  a changeset drops, to delete after the commit. A ref fits a field when `Fil.Disk.same_storage?/2` finds its disk on
+  the same storage: the same adapter and the same address, which adapters return from the new optional callback
+  `c:Fil.Adapter.address/1` (the root on a local disk, the endpoint, region, bucket and prefix on S3), so plugins and
+  rotated credentials don't count. Ecto is a new optional dependency. ([#25](https://github.com/pehbehbeh/fil/pull/25))
 - `Fil.LiveView` stores LiveView uploads on a disk: `consume_uploaded_entries/4` streams each file into `Fil.write/4` at
   a path you choose, and never replaces a file unless you pass `if_exists: :overwrite`. If a write fails, it deletes the
   files it wrote and keeps the entries, so the form can be submitted again. It needs Phoenix LiveView 1.2, an optional
