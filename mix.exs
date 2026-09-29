@@ -95,7 +95,7 @@ defmodule Fil.MixProject do
       groups_for_modules: [
         Adapters: ~r/^Fil\.Adapter(\.\w+)?$/,
         Plugins: ~r/^Fil\.Plugin\./,
-        Integrations: [Fil.Plug, Fil.Kino, Fil.LiveView],
+        Integrations: [Fil.Plug, Fil.Kino, Fil.LiveView, Fil.Ecto.Ref],
         Errors: ~r/^Fil\.\w+Error$/
       ]
     ]

@@ -66,7 +66,7 @@ def handle_event("save", _params, socket) do
          path: &"avatars/#{user.id}/#{Fil.LiveView.filename(&1)}"
        ) do
     {:ok, [avatar]} ->
-      {:ok, user} = Accounts.update_avatar(user, avatar.path)
+      {:ok, user} = Accounts.update_avatar(user, avatar)
       {:noreply, assign(socket, :current_user, user)}
 
     {:ok, []} ->
@@ -98,8 +98,37 @@ file, such as `0b2e8b8e-4a0a-4c1e-9d1e-2f6f4e0c7a11.png`, and it's the default. 
 `entry.client_name`: the browser sends it, so it can be `../../config.exs`, a name another user already has, or
 `index.html`.
 
-The result is a list of refs in the order of the file input. Store `ref.path` in your database and rebuild the ref
-with `Fil.ref/2` when you need the file again, because the disk can't be stored (see `Fil.Ref`).
+The result is a list of refs in the order of the file input. A `Fil.Ecto.Ref` field stores a ref: the column holds the
+path, and loading the user gives a ref on the field's disk again.
+
+```elixir
+schema "users" do
+  field :avatar, Fil.Ecto.Ref, disk: &MyApp.Storage.uploads/0
+end
+```
+
+The field takes refs, never strings from params, so leave it out of `cast/4` and put the ref with `put_change/3`.
+`Fil.Ecto.Ref.removed/2` returns the avatar the change replaces, which `update_avatar/2` deletes once the update is
+committed:
+
+```elixir
+def update_avatar(user, avatar) do
+  changeset =
+    user
+    |> Ecto.Changeset.change()
+    |> Ecto.Changeset.put_change(:avatar, avatar)
+
+  removed = Fil.Ecto.Ref.removed(changeset, :avatar)
+
+  with {:ok, user} <- Repo.update(changeset) do
+    Enum.each(removed, &Fil.rm/1)
+    {:ok, user}
+  end
+end
+```
+
+The `Fil.Ecto.Ref` docs show the migration for each database, and `{:array, Fil.Ecto.Ref}` for several files in one
+field.
 
 `Fil.LiveView` never replaces a file, unless you pass `if_exists: :overwrite`. With UUIDs in the path that doesn't
 happen anyway, but a `path:` that returns a name that's taken gets a `Fil.AlreadyExistsError` instead of replacing
@@ -172,7 +201,7 @@ A signed URL lets the browser download a private file for a while, from S3 or th
 [Signed URLs](installation.md#signed-urls) in the installation guide):
 
 ```elixir
-{:ok, avatar_url} = Fil.signed_url(MyApp.Storage.uploads(), user.avatar, expires_in: 3600)
+{:ok, avatar_url} = Fil.signed_url(user.avatar, expires_in: 3600)
 ```
 
 ```heex

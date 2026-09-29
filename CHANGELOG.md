@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Fil.Ecto.Ref` stores refs in Ecto schemas: the column holds the path, and loading returns a `Fil.Ref` on the disk
+  the field names. `{:array, Fil.Ecto.Ref}` holds several files in order, and `Fil.Ecto.Ref.removed/2` returns the refs
+  a changeset drops, to delete after the commit. Ecto is a new optional dependency.
 - `Fil.LiveView` stores LiveView uploads on a disk: `consume_uploaded_entries/4` streams each file into `Fil.write/4` at
   a path you choose, and never replaces a file unless you pass `if_exists: :overwrite`. If a write fails, it deletes the
   files it wrote and keeps the entries, so the form can be submitted again. It needs Phoenix LiveView 1.2, an optional
