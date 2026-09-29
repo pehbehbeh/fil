@@ -77,30 +77,20 @@ end
 </.form>
 ```
 
-The cancel and remove buttons send `"cancel-upload"` and `"remove-file"` to the LiveView. `Fil.LiveView.cancel_upload/2`
-cancels the entry, and ignores one that's gone already (after a double click, say), where LiveView's
-`cancel_upload/3` raises:
-
-```elixir
-def handle_event("cancel-upload", params, socket), do: {:noreply, Fil.LiveView.cancel_upload(socket, params)}
-
-def handle_event("remove-file", %{"path" => path}, socket) do
-  {:noreply, update(socket, :photos, fn photos -> Enum.reject(photos, &(&1.path == path)) end)}
-end
-```
-
 LiveView's `max_entries:` counts only the picked files, so the limit on the product is a `validate_length/3` in the
-changeset. `validate` checks it with the photos the product would have after the save, the kept ones and the picked
-ones, and the component shows the error under the files:
+changeset. `validate/2` checks it with the photos the product would have after the save, the kept ones and the picked
+ones LiveView accepted, and the component shows the error under the files. It also clears the error of the last save:
 
 ```elixir
-def handle_event("validate", %{"product" => params}, socket) do
+def handle_event("validate", %{"product" => params}, socket), do: {:noreply, validate(socket, params)}
+
+defp validate(socket, params) do
   changeset =
     socket.assigns.product
     |> change_photos(params, planned_photos(socket))
     |> Map.put(:action, :validate)
 
-  {:noreply, assign(socket, :form, to_form(changeset))}
+  assign(socket, form: to_form(changeset), photo_errors: [])
 end
 
 defp change_photos(product, params, photos) do
@@ -112,8 +102,29 @@ end
 
 # `entry_ref/3` returns the ref an entry will be written to, without writing anything.
 defp planned_photos(socket) do
-  picked = Enum.map(socket.assigns.uploads.photos.entries, &Fil.LiveView.entry_ref(&MyApp.Storage.uploads/0, &1))
+  picked =
+    for entry <- socket.assigns.uploads.photos.entries, entry.valid? do
+      Fil.LiveView.entry_ref(&MyApp.Storage.uploads/0, entry)
+    end
+
   socket.assigns.photos ++ picked
+end
+```
+
+The cancel and remove buttons send `"cancel-upload"` and `"remove-file"` to the LiveView, with the upload's name in
+`"upload"`. `Fil.LiveView.cancel_upload/2` cancels the entry, and ignores one that's gone already (after a double click,
+say), where LiveView's `cancel_upload/3` raises. A click doesn't send the form's `phx-change`, so both handlers call
+`validate/2` with the form's last params, and a count error goes away once the user removed enough photos:
+
+```elixir
+def handle_event("cancel-upload", params, socket) do
+  socket = Fil.LiveView.cancel_upload(socket, params)
+  {:noreply, validate(socket, socket.assigns.form.params)}
+end
+
+def handle_event("remove-file", %{"upload" => "photos", "path" => path}, socket) do
+  socket = update(socket, :photos, fn photos -> Enum.reject(photos, &(&1.path == path)) end)
+  {:noreply, validate(socket, socket.assigns.form.params)}
 end
 ```
 
@@ -155,11 +166,17 @@ end
 ```
 
 A failed update deletes the new files again. Their entries are consumed by then, so the user picks the files again.
-A failed consume keeps every entry and writes nothing, and the component shows its error from `photo_errors`.
+A failed consume keeps every entry and writes nothing, and the component shows its error from `photo_errors` until the
+next change.
 
-A single file works the same with a `Fil.Ecto.Ref` field: `existing={@avatar}` takes the ref or `nil`, the remove
-handler assigns `nil`, and the save puts `List.first(new) || kept` into the changeset. With `max_entries: 1` the
-component hides the stored file while a new one is picked, because saving replaces it.
+A single file works the same with a `Fil.Ecto.Ref` field: `existing={@avatar}` takes the ref or `nil`, and the save
+puts `List.first(new) || kept` into the changeset. The component hides a single stored file while a new one is picked,
+because saving replaces it. Every remove button sends the name of its upload, so a second field on the page gets a
+clause of its own:
+
+```elixir
+def handle_event("remove-file", %{"upload" => "avatar"}, socket), do: {:noreply, assign(socket, :avatar, nil)}
+```
 
 With `auto_upload: true` and a `progress:` callback that consumes each entry when it's done (see
 [below](#storing-each-file-when-it-s-uploaded)), a consumed entry leaves the list, so append its ref to the list you
@@ -195,7 +212,7 @@ generates. Tailwind builds only the classes it finds in its sources, and the gen
 look into `deps`, so add a line for Fil next to the other `@source` lines:
 
 ```css
-@source "../../deps/fil/lib/fil";
+@source "../../deps/fil/lib/fil/live_view";
 ```
 
 Without it, the file input, the drop zone and the error state have no styles.
@@ -203,8 +220,11 @@ Without it, the file input, the drop zone and the error state have no styles.
 Each part takes a class attribute that replaces its default, as `class` does on the generated components:
 `class`, `label_class`, `dropzone_class`, `input_class`, `error_class`, `hint_class`, `list_class`, `entry_class`,
 `progress_class`, `button_class` and `message_class`. The docs of each show its default, so to add a class, copy the
-default and append to it. An app with a design of its own sets them once, in a wrapper in its `core_components.ex` that
-also sets `translate`. A wrapper declares the slots it forwards:
+default and append to it. The `<div>` around the content of a row, the preview, the name and the size, and the `<div>`
+around the error messages take no class attribute, and have only Tailwind utilities.
+
+An app with a design of its own sets the classes once, in a wrapper in its `core_components.ex` that also sets
+`translate`. A wrapper declares the slots it forwards:
 
 ```elixir
 attr :upload, Phoenix.LiveView.UploadConfig, required: true
@@ -236,15 +256,19 @@ end
 
 The wrapper takes the name `upload_field`, so leave out the import of `Fil.LiveView`'s in that case.
 
-Without daisyUI, its class names and theme colours do nothing, and the Tailwind utilities still apply. What's left are
-a native file input, native `<progress>` bars and plain buttons.
+Without daisyUI, its class names and theme colours do nothing, and the Tailwind utilities still apply. Tailwind's
+preflight strips the look of the file input and the buttons, so pass `input_class` and `button_class` too.
 
-The `:file` slot replaces the content of a stored file's row, and `:entry` that of a picked file's row. Stored paths
-are UUIDs, so a form with images shows a thumbnail. The component calls no `Fil` function while it renders, so the
-URLs are built before, such as in `mount/3`:
+The `:file` slot replaces the content of a stored file's row, and `:entry` that of a picked file's row. The row itself
+stays, with its buttons, progress bar and errors. Stored paths are UUIDs, so a form with images shows a thumbnail. The
+component calls no `Fil` function while it renders, so the URLs are built before. A helper that `mount/3` and the save
+call instead of assigning `:photos` keeps them in step with the photos:
 
 ```elixir
-photo_urls = Map.new(product.photos, &{&1.path, Fil.signed_url!(&1, expires_in: 3600)})
+defp assign_photos(socket, photos) do
+  urls = Map.new(photos, &{&1.path, Fil.signed_url!(&1, expires_in: 3600)})
+  assign(socket, photos: photos, photo_urls: urls)
+end
 ```
 
 ```heex
@@ -254,6 +278,9 @@ photo_urls = Map.new(product.photos, &{&1.path, Fil.signed_url!(&1, expires_in: 
   </:file>
 </.upload_field>
 ```
+
+A signed URL works for `expires_in` seconds, so a form that stays open longer shows broken thumbnails until it's
+loaded again. Removing a photo needs no new URLs, and appending one after an auto upload goes through the helper too.
 
 ### Your own markup
 
