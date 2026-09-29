@@ -82,8 +82,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   longer leaves a partial file behind.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
 - Local writes name their temporary file `.fil-` and a short suffix, which listings skip, so a name near the
-  filesystem's limit works. A failed write also removes the directories it created.
-  ([#10](https://github.com/pehbehbeh/fil/pull/10))
+  filesystem's limit works. A failed write also removes the directories it created. When the writing process is killed,
+  its `.fil-` file and those directories are removed as well, as far as possible.
+  ([#10](https://github.com/pehbehbeh/fil/pull/10), [#17](https://github.com/pehbehbeh/fil/pull/17))
 - `Fil.Plug` refuses a signed URL with a query parameter that wasn't signed, as S3 does. URLs signed by 0.1 still work.
   ([#1](https://github.com/pehbehbeh/fil/pull/1))
 
