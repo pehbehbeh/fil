@@ -6,7 +6,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     # `Fil.Application` registers it when Kino is there. Secrets are names of Livebook secrets, without the `LB_` prefix
     # Livebook puts in front of them in the environment.
 
-    use Kino.JS, assets_path: "lib/fil/kino/assets/disk_cell"
+    use Kino.JS, assets_path: "lib/fil/kino/assets", entrypoint: "disk_cell.js"
     use Kino.JS.Live
     use Kino.SmartCell, name: "Fil disk"
 
