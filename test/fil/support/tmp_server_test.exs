@@ -42,6 +42,14 @@ defmodule Fil.Support.TmpServerTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
   end
 
+  # Returns once the server has started a cleanup, which then waits out its grace period.
+  defp wait_for_cleanup do
+    if :sys.get_state(Tmp).cleanups == %{} do
+      Process.sleep(1)
+      wait_for_cleanup()
+    end
+  end
+
   # Every file and directory under `dir`, `.fil-` files included.
   defp tree(dir) do
     dir
@@ -61,6 +69,18 @@ defmodule Fil.Support.TmpServerTest do
     # The write goes on, and fails when it moves the file into place.
     send(writer, :go)
     assert_receive {:written, {:error, %Fil.NotFoundError{reason: :enoent}}}
+  end
+
+  test "stopping the application doesn't wait out the grace period of a cleanup", %{disk: disk, tmp_dir: tmp_dir} do
+    on_exit(fn -> {:ok, _apps} = Application.ensure_all_started(:fil) end)
+    writer = start_write(disk, "new/a.txt")
+    kill(writer)
+    wait_for_cleanup()
+
+    {time, :ok} = :timer.tc(fn -> Application.stop(:fil) end, :millisecond)
+
+    assert time < 500
+    assert tree(tmp_dir) == []
   end
 
   test "Local writes work without the application", %{disk: disk, tmp_dir: tmp_dir} do

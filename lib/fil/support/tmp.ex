@@ -145,7 +145,7 @@ defmodule Fil.Support.Tmp do
     if state.cleanups == %{} do
       {:reply, :ok, state}
     else
-      Enum.each(state.cleanups, fn {_ref, pid} -> send(pid, :now) end)
+      hurry(state)
       pending = MapSet.new(state.cleanups, fn {ref, _pid} -> ref end)
       {:noreply, %{state | syncs: [{from, pending} | state.syncs]}}
     end
@@ -172,7 +172,10 @@ defmodule Fil.Support.Tmp do
 
   defp shutdown?(reason), do: reason in [:normal, :shutdown] or match?({:shutdown, _}, reason)
 
+  # Stopping doesn't wait out the grace period of the running cleanups.
   defp remove_all(state) do
+    hurry(state)
+
     @entries
     |> :ets.tab2list()
     |> Enum.each(&remove/1)
@@ -213,7 +216,10 @@ defmodule Fil.Support.Tmp do
     %{state | cleanups: Map.delete(state.cleanups, ref), syncs: syncs}
   end
 
-  # `sync/1` sends `:now` to skip the wait.
+  # Tells the running cleanups to make their second pass now.
+  defp hurry(state), do: Enum.each(state.cleanups, fn {_ref, pid} -> send(pid, :now) end)
+
+  # `hurry/1` skips the wait.
   defp clean_up(entries) do
     Enum.each(entries, &remove/1)
 
