@@ -87,7 +87,7 @@ defmodule Fil.Support.TmpServerTest do
 
     orphan =
       spawn(fn ->
-        :ets.insert(Tmp, {{:file, orphan_file}, self(), [orphan_dir]})
+        :ets.insert(Tmp, {{self(), {:file, orphan_file}}, [orphan_dir]})
         send(test, :inserted)
         Process.sleep(:infinity)
       end)

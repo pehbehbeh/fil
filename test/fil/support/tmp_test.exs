@@ -38,7 +38,7 @@ defmodule Fil.Support.TmpTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
   end
 
-  defp entries(pid), do: :ets.match_object(Tmp, {:_, pid, :_})
+  defp entries(pid), do: :ets.match_object(Tmp, {{pid, :_}, :_})
 
   # Every file and directory under `dir`, `.fil-` files included.
   defp tree(dir) do
@@ -58,7 +58,7 @@ defmodule Fil.Support.TmpTest do
   test "a killed write leaves no temporary file and no directory it created", %{disk: disk, tmp_dir: tmp_dir} do
     writer = start_write(disk, "kept/new/deeper/a.txt")
 
-    assert [{{:file, tmp}, ^writer, created}] = entries(writer)
+    assert [{{^writer, {:file, tmp}}, created}] = entries(writer)
     assert Path.basename(tmp) =~ ~r/^\.fil-/
     assert created == [Path.join(tmp_dir, "kept/new/deeper"), Path.join(tmp_dir, "kept/new")]
     assert File.exists?(tmp)

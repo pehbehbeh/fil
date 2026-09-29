@@ -7,16 +7,17 @@ defmodule Fil.Support.Tmp do
   # Two public ETS tables, created in `Fil.Application.start/2` and owned by the application, so they survive a crash of
   # this server:
   #
-  #   * entries, `{key, owner, data}` rows keyed by what gets removed, so the owner deletes its row in O(1) once it's
-  #     done: `{{:file, tmp}, owner, created_dirs}` for a Local write.
+  #   * entries, an ordered set of `{{owner, key}, data}` rows, where `key` names what gets removed:
+  #     `{{owner, {:file, tmp}}, created_dirs}` for a Local write. The owner deletes its row by its key once it's done,
+  #     and when it exits, the server reads only its rows, which sit next to each other.
   #   * owners, `{pid}` rows for the processes this server monitors, so a process calls the server only the first time
   #     it puts an entry. Later entries go straight into the table.
   #
-  # When an owner exits, the server takes its entries out of the table (a scan, but the table only holds what's in use
-  # right now) and removes them in a process of its own, so a slow filesystem never blocks the next registration. That
-  # process removes them twice, a second apart: a process that's killed during a file operation (a dirty NIF, such as
-  # the `open` that creates a `.fil-` file) is `:DOWN` before the operation returns, so the file can appear after the
-  # first pass. An operation that takes longer than that can still leave its file behind.
+  # When an owner exits, the server takes its entries out of the table and removes them in a process of its own, so a
+  # slow filesystem never blocks the next registration. That process removes them twice, a second apart: a process
+  # that's killed during a file operation (a dirty NIF, such as the `open` that creates a `.fil-` file) is `:DOWN`
+  # before the operation returns, so the file can appear after the first pass. An operation that takes longer than that
+  # can still leave its file behind.
   #
   # `init/1` monitors every owner in both tables, so a restarted server still cleans up after the processes it knew.
   # Removing calls `File` directly, not `Fil`: a `.fil-` file isn't a file of its disk yet, so there are no plugins to
@@ -33,7 +34,7 @@ defmodule Fil.Support.Tmp do
   @doc "Creates the tables. The calling process owns them, so it has to outlive the server."
   @spec create_tables() :: :ok
   def create_tables do
-    :ets.new(@entries, [:set, :public, :named_table, write_concurrency: true])
+    :ets.new(@entries, [:ordered_set, :public, :named_table, write_concurrency: true])
     :ets.new(@owners, [:set, :public, :named_table, read_concurrency: true])
     :ok
   end
@@ -50,7 +51,7 @@ defmodule Fil.Support.Tmp do
     # down right then can't monitor it, so the call is made once more after the insert: either a new server answers it,
     # or the one that starts later finds the entry in `init/1`.
     monitored = monitor_self()
-    :ets.insert(@entries, {key, self(), data})
+    :ets.insert(@entries, {{self(), key}, data})
     if !monitored, do: monitor_self()
     :ok
   rescue
@@ -61,7 +62,7 @@ defmodule Fil.Support.Tmp do
   @doc "Deletes an entry of the calling process, once it removed what the entry stands for itself."
   @spec delete(term()) :: :ok
   def delete(key) do
-    :ets.delete(@entries, key)
+    :ets.delete(@entries, {self(), key})
     :ok
   rescue
     ArgumentError -> :ok
@@ -111,7 +112,7 @@ defmodule Fil.Support.Tmp do
     Process.flag(:trap_exit, true)
 
     owners = :ets.select(@owners, [{{:"$1"}, [], [:"$1"]}])
-    with_entries = :ets.select(@entries, [{{:_, :"$1", :_}, [], [:"$1"]}])
+    with_entries = :ets.select(@entries, [{{{:"$1", :_}, :_}, [], [:"$1"]}])
 
     owners
     |> Enum.concat(with_entries)
@@ -185,12 +186,13 @@ defmodule Fil.Support.Tmp do
 
   defp down(owner, state) do
     :ets.delete(@owners, owner)
-    entries = :ets.match_object(@entries, {:_, owner, :_})
+    # A bound owner limits both to that owner's rows. It's dead, so it can't put a row in between.
+    entries = :ets.match_object(@entries, {{owner, :_}, :_})
 
     if entries == [] do
       state
     else
-      Enum.each(entries, &:ets.delete_object(@entries, &1))
+      :ets.match_delete(@entries, {{owner, :_}, :_})
       {pid, ref} = spawn_monitor(fn -> clean_up(entries) end)
       %{state | cleanups: Map.put(state.cleanups, ref, pid)}
     end
@@ -221,7 +223,7 @@ defmodule Fil.Support.Tmp do
 
   # The write may have placed the file already (renamed or linked), which only makes the `File.rm/1` a no-op, since the
   # names are unique.
-  defp remove({{:file, tmp}, _owner, created_dirs}) do
+  defp remove({{_owner, {:file, tmp}}, created_dirs}) do
     _result = File.rm(tmp)
     remove_dirs(created_dirs)
   end
