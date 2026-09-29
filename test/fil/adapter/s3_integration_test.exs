@@ -155,6 +155,15 @@ defmodule Fil.Adapter.S3IntegrationTest do
       assert {:ok, avatar} = Fil.LiveView.store_entry(disk, meta, entry, max_file_size: 3)
       assert avatar.path == "avatars/0b2e8b8e.png"
       assert Fil.read(avatar) == {:ok, "png"}
+
+      # A file from before its URL isn't the upload's: a URL signed a minute after the object was written refuses it
+      # and leaves it there.
+      later = %{meta | signed_at: meta.signed_at + 60}
+
+      assert {:error, %Fil.AlreadyExistsError{reason: :before_upload}} =
+               Fil.LiveView.store_entry(disk, later, entry, max_file_size: 3)
+
+      assert Fil.read(avatar) == {:ok, "png"}
     end
   end
 

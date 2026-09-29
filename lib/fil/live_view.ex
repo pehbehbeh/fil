@@ -9,8 +9,10 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                 The path may contain directories. It has to be the same each time for the same entry, because
                 `entry_ref/3` and the write call it separately, so build it from `entry.uuid` (as `filename/1` does)
                 and the socket's assigns, not from the time or a random value. `entry.client_name`,
-                `client_relative_path`, `client_type` and `client_size` come from the browser and can be anything. A
-                result that isn't a string raises `ArgumentError`.
+                `client_relative_path`, `client_type` and `client_size` come from the browser and can be anything. For
+                `external/2`, it also has to be a path no other entry gets, because the consume takes the file there
+                for the upload (see [Direct uploads](#module-direct-uploads)). A result that isn't a string raises
+                `ArgumentError`.
                 """
               ],
               extensions: [
@@ -29,15 +31,17 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                 doc: """
                 What to do if a file is already at the path, passed to `Fil.write/4`, or signed into the URL by
                 `external/2`. `:error` writes nothing and gives a `Fil.AlreadyExistsError`, so an upload never replaces
-                a file by accident. `:overwrite` replaces it.
+                a file by accident. `:overwrite` replaces it, and a URL signed with it can write the file again and
+                again until it expires, also after the upload was consumed. The consume functions ignore it for direct
+                uploads.
                 """
               ],
               max_file_size: [
                 type: :pos_integer,
                 doc: """
-                The largest file in bytes that `store_entry/4` keeps from a direct upload. A larger one is deleted
-                and gives a `Fil.InvalidRequestError` with `reason: :too_large`. The consume functions take the
-                upload's `max_file_size`.
+                The largest file in bytes that `store_entry/4` takes from a direct upload. A larger one gives a
+                `Fil.InvalidRequestError` with `reason: :too_large` and stays on the disk. The consume functions take
+                the upload's `max_file_size`.
                 """
               ]
             )
@@ -129,8 +133,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     It works on every disk that signs upload URLs: S3 with a presigned PUT, and a disk with `Fil.Plugin.URL` and a
     `:secret` through `Fil.Plug` in your endpoint. Each URL is bound to the content type of the path, the size the
-    browser reported and `if_exists: :error` (see [Uploads](Fil.html#signed_url/1-uploads)), so it uploads one file
-    once, and nobody who has the URL can replace the file after it was consumed.
+    browser reported and `:if_exists` (see [Uploads](Fil.html#signed_url/1-uploads)). With the default
+    `if_exists: :error`, a URL uploads one file once, and nobody who has it can replace the file after it was consumed.
+    With `if_exists: :overwrite`, the URL writes the file again on every request until it expires.
 
     The browser side is the `Fil` uploader, which comes with `Fil` as colocated JS. A Phoenix 1.8 app passes it to its
     `LiveSocket` in `assets/js/app.js`:
@@ -141,11 +146,25 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     const liveSocket = new LiveSocket("/live", Socket, {hooks: {...colocatedHooks}, uploaders, params: {_csrf_token}})
     ```
 
-    Consume the upload with the same target and `:path` as `external/2`. The consume functions don't write anything
-    then: they check the file with `Fil.stat/2`. A file that isn't there gives the `Fil.NotFoundError` of `stat`. A
-    file larger than the upload's `max_file_size` can only come from something else writing to the path, so it's
-    deleted, with a `Fil.InvalidRequestError` with `reason: :too_large`. Otherwise a failed consume never deletes the
-    file of a direct upload, and the form can be submitted again.
+    Consume the upload with the same disk as `external/2`. The consume functions don't write anything then: they check
+    the file at the path `external/2` put into the entry's meta, which LiveView keeps on the server, with `Fil.stat/2`.
+    So `:path`, `:extensions` and `:if_exists` of the consume don't apply to direct uploads, and a different `:path`
+    doesn't move the file. A file that isn't there gives the `Fil.NotFoundError` of `stat`, and so does a directory
+    (with `reason: :eisdir`).
+
+    The browser only reports that it uploaded the file, and a modified client can report an upload it never made. So
+    `:path` has to give each entry a path of its own, as `filename/1` does: with a path such as
+    `&"docs/\#{&1.client_name}"`, a user could claim a file someone else uploaded. The consume also refuses a file
+    that can't be this upload's:
+
+      * one older than the upload URL gives a `Fil.AlreadyExistsError` with `reason: :before_upload`. The check allows
+        30 seconds, because the clocks of the app and the storage can differ a little, and local disks and S3 keep the
+        time in whole seconds
+      * one larger than the upload's `max_file_size` (the URL takes only the size the browser reported) gives a
+        `Fil.InvalidRequestError` with `reason: :too_large`
+
+    A failed consume never deletes the file of a direct upload, because it may be someone else's, and the form can be
+    submitted again.
 
     A presigned PUT goes to S3 directly, so none of the disk's plugins run: no encryption or compression, and no
     `Fil.Plugin.Thumbnails`. Uploads through `Fil.Plug` are written with `Fil.write/4`, where plugins run. For
@@ -200,6 +219,10 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                        """
                      )
                      |> NimbleOptions.new!()
+
+    # How many seconds older than its upload URL the file of a direct upload may look. The clocks of the app and the
+    # storage can differ a little, and local disks and S3 keep the time in whole seconds.
+    @clock_skew 30
 
     # How much of the temporary file is read at a time.
     @chunk_size 65_536
@@ -280,7 +303,11 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     For each file, the function builds its path with `:path`, checks its extension, and signs an upload URL for it
     with `Fil.signed_url/3`, bound to the content type of the path, the size the browser reported and `:if_exists`.
     The browser side is the `Fil` uploader (see [Direct uploads](#module-direct-uploads)). Consume the upload with the
-    same target and `:path` as usual; the consume functions check the file instead of writing it.
+    same disk as usual; the consume functions check the file at the signed path instead of writing it, and ignore their
+    own `:path`, `:extensions` and `:if_exists`.
+
+    `:path` has to give each entry a path no other entry gets, as the default `filename/1` does, because the consume
+    takes the file at the path for the upload.
 
     A path the extension check refuses gives the entry the error `{:external_metadata_failure, %{reason: :extension}}`
     in `Phoenix.Component.upload_errors/2`. Any other error, such as a disk that can't sign URLs, gives
@@ -453,10 +480,12 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       |> Keyword.put_new(:max_file_size, conf.max_file_size)
     end
 
-    # The meta of `external/2`, which LiveView keeps on the server, so the browser can't change the path. The browser
-    # has uploaded the file, so it's only checked. The signed URL bound its size, so a file over the limit can only
-    # come from something else writing to the path.
-    defp store(target, %{uploader: "Fil", path: path}, _entry, opts) do
+    # The meta of `external/2`, which LiveView keeps on the server, so the browser can't change the path or the time.
+    # The browser says it uploaded the file, so it's only checked. A modified client can report an upload it never
+    # made, so the file at the path may be one that was there before: a file older than the URL isn't this upload's,
+    # and neither is one over the size the URL was bound to. Both stay where they are, because they may be someone
+    # else's.
+    defp store(target, %{uploader: "Fil", path: path, signed_at: signed_at}, _entry, opts) do
       ref =
         case target do
           %Fil.Ref{disk: disk} ->
@@ -468,7 +497,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             |> Fil.ref(path)
         end
 
-      with {:ok, stat} <- Fil.stat(ref) do
+      with {:ok, stat} <- Fil.stat(ref),
+           :ok <- check_regular(ref, stat.type),
+           :ok <- check_uploaded(ref, stat.mtime, signed_at) do
         check_size(ref, stat.size, opts[:max_file_size])
       end
     end
@@ -490,8 +521,25 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
               "external uploads (external: in allow_upload/3) and custom writers leave no temporary file to store"
     end
 
+    # A directory at the path is no upload, and has no size to check.
+    defp check_regular(_ref, :regular), do: :ok
+
+    defp check_regular(ref, _type) do
+      {:error, %Fil.NotFoundError{reason: :eisdir, op: :stat, path: ref.path, disk: ref.disk}}
+    end
+
+    # A file written before the URL was signed, allowing for `@clock_skew`. Without an mtime there's nothing to check.
+    defp check_uploaded(ref, %DateTime{} = mtime, signed_at) do
+      if DateTime.to_unix(mtime) < signed_at - @clock_skew do
+        {:error, %Fil.AlreadyExistsError{reason: :before_upload, op: :stat, path: ref.path, disk: ref.disk}}
+      else
+        :ok
+      end
+    end
+
+    defp check_uploaded(_ref, nil, _signed_at), do: :ok
+
     defp check_size(ref, size, max_file_size) when is_integer(max_file_size) and size > max_file_size do
-      Fil.rm(ref)
       {:error, %Fil.InvalidRequestError{reason: :too_large, op: :stat, path: ref.path, disk: ref.disk}}
     end
 
@@ -503,6 +551,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     defp sign(target, entry, opts) do
       ref = build_ref(target, entry, opts[:path])
       content_type = MIME.from_path(ref.path)
+      signed_at = System.os_time(:second)
 
       signed =
         with :ok <- check_extension(ref, opts[:extensions], :signed_url) do
@@ -519,7 +568,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         if_none_match = if opts[:if_exists] == :error, do: [{"if-none-match", "*"}], else: []
         headers = Map.new([{"content-type", content_type} | if_none_match])
 
-        {:ok, %{uploader: "Fil", url: url, path: ref.path, headers: headers}}
+        {:ok, %{uploader: "Fil", url: url, path: ref.path, headers: headers, signed_at: signed_at}}
       end
     end
 

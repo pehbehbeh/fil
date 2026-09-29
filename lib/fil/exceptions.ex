@@ -3,7 +3,8 @@ defmodule Fil.NotFoundError do
   The file doesn't exist. Treat it as missing.
 
   Adapters return it for a missing file, a missing directory and a path that goes through a file (`report.txt/x`),
-  which doesn't exist on an object store either.
+  which doesn't exist on an object store either. `Fil.LiveView` returns it with `reason: :eisdir` when the path of a
+  direct upload is a directory.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> {:error, error} = Fil.read(disk, "nope.txt")
@@ -48,7 +49,8 @@ defmodule Fil.InvalidRequestError do
   that's too long, and content over the storage's size limit. Plugins return it for content they refuse, such as
   `Fil.Plugin.Thumbnails` for a file that isn't an image (`{:not_an_image, message}`). `Fil.LiveView` returns it with
   `reason: :extension` for an upload whose path has an extension the upload doesn't accept, before anything is
-  written. `Fil.Plug` answers an upload that fails with it with a `422`, or a `404` when the path is the problem.
+  written, and with `reason: :too_large` for a direct upload's file over the upload's `max_file_size`. `Fil.Plug`
+  answers an upload that fails with it with a `422`, or a `404` when the path is the problem.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> {:error, %Fil.InvalidRequestError{} = error} = Fil.read(disk, "../escape.txt")
@@ -69,6 +71,8 @@ defmodule Fil.AlreadyExistsError do
   A write, a copy or a move with `if_exists: :error` found a file already there. Read that file and decide again.
 
   For a copy or a move, `:path` is the destination, and neither file changed: a move leaves the source where it was.
+  `Fil.LiveView` returns it with `reason: :before_upload` when the file at the path of a direct upload is older than its
+  upload URL, so the upload didn't write it (see [Direct uploads](Fil.LiveView.html#module-direct-uploads)).
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> Fil.write!(disk, "once.txt", "first")

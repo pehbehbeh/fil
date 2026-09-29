@@ -371,7 +371,8 @@ defmodule Fil.LiveViewTest do
 
       assert {:ok, meta, _socket} = Fil.LiveView.external(disk).(entry, socket(accept: ~w(.png)))
 
-      assert %{uploader: "Fil", path: "0b2e8b8e.png", url: url} = meta
+      assert %{uploader: "Fil", path: "0b2e8b8e.png", url: url, signed_at: signed_at} = meta
+      assert_in_delta signed_at, System.os_time(:second), 5
       assert meta.headers == %{"content-type" => "image/png", "if-none-match" => "*"}
 
       %URI{path: path, query: query} = URI.parse(url)
@@ -423,8 +424,10 @@ defmodule Fil.LiveViewTest do
       # LiveView sends the meta to the browser, so it has a reason, and the message, which names the disk and the path,
       # goes to the log. A refused extension comes from the user's file and isn't logged.
       signed = Fil.LiveView.external(signing)
-      assert {{:error, meta, _socket}, ""} = with_log(fn -> signed.(entry, socket(accept: ~w(.png))) end)
+      assert {{:error, meta, _socket}, log} = with_log(fn -> signed.(entry, socket(accept: ~w(.png))) end)
       assert meta == %{reason: :extension}
+      # The log of an async test has the other tests' messages too, so only this one's are checked.
+      refute log =~ "Fil.LiveView.external/2"
 
       unsigned = Fil.LiveView.external(disk)
       png = %{entry | client_name: "a.png"}
@@ -493,22 +496,23 @@ defmodule Fil.LiveViewTest do
       assert Fil.read(disk, first.path) == {:ok, "png"}
     end
 
-    test "a file larger than max_file_size is deleted", %{disk: disk} do
+    test "a file larger than max_file_size is refused and kept", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
       view = mount_direct(disk, [accept: ~w(.png), max_file_size: 3], consume)
       meta = select_direct(view, %{name: "a.png", content: "png"})
 
-      # Something else wrote to the path, since the URL takes only 3 bytes.
+      # Something else wrote to the path, since the URL takes only 3 bytes. It may be someone else's file, so the
+      # consume leaves it alone.
       Fil.write!(disk, meta.path, "larger")
 
       assert {:error, %Fil.InvalidRequestError{reason: :too_large, op: :stat, path: path, disk: ^disk}} = submit(view)
       assert path == meta.path
-      refute Fil.exists?(disk, meta.path)
+      assert Fil.read(disk, meta.path) == {:ok, "larger"}
     end
 
     test "store_entry/4 checks the file with :max_file_size", %{disk: disk} do
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
-      meta = %{uploader: "Fil", path: "avatars/a.png", url: "http://localhost", headers: %{}}
+      meta = direct_meta("avatars/a.png")
       Fil.write!(disk, "avatars/a.png", "png")
 
       assert {:ok, %Fil.Ref{path: "avatars/a.png"}} = Fil.LiveView.store_entry(disk, meta, entry)
@@ -520,7 +524,52 @@ defmodule Fil.LiveViewTest do
       assert {:error, %Fil.InvalidRequestError{reason: :too_large}} =
                Fil.LiveView.store_entry(other, meta, entry, max_file_size: 2)
 
-      refute Fil.exists?(disk, "avatars/a.png")
+      assert Fil.exists?(disk, "avatars/a.png")
+    end
+
+    test "store_entry/4 refuses a file older than the upload URL", %{disk: disk} do
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
+      Fil.write!(disk, "a.png", "png")
+      now = System.os_time(:second)
+
+      # A URL signed within the allowance for clock differences takes the file, one signed later doesn't.
+      assert {:ok, %Fil.Ref{}} = Fil.LiveView.store_entry(disk, direct_meta("a.png", now + 20), entry)
+
+      assert {:error, %Fil.AlreadyExistsError{reason: :before_upload, op: :stat, path: "a.png", disk: ^disk}} =
+               Fil.LiveView.store_entry(disk, direct_meta("a.png", now + 60), entry)
+
+      assert Fil.read(disk, "a.png") == {:ok, "png"}
+    end
+
+    test "store_entry/4 refuses a directory", %{disk: disk} do
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
+      Fil.write!(disk, "avatars/a.png", "png")
+
+      for opts <- [[], [max_file_size: 3]] do
+        assert {:error, %Fil.NotFoundError{reason: :eisdir, op: :stat, path: "avatars"}} =
+                 Fil.LiveView.store_entry(disk, direct_meta("avatars"), entry, opts)
+      end
+
+      assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
+    end
+
+    @tag :tmp_dir
+    test "store_entry/4 refuses a file older than the upload URL on a local disk", %{tmp_dir: tmp_dir} do
+      disk = Fil.disk(adapter: Fil.Adapter.Local, root: tmp_dir)
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
+      Fil.write!(disk, "a.png", "png")
+
+      assert {:ok, %Fil.Ref{}} = Fil.LiveView.store_entry(disk, direct_meta("a.png"), entry)
+
+      # Someone else's file from an hour ago, at a path a modified client claims it uploaded to.
+      tmp_dir
+      |> Path.join("a.png")
+      |> File.touch!(System.os_time(:second) - 3600)
+
+      assert {:error, %Fil.AlreadyExistsError{reason: :before_upload}} =
+               Fil.LiveView.store_entry(disk, direct_meta("a.png"), entry)
+
+      assert Fil.read(disk, "a.png") == {:ok, "png"}
     end
 
     test "store_entry/4 stats the file on S3" do
@@ -534,19 +583,21 @@ defmodule Fil.LiveViewTest do
         )
 
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
-      meta = %{uploader: "Fil", path: "avatars/a.png"}
+      meta = direct_meta("avatars/a.png")
       test = self()
 
       Req.Test.expect(__MODULE__, fn conn ->
         send(test, {:request, conn.method, conn.request_path})
-
-        conn
-        |> Plug.Conn.put_resp_header("content-length", "3")
-        |> Plug.Conn.send_resp(200, "")
+        s3_head(conn, DateTime.utc_now())
       end)
 
       assert {:ok, %Fil.Ref{path: "avatars/a.png"}} = Fil.LiveView.store_entry(disk, meta, entry, max_file_size: 3)
       assert_received {:request, "HEAD", "/avatars/a.png"}
+
+      # An object from an hour before the URL.
+      Req.Test.expect(__MODULE__, &s3_head(&1, ~U[2026-09-30 10:00:00Z]))
+      old = direct_meta("avatars/a.png", DateTime.to_unix(~U[2026-09-30 11:00:00Z]))
+      assert {:error, %Fil.AlreadyExistsError{reason: :before_upload}} = Fil.LiveView.store_entry(disk, old, entry)
 
       Req.Test.expect(__MODULE__, 2, fn
         %{method: "HEAD"} = conn -> Plug.Conn.send_resp(conn, 404, "")
@@ -586,6 +637,19 @@ defmodule Fil.LiveViewTest do
 
       assert_raise NimbleOptions.ValidationError, fn -> Fil.LiveView.entry_ref(disk, entry, extensions: ".png") end
     end
+  end
+
+  # The meta `external/2` returns for a direct upload to `path`, signed at `signed_at` (Unix seconds).
+  defp direct_meta(path, signed_at \\ System.os_time(:second)) do
+    %{uploader: "Fil", path: path, url: "http://localhost/storage/#{path}", headers: %{}, signed_at: signed_at}
+  end
+
+  # Answers a HEAD for an object of 3 bytes last modified at `datetime`.
+  defp s3_head(conn, datetime) do
+    conn
+    |> Plug.Conn.put_resp_header("content-length", "3")
+    |> Plug.Conn.put_resp_header("last-modified", Calendar.strftime(datetime, "%a, %d %b %Y %H:%M:%S GMT"))
+    |> Plug.Conn.send_resp(200, "")
   end
 
   # A socket with the upload `:avatar`, for calling the function of `external/2` without a LiveView.
