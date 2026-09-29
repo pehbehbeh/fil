@@ -48,11 +48,13 @@ The Hex package is `fil`.
   Integrations in the docs). `Fil.Kino` is the Livebook integration, compiled only when the optional Kino dependency is
   there, with its `@moduledoc false` modules under `Fil.Kino.*`. Their JS and CSS share `lib/fil/kino/assets/`, with
   an entrypoint per module (`use Kino.JS, entrypoint: "browser.js"`) and Livebook's palette and fonts in `theme.css`,
-  which every widget imports first. Integrations take their disk as a `disk:` option typed and documented by
-  `Fil.Support.DiskOption` (a disk, a 0-arity function or an MFA) and turn it into a disk with `Fil.Disk.resolve/1`
-  each time they use it. Options that end up in compiled code, such as a plug's, take a function only as a capture
-  with its module (`:remote_fun`), because they can't hold an anonymous function. Shared internal helpers go in
-  `Fil.Support.*` (`@moduledoc false`).
+  which every widget imports first. `Fil.LiveView` is the LiveView integration, compiled only when the optional
+  `phoenix_live_view` dependency is there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an MFA
+  and turn it into a disk with `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented by
+  `Fil.Support.DiskOption` (`Fil.Plug`), or as an argument that may also be a `%Fil.Ref{}` for a directory
+  (`Fil.LiveView`). Options that end up in compiled code, such as a plug's, take a function only as a capture with its
+  module (`:remote_fun`), because they can't hold an anonymous function. Shared internal helpers go in `Fil.Support.*`
+  (`@moduledoc false`).
 - **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
   `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
   the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never
@@ -193,6 +195,11 @@ list).
 - Doctests that write files use `Fil.disk(adapter: Fil.Adapter.Memory)` (a second disk gets another `root:`).
   `Fil.DoctestTest` checks out a store in its setup, so examples need no setup lines. Examples that only build a disk
   use `Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")`.
+- `Fil.LiveView` tests mount `Fil.LiveViewTest.UploadLive` (test/support) with `live_isolated/3` on the test endpoint
+  that `test_helper.exs` configures and starts with its PubSub, then upload with `file_input/4` and `render_upload/3`.
+  The LiveView's session is signed and refuses functions, so the test passes an agent with the upload options and the
+  function the form's submit calls. The LiveView process finds the test's memory store through `$callers`, so the tests
+  need no `allow/2` and stay async.
 
 ## Etiquette
 

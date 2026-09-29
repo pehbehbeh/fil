@@ -79,7 +79,7 @@ defmodule Fil.MixProject do
       favicon: "assets/icon.svg",
       source_ref: "v#{@version}",
       extra_section: "Guides",
-      extras: ["guides/installation.md", "guides/plugins.md", "CHANGELOG.md"],
+      extras: ["guides/installation.md", "guides/plugins.md", "guides/phoenix.md", "CHANGELOG.md"],
       groups_for_docs: [
         Building: &(&1[:section] == :building),
         Operations: &(&1[:section] == :operations),
@@ -88,7 +88,7 @@ defmodule Fil.MixProject do
       groups_for_modules: [
         Adapters: ~r/^Fil\.Adapter(\.\w+)?$/,
         Plugins: ~r/^Fil\.Plugin\./,
-        Integrations: [Fil.Plug, Fil.Kino],
+        Integrations: [Fil.Plug, Fil.Kino, Fil.LiveView],
         Errors: ~r/^Fil\.\w+Error$/
       ]
     ]

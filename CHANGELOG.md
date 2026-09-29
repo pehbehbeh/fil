@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Fil.LiveView` stores LiveView uploads on a disk: `consume_uploaded_entries/4` streams each file into `Fil.write/4` at
+  a path you choose, and never replaces a file unless you pass `if_exists: :overwrite`. If a write fails, it deletes the
+  files it wrote and keeps the entries, so the form can be submitted again. It needs Phoenix LiveView 1.2 and Phoenix
+  1.8, both optional dependencies. The [Phoenix guide](https://fil.hexdocs.pm/phoenix.html) walks through a form.
 - `Fil.Disk.resolve/1` returns the disk for a disk, a 0-arity function or an MFA. `Fil.Plug`'s `disk:` goes through it
   and raises an `ArgumentError` when its function returns something other than a disk. It takes a function only as a
   capture such as `&MyApp.Storage.uploads/0`, because plug options can't hold an anonymous function.
