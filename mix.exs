@@ -105,7 +105,7 @@ defmodule Fil.MixProject do
         Building: &(&1[:section] == :building),
         Operations: &(&1[:section] == :operations),
         "Bang variants": &(&1[:section] == :bang),
-        Components: &(&1[:section] == :components)
+        "Upload field": &(&1[:section] == :upload_field)
       ],
       groups_for_modules: [
         Adapters: ~r/^Fil\.Adapter(\.\w+)?$/,

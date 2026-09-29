@@ -29,26 +29,19 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       message_class: "w-full text-sm text-error"
     }
 
+    # The types a browser can show as an image preview.
+    @image_types ~w(image/png image/jpeg image/gif image/webp image/avif image/svg+xml image/bmp)
+
     @doc false
     @spec default_class(atom()) :: String.t()
     def default_class(name), do: Map.fetch!(@default_classes, name)
 
     @doc false
     def render(assigns) do
-      %{upload: upload, existing: existing} = assigns
-      translate = assigns.translate || (&interpolate/1)
-      messages = messages(assigns, translate)
-
       assigns =
-        assign(assigns,
-          translate: translate,
-          files: files(upload, existing),
-          messages: messages,
-          invalid?: upload.errors != [] or messages != [],
-          errors_id: "#{upload.ref}-errors",
-          hint_text: hint(assigns.hint, translate),
-          classes: Map.new(@default_classes, fn {name, default} -> {name, assigns[name] || default} end)
-        )
+        assigns
+        |> assign_rows()
+        |> assign_descriptions()
 
       ~H"""
       <div id={@id} class={@classes.class}>
@@ -60,79 +53,72 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
           <span :if={@label} class={@classes.label_class}>{@label}</span>
           <.live_file_input
             upload={@upload}
-            required={@required}
-            aria-describedby={@errors_id}
+            required={@required?}
+            aria-describedby={@describedby}
             aria-invalid={@invalid? && "true"}
             class={[@classes.input_class, @invalid? && @classes.error_class]}
           />
-          <span :if={@hint_text} class={@classes.hint_class}>{@hint_text}</span>
+          <span :if={@hint_text} id={@hint_id} aria-hidden="true" class={@classes.hint_class}>{@hint_text}</span>
         </label>
-        <ul :if={@files != [] or @upload.entries != []} class={@classes.list_class}>
-          <li :for={ref <- @files} class={@classes.entry_class}>
+        <ul :if={@files != [] or @entries != []} class={@classes.list_class}>
+          <li :for={row <- @files} class={@classes.entry_class}>
             <div class="flex min-w-0 flex-1 items-center gap-3">
               <%= if @file != [] do %>
-                {render_slot(@file, ref)}
+                {render_slot(@file, row.ref)}
               <% else %>
-                <span class="truncate">{Path.basename(ref.path)}</span>
+                <span class="truncate">{row.name}</span>
               <% end %>
             </div>
             <button
               type="button"
               phx-click={@remove}
               phx-value-upload={@upload.name}
-              phx-value-path={ref.path}
+              phx-value-path={row.ref.path}
               phx-target={@target}
-              aria-label={text(@translate, "Remove %{name}", name: Path.basename(ref.path))}
+              aria-label={row.remove_label}
               class={@classes.button_class}
             >
               {text(@translate, "Remove")}
             </button>
           </li>
-          <li :for={entry <- @upload.entries} class={@classes.entry_class}>
+          <li :for={row <- @entries} class={@classes.entry_class}>
             <div class="flex min-w-0 flex-1 items-center gap-3">
               <%= if @entry != [] do %>
-                {render_slot(@entry, entry)}
+                {render_slot(@entry, row.entry)}
               <% else %>
                 <.live_img_preview
-                  :if={image?(entry)}
-                  entry={entry}
+                  :if={row.preview?}
+                  entry={row.entry}
                   width="48"
                   height="48"
                   alt=""
                   class="size-12 rounded object-cover"
                 />
-                <span class="truncate">{entry.client_name}</span>
-                <span :if={entry.client_size} class="shrink-0 text-base-content/70">
-                  {Fil.Support.Size.format(entry.client_size)}
-                </span>
+                <span class="truncate">{row.entry.client_name}</span>
+                <span :if={row.size} class="shrink-0 opacity-70">{row.size}</span>
               <% end %>
             </div>
             <progress
-              :if={entry.valid?}
-              value={entry.progress}
+              :if={row.entry.valid? and row.errors == []}
+              value={row.entry.progress}
               max="100"
-              aria-label={text(@translate, "Upload progress of %{name}", name: entry.client_name)}
+              aria-label={row.progress_label}
               class={@classes.progress_class}
             >
-              {entry.progress}%
+              {row.entry.progress}%
             </progress>
             <button
               type="button"
               phx-click={@cancel}
               phx-value-upload={@upload.name}
-              phx-value-ref={entry.ref}
+              phx-value-ref={row.entry.ref}
               phx-target={@target}
-              aria-label={text(@translate, "Cancel upload of %{name}", name: entry.client_name)}
+              aria-label={row.cancel_label}
               class={@classes.button_class}
             >
               {text(@translate, "Cancel")}
             </button>
-            <p
-              :for={error <- upload_errors(@upload, entry)}
-              class={@classes.message_class}
-            >
-              {message(error, @translate, @upload)}
-            </p>
+            <p :for={{id, message} <- row.errors} id={id} role="alert" class={@classes.message_class}>{message}</p>
           </li>
         </ul>
         <div id={@errors_id} aria-live="polite">
@@ -142,10 +128,73 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       """
     end
 
-    # A single upload replaces the file the record has, so that file is hidden while an entry is there.
-    defp files(%UploadConfig{max_entries: 1, entries: [_entry | _rest]}, _existing), do: []
-    defp files(_upload, nil), do: []
+    defp assign_rows(assigns) do
+      %{upload: upload, existing: existing} = assigns
+      translate = assigns.translate || (&interpolate/1)
+      files = files(upload, existing)
+
+      assign(assigns,
+        translate: translate,
+        files: Enum.map(files, &file_row(&1, translate)),
+        entries: Enum.map(upload.entries, &entry_row(&1, upload, translate)),
+        required?: assigns.required and files == [],
+        classes: Map.new(@default_classes, fn {name, default} -> {name, assigns[name] || default} end)
+      )
+    end
+
+    # The hint and every error get ids, so the file input can point at them with `aria-describedby`. The hint is
+    # hidden from the label's name, which would include it otherwise.
+    defp assign_descriptions(assigns) do
+      %{upload: upload, translate: translate, entries: entries} = assigns
+      messages = messages(assigns, translate)
+      hint_text = hint(assigns.hint, translate)
+      hint_id = hint_text && "#{upload.ref}-hint"
+      errors_id = "#{upload.ref}-errors"
+      entry_error_ids = for entry <- entries, {id, _message} <- entry.errors, do: id
+
+      assign(assigns,
+        messages: messages,
+        invalid?: upload.errors != [] or messages != [],
+        errors_id: errors_id,
+        hint_text: hint_text,
+        hint_id: hint_id,
+        describedby: describedby([hint_id, errors_id | entry_error_ids])
+      )
+    end
+
+    defp describedby(ids) do
+      ids
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" ")
+    end
+
+    defp file_row(ref, translate) do
+      name = Path.basename(ref.path)
+      %{ref: ref, name: name, remove_label: text(translate, "Remove %{name}", name: name)}
+    end
+
+    defp entry_row(entry, upload, translate) do
+      errors =
+        upload
+        |> upload_errors(entry)
+        |> Enum.with_index(fn error, index ->
+          {"#{upload.ref}-#{entry.ref}-error-#{index}", message(error, translate, upload)}
+        end)
+
+      %{
+        entry: entry,
+        errors: errors,
+        preview?: preview?(entry),
+        size: entry.client_size && Fil.Support.Size.format(entry.client_size),
+        progress_label: text(translate, "Upload progress of %{name}", name: entry.client_name),
+        cancel_label: text(translate, "Cancel upload of %{name}", name: entry.client_name)
+      }
+    end
+
+    # A single ref is the file of a single-file field, which saving replaces, so it's hidden while a file is picked.
+    defp files(%UploadConfig{entries: [_entry | _rest]}, %Fil.Ref{}), do: []
     defp files(_upload, %Fil.Ref{} = ref), do: [ref]
+    defp files(_upload, nil), do: []
     defp files(_upload, refs) when is_list(refs), do: refs
 
     defp hint(false, _translate), do: nil
@@ -181,9 +230,12 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     defp text(translate, msg, opts \\ []), do: translate.({msg, opts})
 
-    # The browser sends the type, which is good enough to decide on a preview.
-    defp image?(%UploadEntry{client_type: "image/" <> _subtype}), do: true
-    defp image?(_entry), do: false
+    # The browser sends the type, which is good enough to decide on a preview. An entry LiveView refused (too large,
+    # not accepted) and an empty file get none.
+    defp preview?(%UploadEntry{valid?: true, client_type: type, client_size: size}) when is_integer(size) and size > 0,
+      do: type in @image_types
+
+    defp preview?(_entry), do: false
 
     # What Phoenix's generator writes into `translate_error/1` for apps without Gettext.
     defp interpolate({msg, opts}) do
@@ -207,6 +259,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       do: {"You can upload at most %{count} file(s)", count: max}
 
     def error(:too_many_files, _upload), do: {"Too many files", []}
+    # A direct upload whose file is older than its URL: the file isn't this upload's.
+    def error(%Fil.AlreadyExistsError{reason: :before_upload}, _upload), do: failed()
     def error(%Fil.AlreadyExistsError{}, _upload), do: {"A file with this name already exists", []}
     def error(:external_client_failure, _upload), do: failed()
     def error({:writer_failure, _reason}, _upload), do: failed()

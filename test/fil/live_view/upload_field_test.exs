@@ -126,7 +126,8 @@ defmodule Fil.LiveView.UploadFieldTest do
     test "points the file input at the errors and marks it invalid while there are errors" do
       html = render_field(upload: upload())
 
-      assert attribute(html, "input", "aria-describedby") == ["phx-photos-errors"]
+      assert attribute(html, "input", "aria-describedby") == ["phx-photos-hint phx-photos-errors"]
+      assert attribute(html, "#phx-photos-hint", "aria-hidden") == ["true"]
       assert attribute(html, "#phx-photos-errors", "aria-live") == ["polite"]
       assert attribute(html, "input", "aria-invalid") == []
       assert attribute(html, "input", "required") == []
@@ -138,14 +139,38 @@ defmodule Fil.LiveView.UploadFieldTest do
       assert classes(invalid, "input") == "file-input w-full file-input-error"
     end
 
-    test "renders a row for each entry, with a preview only for images" do
-      entries = [entry(ref: "0"), entry(ref: "1", client_name: "cv.pdf", client_type: "application/pdf", progress: 0)]
+    test "points the file input at the errors of its entries, which are announced" do
+      entries = [entry(ref: "0", valid?: false), entry(ref: "1", valid?: false, client_name: "b.png")]
+      errors = [{"0", :too_large}, {"1", :not_accepted}, {"1", :too_large}]
+      html = render_field(upload: upload(entries: entries, errors: errors), hint: false)
+
+      ids = ["phx-photos-0-error-0", "phx-photos-1-error-0", "phx-photos-1-error-1"]
+      assert attribute(html, "input", "aria-describedby") == [Enum.join(["phx-photos-errors" | ids], " ")]
+      assert attribute(html, "input", "aria-invalid") == ["true"]
+      assert attribute(html, "li p", "id") == ids
+      assert attribute(html, "li p", "role") == ["alert", "alert", "alert"]
+    end
+
+    test "requires a file only while there's no stored file" do
+      assert render_field(required: true) |> attribute("input", "required") == [""]
+      assert render_field(required: true, existing: [stored("a.png")]) |> attribute("input", "required") == []
+    end
+
+    test "renders a row for each entry, with a preview only for valid images a browser shows" do
+      entries = [
+        entry(ref: "0"),
+        entry(ref: "1", client_name: "cv.pdf", client_type: "application/pdf", progress: 0),
+        entry(ref: "2", client_name: "raw.tiff", client_type: "image/tiff"),
+        entry(ref: "3", client_name: "empty.png", client_size: 0),
+        entry(ref: "4", client_name: "huge.png", valid?: false)
+      ]
+
       html = render_field(upload: upload(entries: entries))
 
-      assert texts(html, "li span.truncate") == ["cat.png", "cv.pdf"]
-      assert texts(html, "li span.shrink-0") == ["1.5 KB", "1.5 KB"]
-      assert attribute(html, "progress", "value") == ["49", "0"]
-      assert attribute(html, "progress", "aria-label") == ["Upload progress of cat.png", "Upload progress of cv.pdf"]
+      assert texts(html, "li span.truncate") == ["cat.png", "cv.pdf", "raw.tiff", "empty.png", "huge.png"]
+      assert texts(html, "li span.shrink-0") == ["1.5 KB", "1.5 KB", "1.5 KB", "0 B", "1.5 KB"]
+      assert attribute(html, "progress", "value") == ["49", "0", "49", "49"]
+      assert attribute(html, "progress", "aria-label") |> hd() == "Upload progress of cat.png"
       assert attribute(html, "li img", "data-phx-entry-ref") == ["0"]
       assert attribute(html, "li img", "alt") == [""]
     end
@@ -184,7 +209,7 @@ defmodule Fil.LiveView.UploadFieldTest do
       assert render_field(existing: nil) |> count("li") == 0
     end
 
-    test "hides the existing file of a single upload while an entry is there" do
+    test "hides a single existing ref while an entry is there, because saving replaces it" do
       avatar = stored("avatar.png")
 
       without_entry = render_field(upload: upload(max_entries: 1), existing: avatar)
@@ -193,9 +218,11 @@ defmodule Fil.LiveView.UploadFieldTest do
 
       with_entry = render_field(upload: upload(max_entries: 1, entries: [entry([])]), existing: avatar)
       assert texts(with_entry, "button") == ["Cancel"]
+    end
 
-      several = render_field(upload: upload(entries: [entry([])]), existing: avatar)
-      assert texts(several, "button") == ["Remove", "Cancel"]
+    test "keeps a list of existing refs while an entry is there, also with max_entries: 1" do
+      html = render_field(upload: upload(max_entries: 1, entries: [entry([])]), existing: [stored("a.png")])
+      assert texts(html, "button") == ["Remove", "Cancel"]
     end
 
     test "replaces the content of rows with the slots, and keeps the buttons and the progress" do
@@ -235,7 +262,11 @@ defmodule Fil.LiveView.UploadFieldTest do
       html =
         render_field(
           id: "field",
-          upload: upload(entries: [entry([])], errors: [{"0", :too_large}, {"phx-photos", :too_many_files}]),
+          upload:
+            upload(
+              entries: [entry([]), entry(ref: "1", valid?: false)],
+              errors: [{"1", :too_large}, {"phx-photos", :too_many_files}]
+            ),
           label: "Photos",
           class: "root",
           label_class: "label-text",
@@ -255,9 +286,9 @@ defmodule Fil.LiveView.UploadFieldTest do
       assert attribute(html, "label > span", "class") == ["label-text", "hint"]
       assert classes(html, "input") == "input invalid"
       assert classes(html, "ul") == "list"
-      assert classes(html, "li") == "entry"
+      assert attribute(html, "li", "class") == ["entry", "entry"]
       assert classes(html, "progress") == "bar"
-      assert classes(html, "button") == "button"
+      assert attribute(html, "button", "class") == ["button", "button"]
       assert attribute(html, "p", "class") == ["error", "error"]
     end
 
@@ -365,6 +396,45 @@ defmodule Fil.LiveView.UploadFieldTest do
       assert view
              |> view_html()
              |> texts("li span.truncate") == ["b.png"]
+    end
+
+    test "shows the progress of a direct upload", %{disk: disk} do
+      signing = Fil.Plugin.URL.attach(disk, base_url: "http://localhost/storage", secret: "secret")
+      view = mount(accept: ~w(.png), external: Fil.LiveView.external(signing))
+      input = file_input(view, "#form", :photos, [png("a.png")])
+
+      # `render_upload/3` reports progress as the uploader does.
+      render_upload(input, "a.png", 49)
+
+      assert view
+             |> view_html()
+             |> attribute("progress", "value") == ["49"]
+    end
+
+    test "shows a direct upload whose extension external/2 refuses", %{disk: disk} do
+      signing = Fil.Plugin.URL.attach(disk, base_url: "http://localhost/storage", secret: "secret")
+      view = mount(accept: ~w(.png), external: Fil.LiveView.external(signing))
+      input = file_input(view, "#form", :photos, [png("evil.html")])
+
+      assert {:error, _errors} = render_upload(input, "evil.html")
+
+      html = view_html(view)
+      assert texts(html, "li p") == ["This type of file isn't accepted"]
+      assert count(html, "progress") == 0
+    end
+
+    test "shows a direct upload that couldn't be started", %{disk: disk} do
+      # A memory disk without `Fil.Plugin.URL` can't sign an upload URL.
+      view = mount(accept: ~w(.png), external: Fil.LiveView.external(disk))
+      input = file_input(view, "#form", :photos, [png("a.png")])
+
+      log = ExUnit.CaptureLog.capture_log(fn -> render_upload(input, "a.png") end)
+
+      assert log =~ "Fil.LiveView.external/2"
+
+      assert view
+             |> view_html()
+             |> texts("li p") == ["The upload couldn't be started"]
     end
 
     test "shows a file that's too large" do
