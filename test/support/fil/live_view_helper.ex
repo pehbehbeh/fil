@@ -115,15 +115,21 @@ defmodule Fil.LiveViewHelper do
   @doc "Sends the upload the way the browser does, with the meta's headers and the length of the body."
   @spec put_direct(map(), binary(), Fil.Disk.t()) :: Plug.Conn.t()
   def put_direct(meta, body, disk) do
-    uri = URI.parse(meta.url)
-    headers = Map.put(meta.headers, "content-length", Integer.to_string(byte_size(body)))
+    length =
+      body
+      |> byte_size()
+      |> Integer.to_string()
 
-    conn =
-      Enum.reduce(headers, Plug.Test.conn(:put, uri.path <> "?" <> uri.query, body), fn {name, value}, conn ->
-        Plug.Conn.put_req_header(conn, name, value)
-      end)
+    headers =
+      meta.headers
+      |> Map.put("content-length", length)
+      |> Map.to_list()
 
-    Fil.Plug.call(conn, Fil.Plug.init(at: "/storage", disk: disk))
+    opts = Fil.Plug.init(at: "/storage", disk: disk)
+
+    meta.url
+    |> Fil.PlugHelper.put(body, headers)
+    |> Fil.Plug.call(opts)
   end
 
   defp file(file), do: Map.put_new(file, :type, MIME.from_path(file.name))

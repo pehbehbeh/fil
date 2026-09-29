@@ -40,11 +40,12 @@ defmodule Fil.Adapter do
   files as they were.
 
   A copy or a move onto its own path never loses the file. The adapter leaves it where it is, fails with
-  `Fil.AlreadyExistsError` when the call is exclusive, or refuses the call with `Fil.InvalidRequestError`
-  (`Fil.Adapter.S3`). A copy keeps the content type, where the storage keeps one.
+  `Fil.AlreadyExistsError` when the call is exclusive, or refuses the call with `Fil.InvalidRequestError`. A copy keeps
+  the content type, where the storage keeps one.
 
-  The `:etag` that `c:stat/3` returns changes when a write changes the content. It can be weak, like the
-  `"size-mtime"` of `Fil.Adapter.Local`, which misses a change that keeps the size within the same second.
+  The `:etag` that `c:stat/3` returns changes when a write changes the size of the file. A weak etag may miss other
+  changes. Which result an adapter gives for a copy onto itself, and what its etag covers, is under Operations on the
+  adapter's page.
 
   Where an adapter returns `:ok`, the `Fil` function returns `{:ok, %Fil.Ref{}}`, and `Fil.ls/2` turns the pairs
   into refs.

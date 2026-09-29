@@ -391,7 +391,7 @@ defmodule Fil.LiveViewTest do
   end
 end
 
-defmodule Fil.LiveViewTest.Setup do
+defmodule Fil.LiveViewTest.OneDisk do
   alias Fil.Plugin.URL
   alias Phoenix.LiveView.UploadEntry
 

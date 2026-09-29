@@ -178,7 +178,7 @@ defmodule Fil.Adapter.LocalTest do
         end)
 
       task = Task.async(fn -> Fil.write(disk, "atomic.txt", stream) end)
-      assert_receive {:writing, writer}
+      assert_receive {:writing, writer}, 1_000
 
       assert Fil.read(disk, "atomic.txt") == {:ok, "old"}
       assert {:ok, %Fil.Stat{size: 3}} = Fil.stat(disk, "atomic.txt")

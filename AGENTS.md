@@ -181,20 +181,20 @@ list).
 
 ## Testing conventions
 
-- `Fil.AdapterCase` (test/support) is the shared conformance suite, and every adapter runs it. New behaviour gets a
-  test there, not a copy per adapter. Each test in it needs its sentence in the `Fil.Adapter` moduledoc (the contract,
-  or the options `File` has no equivalent for), because third-party adapters will be held to the suite once it's
-  public. A result that differs between adapters on purpose (S3 refuses what Local allows) is asserted as the set of
-  allowed results, and the exact result stays in the adapter's own test. Tests of signed URLs send their requests with
-  the case's `fil_request/4`: through `Fil.Plug` by default (disks with `Fil.Plugin.URL`), with Req to RustFS in
-  `Fil.Adapter.S3IntegrationTest`. They assert a refusal as a status in the 4xx range, because S3 and `Fil.Plug` answer
-  with different ones; `plug_test.exs` and `s3_integration_test.exs` keep exact statuses where they matter (409 and
-  412 for a second PUT, 403 for a changed expiry or signature).
+- `Fil.AdapterCase` (test/support) is the shared conformance suite, and every adapter runs it. New behaviour gets a test
+  there, not a copy per adapter. A new test in it needs its sentence in `Fil.Adapter` (the moduledoc or the callback's
+  doc), because third-party adapters will be held to the suite once it's public. A result that differs between adapters
+  on purpose (S3 refuses what Local allows) is asserted as the set of allowed results, and the exact result stays in the
+  adapter's own test. Tests of signed URLs send their requests with the case's `fil_request/4`: through `Fil.Plug` by
+  default (disks with `Fil.Plugin.URL`), with Req to RustFS in `Fil.Adapter.S3IntegrationTest`. They assert a refusal as
+  a status in the 4xx range, because S3 and `Fil.Plug` answer with different ones. `plug_test.exs` and
+  `s3_integration_test.exs` keep the exact statuses: `Fil.Plug`'s 403 for a changed path, method, expiry, signature or
+  query value, and 409 (`Fil.Plug`) or 412 (S3) for a second PUT.
 - Feature tests whose subject is the storage path (`Fil.Plug`, `Fil.LiveView`) run on Local and Memory with
   `use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()`, `@moduletag :tmp_dir` and
-  `Fil.DiskHelper.disk/2` in `setup` (never `setup_all`: a memory store belongs to the test process). Tests that need
+  `Fil.DiskHelper.disk/1` in `setup` (never `setup_all`: a memory store belongs to the test process). Tests that need
   one kind of disk (stored content types, S3 stubs, filesystem checks, option errors) go into a second module in the
-  same file, such as `Fil.PlugTest.Setup`, with shared helpers in `test/support` (`Fil.PlugHelper`). Code above the
+  same file, such as `Fil.PlugTest.OneDisk`, with shared helpers in `test/support` (`Fil.PlugHelper`). Code above the
   adapter (plugins, telemetry, Kino, thumbnails, Ecto, doctests) stays on one adapter: a second run covers nothing new.
   Parameters aren't tags, so `--only` can't select one and a tag applies to every parameter. `file:line` runs a test on
   both adapters, a failure prints `Parameters: %{adapter: ...}` under the test, and `--slowest` lists the test twice

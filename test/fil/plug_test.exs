@@ -84,10 +84,15 @@ defmodule Fil.PlugTest do
       refute Fil.exists?(disk, "a.png")
     end
 
-    test "a changed expiry or a missing signature is rejected", %{disk: disk} do
+    test "a changed path, method or expiry, or a missing signature, is a 403", %{disk: disk} do
       {:ok, _} = Fil.write(disk, "a.txt", "a")
+      {:ok, _} = Fil.write(disk, "b.txt", "b")
       {:ok, url} = Fil.signed_url(disk, "a.txt")
+      {:ok, new_url} = Fil.signed_url(disk, "new.txt")
 
+      assert request(:get, String.replace(url, "a.txt", "b.txt"), disk).status == 403
+      assert request(:put, new_url, disk, "nope").status == 403
+      refute Fil.exists?(disk, "new.txt")
       assert request(:get, String.replace(url, ~r/expires=\d+/, "expires=9999999999"), disk).status == 403
       assert request(:get, String.replace(url, ~r/&signature=.*/, ""), disk).status == 403
     end
@@ -125,11 +130,12 @@ defmodule Fil.PlugTest do
       assert request(:get, String.replace(url, "disposition=inline", "disposition[]=inline"), disk).status == 403
     end
 
-    test "unsigned or repeated query parameters are rejected", %{disk: disk} do
+    test "changed, unsigned or repeated query parameters are a 403", %{disk: disk} do
       {:ok, _} = Fil.write(disk, "index.html", "<html>")
       {:ok, plain} = Fil.signed_url(disk, "index.html")
       {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42"}])
 
+      assert request(:get, String.replace(url, "trackingInfo=7-42", "trackingInfo=8-42"), disk).status == 403
       assert request(:get, String.replace(url, "&signature", "&trackingInfo=7-42&signature"), disk).status == 403
       assert request(:get, String.replace(plain, "&signature", "&v=2&signature"), disk).status == 403
       assert request(:get, String.replace(plain, "expires=", "expires=1&expires="), disk).status == 403
@@ -405,7 +411,7 @@ defmodule Fil.PlugTest do
   end
 end
 
-defmodule Fil.PlugTest.Setup do
+defmodule Fil.PlugTest.OneDisk do
   alias Fil.Plugin.URL
 
   use ExUnit.Case, async: true

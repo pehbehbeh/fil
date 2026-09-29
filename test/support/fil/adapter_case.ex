@@ -40,6 +40,9 @@ defmodule Fil.AdapterCase do
   The suite is internal to `Fil` for now. Once it's public, third-party adapters can run it to show that they follow the
   contract.
 
+  TODO before it's public: `plug_request/4` depends on `Plug.Test`, `Fil.Plug` and the internal
+  `Fil.Plugin.URL.base_url/1`.
+
   ## Options
 
   #{NimbleOptions.docs(@schema)}
@@ -843,11 +846,11 @@ defmodule Fil.AdapterCase do
         assert {:ok, _} = Fil.write(disk, "a.txt", "hello", checksum: :sha256, content_type: "text/plain")
         assert {:ok, _} = Fil.cp(disk, "a.txt", "b.txt")
 
-        assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}, content_type: content_type}} =
-                 Fil.stat(disk, "b.txt", checksum: :sha256)
+        assert {:ok, source} = Fil.stat(disk, "a.txt")
+        assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}} = copy} = Fil.stat(disk, "b.txt", checksum: :sha256)
 
-        # Where the storage keeps a content type.
-        assert content_type in ["text/plain", nil]
+        # `nil` on both where the storage keeps no content type.
+        assert copy.content_type == source.content_type
         assert Fil.read(disk, "b.txt", verify_checksum: true) == {:ok, "hello"}
       end
 
