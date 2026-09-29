@@ -8,9 +8,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                 Gets the `Phoenix.LiveView.UploadEntry` and returns the path of the file, relative to the target.
                 The path may contain directories. It has to be the same each time for the same entry, because
                 `entry_ref/3` and the write call it separately, so build it from `entry.uuid` (as `filename/1` does)
-                and the socket's assigns, not from the time or a random value. `entry.client_name`, `client_type` and
-                `client_size` come from the browser and can be anything. A result that isn't a string raises
-                `ArgumentError`.
+                and the socket's assigns, not from the time or a random value. `entry.client_name`,
+                `client_relative_path`, `client_type` and `client_size` come from the browser and can be anything. A
+                result that isn't a string raises `ArgumentError`.
                 """
               ],
               extensions: [
@@ -18,8 +18,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                 doc: """
                 The extensions the path may end with, such as `[".jpg", ".png"]`. They're compared with the path
                 `:path` returned, in lowercase, before anything is written. A path with another extension, or without
-                one, gives a `Fil.InvalidRequestError` with `reason: :extension`. Without this option, the consume
-                functions take the extensions in the upload's `accept:` list, and `store_entry/4` checks none.
+                one, gives a `Fil.InvalidRequestError` with `reason: :extension`, and an empty list refuses every file.
+                Without this option, the consume functions take the extensions in the upload's `accept:` list, and
+                `store_entry/4` checks none.
                 """
               ],
               if_exists: [
@@ -44,19 +45,31 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
           case Fil.LiveView.consume_uploaded_entries(socket, :avatar, &MyApp.Storage.uploads/0,
                  path: &"avatars/\#{user.id}/\#{Fil.LiveView.filename(&1)}"
                ) do
-            {:ok, [avatar]} -> {:noreply, save_avatar(socket, avatar.path)}
-            {:ok, []} -> {:noreply, socket}
-            {:error, error} -> {:noreply, put_flash(socket, :error, Exception.message(error))}
+            {:ok, [avatar]} ->
+              {:noreply, save_avatar(socket, avatar.path)}
+
+            {:ok, []} ->
+              {:noreply, socket}
+
+            {:error, %Fil.InvalidRequestError{reason: :extension}} ->
+              {:noreply, put_flash(socket, :error, "Only .jpg and .png files can be uploaded.")}
+
+            {:error, error} ->
+              Logger.error("Avatar upload failed: " <> Exception.message(error))
+              {:noreply, put_flash(socket, :error, "The upload failed. Please try again.")}
           end
         end
 
     Each file is streamed from LiveView's temporary file into `Fil.write/4`, and the result is a list of `Fil.Ref`
     structs in the order of the file input. The [Phoenix guide](phoenix.md) walks through the whole form.
 
+    An error's message names the disk and the path in storage, so it's for logs. Show users a text of your own, chosen
+    by the error struct and its `:reason`.
+
     The target is where the files go: a `Fil.Ref` for a directory, or a disk as `Fil.Disk.resolve/1` takes it (a
     disk, a 0-arity function or `{module, function, args}`). Paths are relative to the directory or the disk root.
 
-    Needs Phoenix LiveView 1.2 and Phoenix 1.8, optional dependencies of `Fil`.
+    Needs Phoenix LiveView 1.2, an optional dependency of `Fil`.
 
     ## Paths
 
@@ -65,7 +78,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     unless you put it there, because it can be anything: `../../config.exs`, a name another user already has, or
     `index.html`.
 
-    A path that leaves the disk root gives a `Fil.InvalidRequestError` with `reason: :ebadpath`, as everywhere in `Fil`.
+    A path that leaves the target gives a `Fil.InvalidRequestError` with `reason: :ebadpath` when the file is stored:
+    with a directory as the target, `"../other.png"` is refused, and with a disk, a path that leaves the disk root.
 
     LiveView's `accept:` lets a file through when its type or its extension matches, and the type comes from the
     browser. With `accept: ~w(.png)`, a file named `evil.html` sent as `image/png` is accepted, and `filename/1` would
@@ -117,7 +131,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     alias Phoenix.LiveView.Socket
     alias Phoenix.LiveView.UploadEntry
 
-    # The most of a temporary file read at a time.
+    # How much of the temporary file is read at a time.
     @chunk_size 65_536
 
     @typedoc "Where the files go: a ref for a directory, or a disk as `Fil.Disk.resolve/1` takes it."
@@ -150,8 +164,12 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
         defp handle_progress(:avatar, entry, socket) when entry.done? do
           case Fil.LiveView.consume_uploaded_entry(socket, entry, &MyApp.Storage.uploads/0) do
-            {:ok, avatar} -> {:noreply, assign(socket, :avatar, avatar.path)}
-            {:error, error} -> {:noreply, put_flash(socket, :error, Exception.message(error))}
+            {:ok, avatar} ->
+              {:noreply, assign(socket, :avatar, avatar.path)}
+
+            {:error, error} ->
+              Logger.error("Avatar upload failed: " <> Exception.message(error))
+              {:noreply, put_flash(socket, :error, "The upload failed. Please try again.")}
           end
         end
 
@@ -196,7 +214,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     Returns the ref `entry` will be written to in `target`, without writing or checking anything, like `Fil.ref/2`.
 
     Takes the same options as `store_entry/4`, and uses only `:path`. A path the write refuses, for its extension or
-    because it leaves the disk root, gives the error when the entry is stored.
+    because it leaves the target, gives the error when the entry is stored.
     """
     @spec entry_ref(target(), UploadEntry.t(), keyword()) :: Fil.Ref.t()
     def entry_ref(target, %UploadEntry{} = entry, opts \\ []) do
@@ -254,17 +272,18 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     end
 
     defp write_all(socket, entries, target, opts) do
-      result = Enum.reduce_while(entries, [], &write_entry(socket, &1, target, opts, &2))
-
-      if is_list(result), do: {:ok, Enum.reverse(result)}, else: result
+      case Enum.reduce_while(entries, {:ok, []}, &write_entry(socket, &1, target, opts, &2)) do
+        {:ok, stored} -> {:ok, Enum.reverse(stored)}
+        failed -> failed
+      end
     end
 
     # Writes the entry and postpones it, so LiveView keeps it. `stored` is what this call wrote so far.
-    defp write_entry(socket, entry, target, opts, stored) do
+    defp write_entry(socket, entry, target, opts, {:ok, stored}) do
       write = fn meta -> {:postpone, catch_all(fn -> store(target, meta, entry, opts) end)} end
 
       case call_channel(fn -> Phoenix.LiveView.consume_uploaded_entry(socket, entry, write) end) do
-        {:ok, {:ok, ref}} -> {:cont, [{entry, ref} | stored]}
+        {:ok, {:ok, ref}} -> {:cont, {:ok, [{entry, ref} | stored]}}
         {:ok, {:error, error}} -> {:halt, {:error, error, stored}}
         {:ok, {:raise, kind, reason, stacktrace}} -> {:halt, {:raise, kind, reason, stacktrace, stored}}
         {:exit, reason} -> {:halt, {:exit, reason, stored}}
@@ -332,12 +351,22 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
       case target do
         %Fil.Ref{disk: disk, path: dir} ->
-          Fil.ref(disk, Path.join(dir, path))
+          directory_ref(disk, dir, path)
 
         source ->
           source
           |> Fil.Disk.resolve()
           |> Fil.ref(path)
+      end
+    end
+
+    # A directory is a jail: the path is normalized on its own, so its `..` can't climb out of the directory. A path
+    # that tries also climbs out of the disk root on its own, so it's kept as it is, and using the ref gives a
+    # `Fil.InvalidRequestError` with `reason: :ebadpath`, as for any other path that leaves the root.
+    defp directory_ref(disk, dir, path) do
+      case Fil.Support.Path.normalize(path) do
+        {:ok, normalized} -> Fil.ref(disk, Path.join(dir, normalized))
+        {:error, :ebadpath} -> Fil.ref(disk, path)
       end
     end
 

@@ -183,6 +183,14 @@ defmodule Fil.LiveViewTest do
       assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = upload(files(["a.txt"]), [accept: :any], consume)
     end
 
+    test "refuses a path that leaves a directory target", %{disk: disk} do
+      users = Fil.ref(disk, "users/1")
+      consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, users, path: fn _entry -> "../x.png" end)
+
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = upload(files(["a.png"]), [accept: :any], consume)
+      assert Fil.ls(disk, ".", recursive: true) == {:ok, []}
+    end
+
     test "raises for a path that isn't a string, after deleting the files it wrote", %{disk: disk} do
       path = fn entry -> if entry.client_name == "b.txt", do: :nope, else: entry.client_name end
 
@@ -327,6 +335,19 @@ defmodule Fil.LiveViewTest do
 
       assert Fil.LiveView.entry_ref(avatars, entry).path == "avatars/0b2e8b8e.png"
       refute Fil.exists?(disk, "0b2e8b8e.png")
+    end
+
+    test "keeps the path inside a directory target", %{disk: disk} do
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
+      users = Fil.ref(disk, "users/1")
+
+      assert Fil.LiveView.entry_ref(users, entry, path: fn _entry -> "a/../b.png" end).path == "users/1/b.png"
+
+      # A path that leaves the directory would leave the disk root on its own, so using the ref fails.
+      escape = Fil.LiveView.entry_ref(users, entry, path: fn _entry -> "../../x2.png" end)
+
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.write(escape, "png")
+      refute Fil.exists?(disk, "x2.png")
     end
 
     test "raises for bad options", %{disk: disk} do
