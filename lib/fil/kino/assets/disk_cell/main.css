@@ -1,0 +1,91 @@
+/* Neutral colours from `currentColor` and translucent greys, so the form fits Livebook's light and dark themes. */
+
+.fil-cell {
+  font-family: inherit;
+  font-size: 14px;
+  color: inherit;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 8px;
+}
+
+.fil-cell-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 16px;
+}
+
+.fil-cell-header {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  background: rgba(128, 128, 128, 0.06);
+  border-radius: 8px 8px 0 0;
+}
+
+.fil-cell-s3[hidden] {
+  display: none;
+}
+
+.fil-cell-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+}
+
+.fil-cell-grow {
+  flex: 1;
+}
+
+.fil-cell-label {
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.7;
+}
+
+.fil-cell-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 10px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+}
+
+.fil-cell-input:focus {
+  outline: none;
+  border-color: rgba(62, 100, 255, 0.8);
+}
+
+.fil-cell-secret-wrapper {
+  display: flex;
+  gap: 4px;
+}
+
+.fil-cell-secret {
+  cursor: pointer;
+}
+
+.fil-cell-clear {
+  padding: 0 8px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.fil-cell-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fil-cell-note {
+  margin: 0;
+  padding: 0 16px 8px;
+  font-size: 12px;
+  opacity: 0.7;
+}
