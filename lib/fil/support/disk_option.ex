@@ -6,8 +6,9 @@ defmodule Fil.Support.DiskOption do
   #
   #   * `:disk`: a `%Fil.Disk{}`
   #   * `:fun`: any 0-arity function
-  #   * `:remote_fun`: only a capture of a named 0-arity function (`&MyApp.Storage.uploads/0`), for options that end up
-  #     in compiled code: `Macro.escape/1` can escape a capture, but not an anonymous function
+  #   * `:remote_fun`: only a capture of a named 0-arity function with its module (`&MyApp.Storage.uploads/0`), for
+  #     options that end up in compiled code, such as plug options: `Macro.escape/1` can escape that capture, but not an
+  #     anonymous function or a local capture (`&uploads/0`), which is an anonymous function too
   #   * `:mfa`: `{module, function, args}`
   #
   # The validator is public, because NimbleOptions calls it through the `{:custom, module, function, args}` type.
@@ -80,8 +81,8 @@ defmodule Fil.Support.DiskOption do
 
       :remote_fun in allow ->
         {:error,
-         "expected #{forms(allow)}, got an anonymous function. This option ends up in compiled code, which can't " <>
-           "hold an anonymous function, so pass a capture such as `&MyApp.Storage.uploads/0`"}
+         "expected #{forms(allow)}, got an anonymous function or a local capture. This option ends up in compiled " <>
+           "code, which can't hold either, so pass a capture with the module name, such as `&MyApp.Storage.uploads/0`"}
 
       true ->
         error(allow, fun)

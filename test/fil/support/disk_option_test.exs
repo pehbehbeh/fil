@@ -25,9 +25,12 @@ defmodule Fil.Support.DiskOptionTest do
     assert Exception.message(error) =~ "expected a capture of a named 0-arity function or"
   end
 
-  test "refuses an anonymous function with :remote_fun and says why" do
-    assert {:error, error} = NimbleOptions.validate([disk: fn -> uploads() end], @schema_compiled)
-    assert Exception.message(error) =~ "got an anonymous function. This option ends up in compiled code"
+  test "refuses an anonymous function and a local capture with :remote_fun, and says why" do
+    for value <- [fn -> uploads() end, &uploads/0] do
+      assert {:error, error} = NimbleOptions.validate([disk: value], @schema_compiled)
+      assert Exception.message(error) =~ "got an anonymous function or a local capture. This option ends up in compiled"
+      assert Exception.message(error) =~ "such as `&MyApp.Storage.uploads/0`"
+    end
   end
 
   test "refuses functions of another arity and anything else" do

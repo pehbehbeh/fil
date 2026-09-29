@@ -2,10 +2,10 @@ if Code.ensure_loaded?(Plug) do
   defmodule Fil.Plug do
     @schema NimbleOptions.new!(
               disk: [
-                type: Fil.Support.DiskOption.type([:disk, :fun, :mfa]),
+                type: Fil.Support.DiskOption.type([:disk, :remote_fun, :mfa]),
                 required: true,
                 doc: """
-                The disk to serve. #{Fil.Support.DiskOption.doc([:disk, :fun, :mfa])}
+                The disk to serve. #{Fil.Support.DiskOption.doc([:disk, :remote_fun, :mfa])}
                 """
               ],
               at: [

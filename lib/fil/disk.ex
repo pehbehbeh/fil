@@ -107,9 +107,10 @@ defmodule Fil.Disk do
   Returns the disk for a `t:source/0`: the disk itself, the result of a 0-arity function, or the result of
   `{module, function, args}`.
 
-  Integrations such as `Fil.Plug` take their disk in any of these forms and call this each time they need it. A
-  function or an MFA can build the disk from runtime config, where a disk in the options would be fixed at compile time
-  (plug options, for example, are compiled):
+  Integrations such as `Fil.Plug` take their disk in these forms and call this each time they need it. A function or an
+  MFA can build the disk from runtime config, where a disk in the options would be fixed at compile time. Where the
+  options are compiled, as a plug's are, the function has to be a capture with the module name, such as
+  `&MyApp.Storage.uploads/0`:
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> Fil.Disk.resolve(disk) == disk

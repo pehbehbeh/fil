@@ -9,8 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- `Fil.Disk.resolve/1` returns the disk for a disk, a 0-arity function or an MFA, the forms `Fil.Plug`'s `disk:` takes.
-  `Fil.Plug` raises an `ArgumentError` when its `disk:` function returns something other than a disk.
+- `Fil.Disk.resolve/1` returns the disk for a disk, a 0-arity function or an MFA. `Fil.Plug`'s `disk:` goes through it
+  and raises an `ArgumentError` when its function returns something other than a disk. It takes a function only as a
+  capture such as `&MyApp.Storage.uploads/0`, because plug options can't hold an anonymous function.
   ([#22](https://github.com/pehbehbeh/fil/pull/22))
 - `Fil.tmp/0,1` creates a temporary directory and returns a ref to it, or to a file in it, on a local disk, so the
   whole API works on it. The directory belongs to the calling process and is removed when that process exits, also
