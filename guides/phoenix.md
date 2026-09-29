@@ -203,32 +203,40 @@ LiveView. On S3 that's a presigned PUT. Local and memory disks get the file thro
 
 ```elixir
 def mount(_params, _session, socket) do
+  user = socket.assigns.current_user
+
   {:ok,
    allow_upload(socket, :avatar,
      accept: ~w(.jpg .jpeg .png),
      max_file_size: 20_000_000,
-     external: Fil.LiveView.external(&MyApp.Storage.uploads/0, path: &"avatars/#{Fil.LiveView.filename(&1)}")
+     external:
+       Fil.LiveView.external(&MyApp.Storage.uploads/0,
+         path: &"avatars/#{user.id}/#{Fil.LiveView.filename(&1)}"
+       )
    )}
 end
 ```
 
 For each file it builds the path, checks the extension as above, and signs an upload URL with `Fil.signed_url/3`. The
 URL is bound to the content type of the path, the size the browser reported and `if_exists: :error` (see
-[Uploads](Fil.html#signed_url/1-uploads)), so it uploads one file, once, and can't replace the file later. A refused
+[Uploads](Fil.html#signed_url/1-uploads)), so it uploads one file, once, and can't replace the file later. With
+`if_exists: :overwrite`, it writes the file again on every request until it expires, also after the consume. A refused
 extension shows up as `{:external_metadata_failure, %{reason: :extension}}` in `upload_errors/2`, any other error as
 `%{reason: :error}`, and the error itself goes to the log. A failed upload is LiveView's `:external_client_failure`.
 
-The form and the consume stay the same. Pass the same disk and `path:` to `Fil.LiveView.consume_uploaded_entries/4`,
-which then checks that each file arrived instead of writing it:
-
-```elixir
-Fil.LiveView.consume_uploaded_entries(socket, :avatar, &MyApp.Storage.uploads/0,
-  path: &"avatars/#{Fil.LiveView.filename(&1)}"
-)
-```
-
+The form and the `save` handler from [Storing the files](#storing-the-files) stay the same, with the same disk.
+`Fil.LiveView.consume_uploaded_entries/4` then checks that each file arrived at the path `external/2` signed, which
+LiveView keeps on the server, instead of writing it, and `update_avatar/2` stores the ref as before. The consume's own
+`path:`, `extensions:` and `if_exists:` don't apply to direct uploads, so another `path:` there doesn't move the file.
 A file that never arrived gives a `Fil.NotFoundError`, and the entry stays, as with any failed consume. A failed
 consume doesn't delete the files that did arrive, so the form can be submitted again.
+
+The browser only reports that the upload is done, and a modified client can report one it never made. So `path:` has
+to give each entry a path of its own, as `Fil.LiveView.filename/1` does. With `&"docs/#{&1.client_name}"`, a user could
+claim a file another user uploaded. The consume refuses a file that's older than the upload URL (with 30 seconds for
+clock differences) with a `Fil.AlreadyExistsError` and `reason: :before_upload`, and one that's larger than
+`max_file_size` with `reason: :too_large`. It leaves both files where they are, because they may belong to someone
+else.
 
 ### The uploader
 
@@ -298,12 +306,13 @@ one the app uses.
 A presigned PUT goes to S3 directly, so none of the disk's plugins run. `Fil.Plugin.ContentType` isn't needed, because
 the content type is bound into the URL. Plugins that change the content (encryption, compression) don't work with
 direct uploads to S3, and `Fil.Plugin.Thumbnails` makes no thumbnails. For those, attach `Fil.Plugin.Thumbnails` with
-`mode: :manual` and make them from the refs the consume returns:
+`mode: :manual` and make them from the refs the consume returns, in the `save` handler:
 
 ```elixir
-{:ok, avatars} ->
-  Enum.each(avatars, &Fil.Plugin.Thumbnails.generate/1)
-  {:noreply, assign(socket, :avatars, avatars)}
+{:ok, [avatar]} ->
+  Fil.Plugin.Thumbnails.generate(avatar)
+  {:ok, user} = Accounts.update_avatar(user, avatar)
+  {:noreply, assign(socket, :current_user, user)}
 ```
 
 Uploads through `Fil.Plug` are written with `Fil.write/4`, so the plugins run there. A disk with `Fil.Plugin.URL` and a
@@ -311,20 +320,31 @@ Uploads through `Fil.Plug` are written with `Fil.write/4`, so the plugins run th
 
 ### Files nobody consumes
 
-A file whose form is never submitted stays on the disk. Clean those up with a job that runs every day and deletes the
-files that are older than a day and not in your database:
+A file whose form is never submitted stays on the disk, and so does a file the consume refused. Clean those up with a
+job that runs every day and deletes the files that are older than a day and not in your database:
 
 ```elixir
 def delete_unused_avatars do
   cutoff = DateTime.add(DateTime.utc_now(), -1, :day)
-  stored = MapSet.new(Repo.all(from u in User, where: not is_nil(u.avatar), select: u.avatar))
+
+  # A `Fil.Ecto.Ref` field loads refs, so compare their paths.
+  stored =
+    from(u in User, where: not is_nil(u.avatar), select: u.avatar)
+    |> Repo.all()
+    |> MapSet.new(& &1.path)
+
   {:ok, avatars} = Fil.ls(MyApp.Storage.uploads(), "avatars", recursive: true)
 
   avatars
-  |> Enum.filter(&(DateTime.before?(&1.stat.mtime, cutoff) and &1.path not in stored))
+  |> Enum.filter(&(DateTime.before?(&1.stat.mtime, cutoff) and not MapSet.member?(stored, &1.path)))
   |> Enum.each(&Fil.rm/1)
 end
 ```
+
+With `{:array, Fil.Ecto.Ref}`, each row is a list of refs, so flatten them before the set:
+`Repo.all(query) |> List.flatten() |> MapSet.new(& &1.path)`. The day between upload and deletion keeps files whose
+form is still open. `Fil.ls/3` lists every file under the prefix, so keep the job's prefix to the files of this upload,
+and don't run it against a prefix that other code writes to.
 
 On S3, a lifecycle rule that expires objects under a prefix does the same without a job, but it deletes every file
 under the prefix, consumed or not. It fits when the uploads are temporary anyway, or when the app moves each consumed

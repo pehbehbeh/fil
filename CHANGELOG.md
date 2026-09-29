@@ -10,9 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `Fil.LiveView.external/2` lets the browser upload files straight to a disk, on every adapter: S3 with a presigned PUT,
-  local and memory disks through `Fil.Plug`. The consume functions then check each file instead of writing it. The
-  browser side is one import in `app.js`, `import {uploaders} from "phoenix-colocated/fil"`, so `Fil.LiveView` needs
-  Phoenix 1.8 as well.
+  local and memory disks through `Fil.Plug`. The consume functions then check each file instead of writing it, and
+  refuse one that's older than its upload URL or larger than `max_file_size`. The browser side is one import in
+  `app.js`, `import {uploaders} from "phoenix-colocated/fil"`. ([#26](https://github.com/pehbehbeh/fil/pull/26))
+- `Fil.signed_url/3` takes `content_type:`, `size:` and `if_exists: :error` for `method: :put`, and the upload has to
+  match them, on S3 and through `Fil.Plug`: another `content-type` or `content-length` is a `403`, and with
+  `if_exists: :error` the URL writes the file once and can't replace it.
   ([#26](https://github.com/pehbehbeh/fil/pull/26))
 - `Fil.Ecto.Ref` stores refs in Ecto schemas: the column holds the path, and loading returns a `Fil.Ref` on the disk
   the field names. `{:array, Fil.Ecto.Ref}` holds several files in order, and `Fil.Ecto.Ref.removed/2` returns the refs
@@ -20,10 +23,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the same storage: the same adapter and the same address, which adapters return from the new optional callback
   `c:Fil.Adapter.address/1` (the root on a local disk, the endpoint, region, bucket and prefix on S3), so plugins and
   rotated credentials don't count. Ecto is a new optional dependency. ([#25](https://github.com/pehbehbeh/fil/pull/25))
-- `Fil.signed_url/3` takes `content_type:`, `size:` and `if_exists: :error` for `method: :put`, and the upload has to
-  match them, on S3 and through `Fil.Plug`: another `content-type` or `content-length` is a `403`, and with
-  `if_exists: :error` the URL writes the file once and can't replace it.
-  ([#26](https://github.com/pehbehbeh/fil/pull/26))
 - `Fil.LiveView` stores LiveView uploads on a disk: `consume_uploaded_entries/4` streams each file into `Fil.write/4` at
   a path you choose, and never replaces a file unless you pass `if_exists: :overwrite`. If a write fails, it deletes the
   files it wrote and keeps the entries, so the form can be submitted again. It needs Phoenix LiveView 1.2, an optional
@@ -96,6 +95,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `Fil.LiveView` needs Phoenix 1.8: the optional dependency is `{:phoenix, "~> 1.8", optional: true}` now, so an app
+  with an older Phoenix can't resolve `fil` at all. The uploader for direct uploads is LiveView colocated JS, and
+  LiveView 1.2 raises at compile time when a component with colocated JS compiles below Phoenix 1.8.
+  ([#26](https://github.com/pehbehbeh/fil/pull/26))
 - `content_type`, `size` and `if_exists` are reserved names in the `query:` option of `Fil.signed_url/3`, which raises
   for them like for `expires` or `disposition`.
   ([#26](https://github.com/pehbehbeh/fil/pull/26))
