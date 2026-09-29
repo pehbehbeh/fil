@@ -142,6 +142,9 @@ end
 defp handle_progress(:avatar, _entry, socket), do: {:noreply, socket}
 ```
 
+A failed write keeps the entry, but the upload is finished, so the progress callback doesn't run for it again. Show the
+error and let the user cancel the entry and pick the file again.
+
 ### Testing
 
 Tests with a memory disk need nothing more than the `Fil.Adapter.Memory.checkout/0` from the

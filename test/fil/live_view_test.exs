@@ -345,8 +345,9 @@ defmodule Fil.LiveViewTest do
     test "raises for a meta without a path", %{disk: disk} do
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.txt"}
 
-      assert_raise ArgumentError, ~r/expected the meta of LiveView's default upload writer/, fn ->
-        Fil.LiveView.store_entry(disk, %{key: "a"}, entry)
+      # The meta of an external upload.
+      assert_raise ArgumentError, ~r/External uploads \(external: in allow_upload\/3\)/, fn ->
+        Fil.LiveView.store_entry(disk, %{uploader: "S3", url: "https://example.com"}, entry)
       end
     end
   end

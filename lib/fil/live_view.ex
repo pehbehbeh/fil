@@ -97,7 +97,10 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     `consume_uploaded_entries/4` writes every file, then consumes the entries. If a write fails, it deletes the files
     it wrote, keeps every entry in the upload, and returns the first error, so the user can submit the form again or
-    cancel an entry. With `if_exists: :overwrite`, deleting a written file also deletes the file it replaced.
+    cancel an entry. With `if_exists: :overwrite`, deleting a written file also deletes the file it replaced. The same
+    can happen with the default `if_exists: :error` on S3-compatible servers that ignore the conditional write (see
+    `Fil.write/4`): a `path:` that collides with an existing file replaces it, and a later failure deletes it, which
+    paths with the entry's UUID, as `filename/1` builds them, avoid.
 
     Consuming talks to each entry's upload channel. If a channel is gone because the browser went away, the call exits
     as LiveView's own does, after deleting the files it wrote.
@@ -207,7 +210,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     because there's no socket to find the upload's `accept:` in. See
     [Building your own integration](#module-building-your-own-integration).
 
-    Raises `ArgumentError` for a `meta` without a `:path`, such as from a custom `writer:` in `allow_upload/3`.
+    Raises `ArgumentError` for a `meta` without a `:path`: the meta of an external upload (`external:` in
+    `allow_upload/3`), or of a custom `writer:`. Neither leaves a temporary file to store.
     """
     @spec store_entry(target(), map(), UploadEntry.t(), keyword()) :: Fil.result(Fil.Ref.t())
     def store_entry(target, meta, %UploadEntry{} = entry, opts \\ []) do
@@ -343,8 +347,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     defp store(_target, meta, _entry, _opts) do
       raise ArgumentError,
-            "expected the meta of LiveView's default upload writer, a map with the :path of the temporary file, " <>
-              "got: #{inspect(meta)}"
+            "expected the meta of an upload through LiveView's channel with its default writer, a map with " <>
+              "the :path of the temporary file, got: #{inspect(meta)}. External uploads (external: in " <>
+              "allow_upload/3) and custom writers leave no temporary file to store"
     end
 
     defp build_ref(target, entry, path_fun) do
