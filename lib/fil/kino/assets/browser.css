@@ -24,14 +24,7 @@
   color: var(--gray-800);
 }
 
-.fil-crumbs .fil-button--danger:hover,
-.fil-button--danger:focus-visible {
-  color: var(--red-600);
-  background-color: var(--red-50);
-  border-color: var(--red-300);
-}
-
-.fil-link {
+.fil-crumbs .fil-link {
   font-weight: 600;
   color: var(--gray-800);
 }
@@ -60,6 +53,13 @@
   color: var(--gray-800);
   background-color: var(--gray-100);
   outline: none;
+}
+
+.fil-button--danger:hover,
+.fil-button--danger:focus-visible {
+  color: var(--red-600);
+  background-color: var(--red-50);
+  border-color: var(--red-300);
 }
 
 .fil-link {
