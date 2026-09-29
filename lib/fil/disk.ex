@@ -48,6 +48,11 @@ defmodule Fil.Disk do
           plugins: [{atom(), Fil.plugin_callback(), keyword()}]
         }
 
+  @typedoc """
+  A disk, or a 0-arity function or `{module, function, args}` that returns one. See `resolve/1`.
+  """
+  @type source :: t() | (-> t()) | {module(), atom(), [term()]}
+
   @doc """
   Builds a disk. `Fil.disk/1` is the same function.
 
@@ -96,6 +101,47 @@ defmodule Fil.Disk do
     else
       raise ArgumentError, "#{inspect(module)} is not a Fil adapter"
     end
+  end
+
+  @doc """
+  Returns the disk for a `t:source/0`: the disk itself, the result of a 0-arity function, or the result of
+  `{module, function, args}`.
+
+  Integrations such as `Fil.Plug` take their disk in these forms and call this each time they need it. A function or an
+  MFA can build the disk from runtime config, where a disk in the options would be fixed at compile time. Where the
+  options are compiled, as a plug's are, the function has to be a capture with the module name, such as
+  `&MyApp.Storage.uploads/0`:
+
+      iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
+      iex> Fil.Disk.resolve(disk) == disk
+      true
+      iex> Fil.Disk.resolve(fn -> disk end) == disk
+      true
+      iex> Fil.Disk.resolve({Fil, :disk, [[adapter: Fil.Adapter.Memory]]})
+      #Fil.Disk<memory>
+
+  Raises `ArgumentError` when the function returns something other than a disk, or `source` is none of the three.
+  """
+  @spec resolve(source()) :: t()
+  def resolve(%__MODULE__{} = disk), do: disk
+  def resolve(fun) when is_function(fun, 0), do: check_resolved!(fun.(), fun)
+
+  def resolve({module, function, args} = mfa) when is_atom(module) and is_atom(function) and is_list(args) do
+    module
+    |> apply(function, args)
+    |> check_resolved!(mfa)
+  end
+
+  def resolve(source) do
+    raise ArgumentError,
+          "expected a Fil.Disk, or a 0-arity function or {module, function, args} that returns one, got: " <>
+            inspect(source)
+  end
+
+  defp check_resolved!(%__MODULE__{} = disk, _source), do: disk
+
+  defp check_resolved!(other, source) do
+    raise ArgumentError, "expected #{inspect(source)} to return a Fil.Disk, got: #{inspect(other)}"
   end
 
   @doc """

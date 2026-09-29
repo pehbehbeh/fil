@@ -18,13 +18,17 @@ defmodule Fil.PlugTest do
       |> Fil.disk()
       |> URL.attach(base_url: @base_url, secret: "local-secret")
 
-    memory =
-      [adapter: Fil.Adapter.Memory, root: "uploads"]
-      |> Fil.disk()
-      |> URL.attach(base_url: @base_url, secret: "memory-secret")
-
-    {:ok, local: local, memory: memory}
+    {:ok, local: local, memory: memory()}
   end
+
+  # Named, so tests can pass them as `disk:` captures, the only functions a plug's options can hold.
+  def memory do
+    [adapter: Fil.Adapter.Memory, root: "uploads"]
+    |> Fil.disk()
+    |> URL.attach(base_url: @base_url, secret: "memory-secret")
+  end
+
+  def nope, do: :nope
 
   for adapter <- [:local, :memory] do
     describe "#{adapter} disk" do
@@ -377,12 +381,31 @@ defmodule Fil.PlugTest do
     end
   end
 
-  test "resolves the disk from a function or an MFA", %{memory: disk} do
+  test "resolves the disk from a capture or an MFA", %{memory: disk} do
     {:ok, _} = Fil.write(disk, "a.txt", "a")
     {:ok, url} = Fil.signed_url(disk, "a.txt")
 
-    assert request(:get, url, fn -> disk end).status == 200
+    assert request(:get, url, &__MODULE__.memory/0).status == 200
     assert request(:get, url, {Function, :identity, [disk]}).status == 200
+  end
+
+  test "raises when the disk function returns something else" do
+    assert_raise ArgumentError, ~r/to return a Fil.Disk, got: :nope/, fn ->
+      request(:get, "/storage/a.txt", &__MODULE__.nope/0)
+    end
+  end
+
+  # `plug` and `forward` escape the options into compiled code, which can't hold an anonymous function.
+  test "refuses an anonymous disk function", %{memory: disk} do
+    assert_raise NimbleOptions.ValidationError, ~r/got an anonymous function or a local capture/, fn ->
+      Fil.Plug.init(disk: fn -> disk end)
+    end
+  end
+
+  test "refuses a disk option that is no disk, function or MFA" do
+    assert_raise NimbleOptions.ValidationError, ~r/invalid value for :disk option: expected a `Fil.Disk`/, fn ->
+      Fil.Plug.init(disk: :uploads)
+    end
   end
 
   test "proxies an S3 disk" do
