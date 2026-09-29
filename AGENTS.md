@@ -179,6 +179,10 @@ list).
 - Telemetry tests attach with `Fil.TelemetryHelper.attach/1`, which forwards only the events of the test process and
   the processes it started (`$callers`), so they stay async. `:telemetry_test.attach_event_handlers/2` would forward
   every async test's events. Tests that attach a handler for every process (the default logger) are `async: false`.
+- Kino tests `import Kino.Test` and run `setup :configure_livebook_bridge`, then `setup :configure_uploads` from
+  `Fil.KinoHelper`, in that order: the helper's group leader sits in front of Kino's and answers the file path requests
+  Kino's can't. `Fil.KinoHelper.upload/3` fakes a Livebook upload into a file input, and `status/1` returns the next
+  status line of an upload field. Both group leaders belong to the test process, so the tests stay async.
 - One-line input/output checks are doctests on the function they test, not separate tests. `Fil.DoctestTest` runs
   the doctests of every module in the app, so don't add `doctest` lines to other test files.
 - Doctests that write files use `Fil.disk(adapter: Fil.Adapter.Memory)` (a second disk gets another `root:`).
