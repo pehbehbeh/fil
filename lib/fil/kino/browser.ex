@@ -90,22 +90,13 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     @impl Kino.JS.Live
     def handle_call(:path, _from, ctx), do: {:reply, ctx.assigns.path, ctx}
 
-    # After an upload. There's no client to send an error to, so it goes to all of them.
+    # After an upload.
     @impl Kino.JS.Live
-    def handle_cast(:refresh, ctx) do
-      case list(ctx, ctx.assigns.path) do
-        {:ok, ctx} ->
-          broadcast_event(ctx, "listing", listing(ctx, nil))
-          {:noreply, ctx}
-
-        {:error, error} ->
-          broadcast_event(ctx, "error", %{message: message(error)})
-          {:noreply, ctx}
-      end
-    end
+    def handle_cast(:refresh, ctx), do: {:noreply, open(ctx, ctx.assigns.path)}
 
     # Lists `path` and sends the listing to every client, so they all show the same directory. An error goes to the
-    # client that asked, and the listing stays as it was.
+    # client that asked, or to all of them when no client asked (a refresh after an upload), and the listing stays as
+    # it was.
     defp open(ctx, path) do
       case list(ctx, path) do
         {:ok, ctx} ->
@@ -202,6 +193,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp text_type?("text/" <> _subtype), do: true
     defp text_type?(type), do: type in @text_types
 
+    defp send_error(%{origin: nil} = ctx, error), do: broadcast_event(ctx, "error", %{message: message(error)})
     defp send_error(ctx, error), do: send_event(ctx, ctx.origin, "error", %{message: message(error)})
 
     defp message(message) when is_binary(message), do: message

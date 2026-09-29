@@ -319,6 +319,30 @@ defmodule Fil.Kino.BrowserTest do
       refute Fil.exists?(disk, "a.txt")
     end
 
+    test "shows a failed listing after an upload to every client", %{disk: disk} do
+      # Listing fails once `fail` exists, so the browser connects fine and the refresh after the upload fails.
+      failing =
+        Fil.attach(disk, :fail_ls, fn
+          %{name: :ls} = op, next, _opts ->
+            if Fil.exists?(disk, "fail"),
+              do: Fil.Op.put_result(op, {:error, %Fil.UnavailableError{reason: :timeout}}),
+              else: next.(op)
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(failing, ".", writable: true)
+      {input, frame} = upload_field(field)
+      connect(browser)
+
+      upload(input, "fail", "x")
+
+      assert status(frame) == "Wrote fail (1 B)"
+      assert_broadcast_event(browser, "error", %{message: message})
+      assert message =~ "the storage is unavailable"
+    end
+
     test "deletes a file, but not a directory", %{disk: disk} do
       Fil.write!(disk, "a.txt", "a")
       Fil.write!(disk, "reports/q3.pdf", "%PDF")
