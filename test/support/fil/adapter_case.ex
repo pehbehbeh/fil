@@ -1099,6 +1099,19 @@ defmodule Fil.AdapterCase do
       end
 
       ## ----------------------------------------------------------------
+      ## Same storage
+      ## ----------------------------------------------------------------
+
+      test "a disk is the same storage when built again or with other plugins, and not as another disk", context do
+        %{disk: disk, other_disk: other_disk} = context
+        attached = Fil.attach(disk, :noop, fn op, next, _opts -> next.(op) end)
+
+        assert Fil.Disk.same_storage?(disk, fil_disk(context))
+        assert Fil.Disk.same_storage?(disk, attached)
+        refute Fil.Disk.same_storage?(disk, other_disk)
+      end
+
+      ## ----------------------------------------------------------------
       ## Bang variants
       ## ----------------------------------------------------------------
 

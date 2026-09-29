@@ -24,6 +24,15 @@ defmodule Fil.Adapter.MemoryTest do
     end
   end
 
+  describe "same storage" do
+    test "compares the normalized root" do
+      primary = Fil.disk(adapter: Memory, root: "primary")
+
+      assert Fil.Disk.same_storage?(primary, Fil.disk(adapter: Memory, root: "/primary//"))
+      refute Fil.Disk.same_storage?(primary, Fil.disk(adapter: Memory, root: "primary/avatars"))
+    end
+  end
+
   describe "roots" do
     test "overlap like directories", %{disk: disk} do
       nested = Fil.disk(adapter: Memory, root: "primary/avatars")

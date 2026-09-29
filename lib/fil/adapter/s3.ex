@@ -147,6 +147,8 @@ defmodule Fil.Adapter.S3 do
     * `Fil.url/3`: the object URL, without a signature, so it works for public objects only.
     * `Fil.signed_url/3`: a presigned GET or PUT URL, with `response-content-disposition` for `disposition:`, and the
       `query:` parameters.
+    * `Fil.Disk.same_storage?/2`: compares `:endpoint`, `:region`, `:bucket` and the prefix from `:root`, so disks
+      with other credentials, `:public_endpoint`, `:path_style` or `:req_options` are the same storage.
 
   ## Uploads in parts
 
@@ -290,6 +292,10 @@ defmodule Fil.Adapter.S3 do
        }}
     end
   end
+
+  # Credentials, `:public_endpoint`, `:path_style` and the rest only change how the storage is reached.
+  @impl Fil.Adapter
+  def address(state), do: {state.endpoint, state.region, state.bucket, state.prefix}
 
   @impl Fil.Adapter
   def read(state, path, opts) do

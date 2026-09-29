@@ -69,6 +69,7 @@ defmodule Fil.Adapter.Memory do
       `if_exists: :error`, it fails the move with a `Fil.ConflictError`, and the destination is left as it was.
     * `Fil.url/3` and `Fil.signed_url/3`: a memory store has no URLs. Attach `Fil.Plugin.URL` to build them, and
       `Fil.Plug` serves them, in a test through `Phoenix.ConnTest` too.
+    * `Fil.Disk.same_storage?/2`: compares the normalized `:root`.
 
   ## Errors
 
@@ -162,6 +163,9 @@ defmodule Fil.Adapter.Memory do
       {:ok, %__MODULE__{prefix: prefix}}
     end
   end
+
+  @impl Fil.Adapter
+  def address(state), do: state.prefix
 
   defp parse_root(root) do
     case Fil.Support.Path.normalize(root) do

@@ -9,6 +9,15 @@ defmodule Fil.Adapter.LocalTest do
     |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
   end
 
+  describe "same storage" do
+    test "compares the expanded root" do
+      relative = Fil.disk(adapter: Local, root: "priv/storage")
+
+      assert Fil.Disk.same_storage?(relative, Fil.disk(adapter: Local, root: Path.expand("priv/storage")))
+      refute Fil.Disk.same_storage?(relative, Fil.disk(adapter: Local, root: "priv/other"))
+    end
+  end
+
   describe "init/1" do
     test "defaults the root to the current directory at build time" do
       {:ok, state} = Local.init([])
