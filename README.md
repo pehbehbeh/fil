@@ -46,8 +46,8 @@ With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes t
 - **One API for many kinds of storage.** Local disk, S3 (and S3-compatible stores) and an in-memory disk for async
   tests, with the same behaviour on every adapter. `cp` and `rename` work across disks.
 - **Just values.** A disk is a plain value: no application config, no registry, nothing to supervise. It works in a
-  script or a Livebook with `Mix.install/1`, and [`Fil.Kino`](https://fil.hexdocs.pm/Fil.Kino.html) browses a disk in
-  Livebook.
+  script or a Livebook with `Mix.install/1`. In Livebook, [`Fil.Kino`](https://fil.hexdocs.pm/Fil.Kino.html) browses a
+  disk, uploads files to it, and adds a smart cell that builds one.
 - **Pluggable.** Anything that isn't about where files are stored is a [plugin](https://fil.hexdocs.pm/plugins.html),
   such as setting content types or logging.
 - **Few dependencies.** Req, NimbleOptions, MIME and Telemetry, plus Plug if you serve files. Cloud adapters use Req
