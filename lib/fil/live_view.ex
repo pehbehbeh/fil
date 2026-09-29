@@ -174,6 +174,19 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     A file whose form is never submitted stays on the disk. The [Phoenix guide](phoenix.md#files-nobody-consumes)
     shows how to clean those up, and the CORS rule an S3 bucket needs.
 
+    ## Upload field
+
+    `upload_field/1` renders the upload part of a form: a drop zone with the file input, a row for each picked file with
+    a preview, its progress and a cancel button, and a row for each file the record has, with a remove button. It's
+    styled with [daisyUI](https://daisyui.com) like the components Phoenix 1.8 generates, and each part takes classes
+    of your own. `cancel_upload/2` handles its cancel buttons, and `upload_error/2` gives the texts of its errors. The
+    [Phoenix guide](phoenix.md#the-upload-field) shows a complete form.
+
+    It works with `external/2` as it is: the uploader reports the progress, and a direct upload that's refused or fails
+    shows as its entry's error (`{:external_metadata_failure, %{reason: :extension}}` or `:external_client_failure`).
+    Without `auto_upload: true`, LiveView asks for all upload URLs when the form is submitted and stops at the first
+    entry `external/2` refuses, so only that entry shows an error until the form is submitted again.
+
     ## Building your own integration
 
     Code that calls LiveView's `Phoenix.LiveView.consume_uploaded_entries/3` itself, to do more in the same callback,
@@ -201,6 +214,10 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     alias Phoenix.LiveView.Socket
     alias Phoenix.LiveView.UploadEntry
+
+    # For `upload_field/1`: its attributes are declared here, so calls of `<Fil.LiveView.upload_field>` get their
+    # compile-time checks. The markup is in `Fil.LiveView.UploadField`.
+    use Phoenix.Component
 
     require Logger
 
@@ -389,6 +406,254 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
       if extension =~ ~r/\A\.[a-z0-9]{1,16}\z/, do: uuid <> extension, else: uuid
     end
+
+    @doc """
+    Renders the upload part of a form: a drop zone with the file input, a row for each picked file and a row for each
+    file the record has, and the errors of the upload and the field.
+
+        <.form for={@form} id="product-form" phx-change="validate" phx-submit="save">
+          <.input field={@form[:name]} label="Name" />
+          <Fil.LiveView.upload_field
+            upload={@uploads.photos}
+            existing={@photos}
+            field={@form[:photos]}
+            label="Photos"
+          />
+          <.button phx-disable-with="Saving...">Save</.button>
+        </.form>
+
+    The LiveView allows the upload in `mount/3` and stores the files with `consume_uploaded_entries/4` when the form is
+    saved, as without the component. The form needs `phx-change`, as every LiveView upload does. The buttons send their
+    events to the LiveView (or to `target`), with the upload's name in `"upload"`:
+
+        def handle_event("cancel-upload", params, socket), do: {:noreply, Fil.LiveView.cancel_upload(socket, params)}
+
+        def handle_event("remove-file", %{"upload" => "photos", "path" => path}, socket) do
+          {:noreply, update(socket, :photos, fn photos -> Enum.reject(photos, &(&1.path == path)) end)}
+        end
+
+        def handle_event("remove-file", %{"upload" => "avatar"}, socket), do: {:noreply, assign(socket, :avatar, nil)}
+
+    The last clause is for a single file (a `Fil.Ecto.Ref` field) in another upload field on the same page.
+
+    Removing deletes nothing. The LiveView keeps the files the record keeps in an assign, passed as `existing`, and
+    saving puts those and the new ones into the changeset. `Fil.Ecto.Ref.removed/2` returns the ones it drops, to delete
+    after the commit. The [Phoenix guide](phoenix.md#the-upload-field) shows the complete form, with the save.
+
+    With `auto_upload: true` and entries consumed as they finish, a consumed entry leaves the list, so append its ref
+    to `existing`.
+
+    `import Fil.LiveView, only: [upload_field: 1]` in the `html_helpers` of the app's web module gives
+    `<.upload_field>`.
+
+    ## Styling
+
+    The default classes are [daisyUI](https://daisyui.com) 5 classes, as in the `core_components.ex` Phoenix 1.8
+    generates. A class attribute replaces the default of its part, as `class` does on the generated components, so to
+    add a class, copy the default and append to it. A few elements take no class attribute: the `<div>` around the
+    content of each row, the preview, the name and the size in a row, and the `<div>` around the error messages. Their
+    classes are Tailwind utilities only. The slots replace the content of a row, not the row, so the buttons, the
+    progress bar and the errors keep their classes.
+
+    Without daisyUI, its class names and theme colours do nothing, and the Tailwind utilities still apply. Tailwind's
+    preflight strips the look of the file input and the buttons, so pass `input_class` and `button_class`.
+
+    Tailwind builds only the classes it finds in its sources, so the app's `assets/css/app.css` needs a line for Fil:
+
+    ```css
+    @source "../../deps/fil/lib/fil/live_view";
+    ```
+
+    ## Texts
+
+    Every text of the component's own goes through `translate` as `{msgid, bindings}`, errors included (see
+    `upload_error/2`). The `label` and a `hint` you pass are shown as they are. With Gettext, pass the app's
+    `translate_error/1`, which looks the texts up in the `errors` domain. `mix gettext.extract` doesn't find texts built
+    in a dependency, so add these to `priv/gettext/errors.pot`:
+
+    ```text
+    msgid "or drop files here"
+    msgid "Remove"
+    msgid "Remove %{name}"
+    msgid "Cancel"
+    msgid "Cancel upload of %{name}"
+    msgid "Upload progress of %{name}"
+    msgid "The file is larger than %{max}"
+    msgid "The file is too large"
+    msgid "This type of file isn't accepted"
+    msgid "You can upload at most %{count} file(s)"
+    msgid "Too many files"
+    msgid "A file with this name already exists"
+    msgid "The upload failed"
+    msgid "The upload couldn't be started"
+    msgid "The file couldn't be uploaded"
+    ```
+
+    Each gets an empty `msgstr`. The one with `%{count}` also gets a `msgid_plural` and a `msgstr` per plural form, like
+    Ecto's messages with a count in that file. `%{name}` is the file's name, `%{max}` the size limit as text such as
+    `"5 MB"`, and the bindings of that message also have `max_file_size` in bytes.
+    """
+    @doc section: :upload_field
+
+    attr(:id, :string, default: nil, doc: "The id of the root `<div>`.")
+    attr(:upload, Phoenix.LiveView.UploadConfig, required: true, doc: "The upload, such as `@uploads.photos`.")
+
+    attr(:existing, :any,
+      default: [],
+      doc: """
+      The files the record has, each with a remove button: a list of refs, a single ref or `nil`, so a
+      `{:array, Fil.Ecto.Ref}` or `Fil.Ecto.Ref` field goes in as it is. A single ref is hidden while a file is picked,
+      because saving replaces it, and cancelling that file shows it again. A list stays.
+      """
+    )
+
+    attr(:field, Phoenix.HTML.FormField,
+      default: nil,
+      doc: """
+      The form field of the files, for its errors, such as those of `validate_length/3`. They show once files are
+      picked or the form was submitted (its action is neither `nil` nor `:validate`). The file input sends no param
+      under the field's name, so `Phoenix.Component.used_input?/1` alone would never show them.
+      """
+    )
+
+    attr(:label, :string, default: nil, doc: "The label of the file input.")
+
+    attr(:hint, :any,
+      default: nil,
+      doc: """
+      The text below the file input, such as `"PNG or JPG, at most 5 MB"`, instead of "or drop files here". It's shown
+      as it is, without `translate`, and `false` leaves it out.
+      """
+    )
+
+    attr(:errors, :list,
+      default: [],
+      doc: """
+      More errors to show below the files, such as the error of a failed `consume_uploaded_entries/4`. They get their
+      text from `upload_error/2`, except strings, which are shown as they are.
+      """
+    )
+
+    attr(:required, :boolean,
+      default: false,
+      doc: """
+      Passed to the file input while there are no existing files, so an edit form with a stored file can be saved
+      without picking a new one.
+      """
+    )
+
+    attr(:cancel, :string,
+      default: "cancel-upload",
+      doc: ~s(The event of the cancel buttons, with the params `"upload"` and `"ref"`, for `cancel_upload/2`.)
+    )
+
+    attr(:remove, :string,
+      default: "remove-file",
+      doc: ~s(The event of the remove buttons, with the params `"upload"` and `"path"`, the path of the ref.)
+    )
+
+    attr(:target, :any, default: nil, doc: "The `phx-target` of the buttons, such as `@myself` in a LiveComponent.")
+
+    attr(:translate, :any,
+      default: nil,
+      doc: """
+      A function that takes `{msgid, bindings}` and returns the text, such as the app's `translate_error/1`. Every text
+      of the component's own goes through it, not `label` and `hint`. Without it, the bindings are filled in and nothing
+      is translated.
+      """
+    )
+
+    for {name, part} <- [
+          class: "root `<div>`",
+          label_class: "label",
+          dropzone_class: "drop zone, a `<label>` around the file input",
+          input_class: "file input",
+          error_class: "file input while there are errors, added to `input_class`",
+          hint_class: "hint",
+          list_class: "list of files",
+          entry_class: "row of each file",
+          progress_class: "progress bar",
+          button_class: "cancel and remove buttons",
+          message_class: "error messages"
+        ] do
+      attr(name, :any,
+        default: nil,
+        doc: "The classes of the #{part}, instead of `#{inspect(Fil.LiveView.UploadField.default_class(name))}`."
+      )
+    end
+
+    slot(:entry,
+      doc: """
+      The content of a picked file's row, with the `Phoenix.LiveView.UploadEntry` as its argument
+      (`:let={upload_entry}`). By default an image preview (for image types a browser shows), the name and the size. It
+      replaces the content, not the row: the progress bar, the cancel button and the errors stay.
+      """
+    )
+
+    slot(:file,
+      doc: """
+      The content of a stored file's row, with the `Fil.Ref` as its argument (`:let={photo}`). By default the name in
+      its path. Paths from `filename/1` are UUIDs, so an app with images shows a thumbnail from `Fil.url/2` or
+      `Fil.signed_url/3` here, computed before rendering. It replaces the content, not the row: the remove button stays.
+      """
+    )
+
+    @spec upload_field(map()) :: Phoenix.LiveView.Rendered.t()
+    def upload_field(assigns), do: Fil.LiveView.UploadField.render(assigns)
+
+    @doc """
+    Cancels the entry of a cancel button of `upload_field/1`, from the params of its event:
+
+        def handle_event("cancel-upload", params, socket), do: {:noreply, Fil.LiveView.cancel_upload(socket, params)}
+
+    Finds the upload named in `"upload"` and calls `Phoenix.LiveView.cancel_upload/3` with the entry in `"ref"`. An
+    upload or entry that isn't there, after a double click or from an event the page didn't send, leaves the socket as
+    it is, where LiveView's function raises.
+    """
+    @doc section: :upload_field
+    @spec cancel_upload(Socket.t(), map()) :: Socket.t()
+    def cancel_upload(%Socket{} = socket, params), do: Fil.LiveView.UploadField.cancel_upload(socket, params)
+
+    @doc """
+    Returns the text of an upload error as `{msgid, bindings}`, the shape of Ecto's errors, for the app's
+    `translate_error/1`.
+
+    Takes the errors of `Phoenix.Component.upload_errors/1` and `Phoenix.Component.upload_errors/2`, Fil's error
+    structs, and `{msgid, bindings}` tuples, which it returns as they are. With the upload, the texts of `:too_large`
+    and `:too_many_files` name its limits. `upload_field/1` shows its errors with it, and it gives a flash its text:
+
+        {:error, error} -> {:noreply, put_flash(socket, :error, translate_error(Fil.LiveView.upload_error(error)))}
+
+    - "The file is larger than %{max}": `:too_large`, and a `Fil.InvalidRequestError` with `reason: :too_large` or
+      `"EntityTooLarge"`. Without the upload, "The file is too large".
+    - "This type of file isn't accepted": `:not_accepted`, a `Fil.InvalidRequestError` with `reason: :extension`, and
+      `{:external_metadata_failure, %{reason: :extension}}`.
+    - "You can upload at most %{count} file(s)": `:too_many_files`. Without the upload, "Too many files".
+    - "A file with this name already exists": any other `Fil.AlreadyExistsError`. Paths from `filename/1` never
+      collide, so it comes from a `:path` of your own.
+    - "The upload failed": `:external_client_failure`, `{:writer_failure, reason}`, `Fil.NotFoundError`, and a
+      `Fil.AlreadyExistsError` with `reason: :before_upload` (a direct upload whose file is older than its URL).
+    - "The upload couldn't be started": any other `{:external_metadata_failure, meta}`.
+    - "The file couldn't be uploaded": anything else, such as the error of a `validate:` function.
+
+        iex> Fil.LiveView.upload_error(:not_accepted)
+        {"This type of file isn't accepted", []}
+        iex> upload = %Phoenix.LiveView.UploadConfig{max_entries: 3, max_file_size: 5_000_000}
+        iex> Fil.LiveView.upload_error(:too_large, upload)
+        {"The file is larger than %{max}", [max: "5 MB", max_file_size: 5_000_000]}
+        iex> Fil.LiveView.upload_error(:too_many_files, upload)
+        {"You can upload at most %{count} file(s)", [count: 3]}
+        iex> Fil.LiveView.upload_error(%Fil.AlreadyExistsError{})
+        {"A file with this name already exists", []}
+        iex> Fil.LiveView.upload_error(%Fil.AlreadyExistsError{reason: :before_upload})
+        {"The upload failed", []}
+        iex> Fil.LiveView.upload_error({"is invalid", [validation: :custom]})
+        {"is invalid", [validation: :custom]}
+
+    """
+    @doc section: :upload_field
+    @spec upload_error(term(), Phoenix.LiveView.UploadConfig.t() | nil) :: {String.t(), keyword()}
+    def upload_error(error, upload \\ nil), do: Fil.LiveView.UploadField.error(error, upload)
 
     # Pass 1 writes every entry and postpones it, so LiveView keeps its temporary file and channel. Only when every
     # write worked, pass 2 consumes them. On an error, the files pass 1 wrote are deleted and every entry stays in the

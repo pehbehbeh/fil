@@ -53,9 +53,12 @@ The Hex package is `fil`.
   `@moduledoc false` component that's never rendered (`Fil.LiveView.Uploader`), exported under a `key:`, so apps import
   it from `"phoenix-colocated/fil"`. The 120 columns apply to it too. LiveView's compiler writes only the manifest of
   the project it runs in, so `compilers:` in `mix.exs` adds it when LiveView is loaded, which is the case when an app
-  compiles Fil (not in Fil's own checkout). `Fil.Ecto.Ref` is the Ecto type, compiled only when the optional Ecto
-  dependency is there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an MFA and turn it into a disk
-  with `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented by `Fil.Support.DiskOption`
+  compiles Fil (not in Fil's own checkout). The upload component `upload_field/1` declares its attributes in
+  `Fil.LiveView`, so remote calls get their compile-time checks, and renders in `Fil.LiveView.UploadField`
+  (`@moduledoc false`): daisyUI classes by default, a class attribute per part that replaces its default, and every text
+  of its own through `translate`. `Fil.Ecto.Ref` is the Ecto type, compiled only when the optional Ecto dependency is
+  there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an MFA and turn it into a disk with
+  `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented by `Fil.Support.DiskOption`
   (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}` for a directory (`Fil.LiveView`).
   Options that end up in compiled code, such as a plug's or an Ecto field's, take a function only as a capture with its
   module (`:remote_fun`), because they can't hold an anonymous function. `Fil.Ecto.Ref` takes no `%Fil.Disk{}` either,
