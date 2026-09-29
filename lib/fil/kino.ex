@@ -31,7 +31,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
                         default: 1024 * 1024,
                         doc: """
                         Files larger than this, in bytes, get no preview, only the download button. 1 MiB by default.
-                        The size comes from the listing, so nothing is read to decide.
+                        The size comes from the listing, so nothing is read to decide, and a file that grew since isn't
+                        caught.
                         """
                       ],
                       max_download_size: [
@@ -40,7 +41,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
                         doc: """
                         Files larger than this, in bytes, can't be downloaded from the browser. 100 MiB by default. A
                         download reads the whole file into memory and sends it to the browser through Livebook, so
-                        large files are better copied with `Fil.cp/3` or read with `Fil.stream/3`.
+                        large files are better copied with `Fil.cp/3` or read with `Fil.stream/3`. The size is checked
+                        against the listing, so a file that grew since isn't caught.
                         """
                       ]
                     )
