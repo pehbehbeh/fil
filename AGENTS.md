@@ -99,8 +99,9 @@ bin/release 0.2.0           # releases main to Hex (see Releasing)
 ## CI
 
 `.github/workflows/ci.yml` checks formatting, `mix credo`, `mix docs --warnings-as-errors` and `bin/check-changelog` on
-the latest Elixir, and runs `mix test` on every supported Elixir minor version, each with the newest OTP it supports
-(plus OTP 26 on Elixir 1.16). The integration suite runs once, on the latest Elixir, against RustFS started from
+the latest Elixir, and runs `mix test` on every supported Elixir minor version (1.18 and later), each with the newest
+OTP it supports. The library supports every OTP that Elixir 1.18 supports, and the test suite needs OTP 27 or later
+(`:proc_lib.get_label/1`). The integration suite runs once, on the latest Elixir, against RustFS started from
 `compose.yml`. When `elixir:` in `mix.exs` changes, update the matrix.
 
 The last job, `CI passed`, fails if any other job failed, was cancelled or was skipped. It's the only check the ruleset
@@ -130,14 +131,16 @@ list).
 
 - **Changelog:** `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first,
   one entry per user-visible change under `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, added
-  under `## [Unreleased]` in the same pull request as the change. User-visible changes always go through a pull request;
-  direct pushes to `main` are only for changes without an entry. Each entry ends with an inline link to its pull
-  request, such as `([#1](https://github.com/pehbehbeh/fil/pull/1))`, or `([#1](...), [#4](...))` for several. Add it in
-  a commit once `gh pr create` has returned the number: issues and pull requests share their numbers, so don't guess it.
-  Inline, because the GitHub release gets only the section, without the link definitions at the end.
-  `bin/check-changelog` enforces it for the entries under Unreleased, in CI and in `bin/release`. Released sections are
-  headed `## [0.2.0] - 2026-10-01`. `bin/release` keeps the link definitions at the end, which compare each version with
-  the one before. The file is in the Hex package and a Guides tab on HexDocs, so each published version includes its
+  under `## [Unreleased]` in the same pull request as the change. Entries describe the difference from the last release:
+  a change to something that's new in the same release updates that feature's entry, adding its pull request's link,
+  instead of getting an entry of its own. User-visible changes always go through a pull request; direct pushes to `main`
+  are only for changes without an entry. Each entry ends with an inline link to its pull request, such as
+  `([#1](https://github.com/pehbehbeh/fil/pull/1))`, or `([#1](...), [#4](...))` for several. Add it in a commit once
+  `gh pr create` has returned the number: issues and pull requests share their numbers, so don't guess it. Inline,
+  because the GitHub release gets only the section, without the link definitions at the end. `bin/check-changelog`
+  enforces it for the entries under Unreleased, in CI and in `bin/release`. Released sections are headed
+  `## [0.2.0] - 2026-10-01`. `bin/release` keeps the link definitions at the end, which compare each version with the
+  one before. The file is in the Hex package and a Guides tab on HexDocs, so each published version includes its
   changelog.
 - **Milestones:** one per planned release, named after its tag (`v0.2.0`), with the issues and pull requests meant to
   ship in it. Issues without a milestone are the backlog, and a patch release needs no milestone. Before a release,

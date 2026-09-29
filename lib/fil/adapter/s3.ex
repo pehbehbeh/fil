@@ -55,7 +55,7 @@ defmodule Fil.Adapter.S3 do
               type: {:in, 5_242_880..5_368_709_120},
               default: 8_388_608,
               doc: """
-              The size in bytes of the parts an upload in parts uses (a stream without `size:` or with `checksum:`,
+              The size in bytes of the parts an upload in parts uses (a stream without a size or with `checksum:`,
               and content over 5 GiB), 8 MiB by default and at least 5 MiB (S3's minimum). An upload keeps one part in
               memory at a time. S3 allows 10,000 parts, so a stream without a size can be at most 78 GiB at the
               default. Pass `size:` or raise `:part_size` for larger ones: with `size:`, the parts grow to fit. See
@@ -93,12 +93,12 @@ defmodule Fil.Adapter.S3 do
   Requests are sent and signed (SigV4) by [Req](https://req.hexdocs.pm), configured with `:req_options`. Listings are
   parsed with OTP's `:xmerl_sax_parser`.
 
-  A stream written with `size:` is sent as it's read, and that needs an HTTP/1 connection pool, which is what Req uses
-  unless `:req_options` asks for HTTP/2 (for example with `connect_options: [protocols: [:http2]]` or a `:finch` pool
-  for HTTP/2). On HTTP/2, Finch reads a request body in the pool's process instead of the caller's, and a stream that
-  only the caller's process can read fails or stalls there: a `Fil.Plug` upload, or a stream from another S3 disk in a
-  copy across disks. Content in memory, [uploads in parts](#module-uploads-in-parts) and streams that any process can
-  read, such as a `File.Stream`, are fine.
+  A stream of known size (see the `:size` option of `Fil.write/4`) is sent as it's read, and that needs an HTTP/1
+  connection pool, which is what Req uses unless `:req_options` asks for HTTP/2 (for example with
+  `connect_options: [protocols: [:http2]]` or a `:finch` pool for HTTP/2). On HTTP/2, Finch reads a request body in the
+  pool's process instead of the caller's, and a stream that only the caller's process can read fails or stalls there: a
+  `Fil.Plug` upload, or a stream from another S3 disk (`Fil.stream/3`, or a copy across disks). Content in memory,
+  [uploads in parts](#module-uploads-in-parts) and streams that any process can read, such as a `File.Stream`, are fine.
 
   ## Options
 
@@ -115,12 +115,13 @@ defmodule Fil.Adapter.S3 do
       algorithm, or with none, are read without a check.
     * `Fil.stream/3`: HeadObject, then GetObject each time the stream is read. The download runs in a process of its
       own and goes only as fast as the stream is read. `verify_checksum: true` computes the checksum while streaming.
-    * `Fil.write/4`: PutObject for content in memory, and for a stream with `size:`, which is sent as it's read. A
-      stream without a size or with `checksum:`, and anything over 5 GiB, goes up in parts instead (see
-      [Uploads in parts](#module-uploads-in-parts)). `if_exists: :error` sends `If-None-Match: *`. `checksum:`
-      (`:sha256`, `:sha1` or `:crc32`) sends the checksum of the content in `x-amz-checksum-*`, S3 rejects the upload
-      if what it received doesn't match, and stores the checksum with the object. Writing to `report.txt/x` when
-      `report.txt` is an object writes a second object and leaves the first alone.
+    * `Fil.write/4`: PutObject for content in memory, and for a stream of known size (`size:`, a `File.Stream`, a stream
+      from `Fil.stream/3`), which is sent as it's read. A stream without a size (or with `size: :unknown`) or with
+      `checksum:`, and anything over 5 GiB, goes up in parts instead (see [Uploads in parts](#module-uploads-in-parts)).
+      `if_exists: :error` sends `If-None-Match: *`. `checksum:` (`:sha256`, `:sha1` or `:crc32`) sends the checksum of
+      the content in `x-amz-checksum-*`, S3 rejects the upload if what it received doesn't match, and stores the
+      checksum with the object. Writing to `report.txt/x` when `report.txt` is an object writes a second object and
+      leaves the first alone.
     * `Fil.rm/3`: DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error).
       Removing a directory succeeds and removes nothing.
     * `Fil.stat/3`: HeadObject, then a prefix probe if there's no object, so `Fil.dir?/1` works. `:etag` and
@@ -137,9 +138,10 @@ defmodule Fil.Adapter.S3 do
 
   ## Uploads in parts
 
-  A stream without `size:`, a stream with `checksum:`, and content over 5 GiB (the largest PutObject) are read one part
-  at a time, `:part_size` bytes each, so an upload keeps about one part and one chunk in memory. Content that ends
-  within the first part goes out as one PutObject once it has ended. Anything longer is a multipart upload:
+  A stream without a size (or with `size: :unknown`), a stream with `checksum:`, and content over 5 GiB (the largest
+  PutObject) are read one part at a time, `:part_size` bytes each, so an upload keeps about one part and one chunk in
+  memory. Content that ends within the first part goes out as one PutObject once it has ended. Anything longer is a
+  multipart upload:
 
     * CreateMultipartUpload once the second part begins, with the content type and the checksum algorithm
     * UploadPart for each part once more content has arrived after it, signed with its SHA-256, which S3 checks.
@@ -232,9 +234,8 @@ defmodule Fil.Adapter.S3 do
   @max_object 5 * 1024 ** 4
   @max_parts 10_000
 
-  # How long a failed part waits before it's sent again, in milliseconds, so a storage that asked to slow down gets a
-  # moment.
-  @retry_delay 1_000
+  # How long a failed part waits before it's sent again, so a storage that asked to slow down gets a moment.
+  @retry_delay to_timeout(second: 1)
 
   @derive {Inspect, only: [:bucket, :region, :prefix, :endpoint, :public_endpoint, :path_style]}
   defstruct [
@@ -424,6 +425,8 @@ defmodule Fil.Adapter.S3 do
 
     {pid, monitor} =
       spawn_monitor(fn ->
+        # The label shows in `:observer` and crash reports. The key names the file, and nothing else goes in.
+        Process.set_label({__MODULE__, :stream, key})
         Process.put(:"$callers", callers)
         relay = %Relay{to: reader, ref: ref, monitor: Process.monitor(reader)}
         headers = if check, do: [@checksum_mode], else: []
@@ -819,6 +822,7 @@ defmodule Fil.Adapter.S3 do
 
     pid =
       spawn(fn ->
+        Process.set_label({__MODULE__, :upload_guard, key})
         Process.put(:"$callers", callers)
         guard(%{state: state, key: key, ref: ref, writer: writer, monitor: Process.monitor(writer), id: nil})
       end)

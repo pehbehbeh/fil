@@ -210,10 +210,11 @@ stream as well as a binary, so a file can go from one disk to another, or from a
 {:ok, video} = Fil.stream(s3, "videos/intro.mp4")
 {:ok, _} = Fil.write(local, "cache/intro.mp4", video)
 
-{:ok, _} = Fil.write(s3, "backups/db.dump", File.stream!("db.dump", 65_536), size: File.stat!("db.dump").size)
+{:ok, _} = Fil.write(s3, "backups/db.dump", File.stream!("db.dump", 65_536))
 ```
 
-With `size:`, S3 sends the stream as it's read, in one request. Without it, S3 uploads the stream in parts of 8 MiB
+With a `File.stream!` of bytes, as above, or a stream from `stream`, `Fil` knows the size, and S3 sends the stream as
+it's read, in one request. For other streams, pass `size:` if you know it, or S3 uploads the stream in parts of 8 MiB
 (the local and memory disks don't need the size).
 
 `url` returns the public URL of a file, and `signed_url` an expiring one, so clients can download or upload a file

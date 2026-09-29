@@ -405,7 +405,7 @@ defmodule Fil.Op do
   defp adapter(%__MODULE__{} = op, caller) do
     with {:ok, path} <- Fil.Support.Path.normalize(op.path),
          {:ok, dest} <- normalize_dest(op.dest) do
-      op = %{op | path: path, dest: dest}
+      op = found_size(%{op | path: path, dest: dest}, caller)
 
       %{
         op
@@ -419,12 +419,22 @@ defmodule Fil.Op do
     end
   end
 
+  # `Fil.write/4` found the size of the caller's stream (a `Fil.Support.Sized`) and checks the stream against it
+  # itself. A plugin that replaced the stream and left that size as it was doesn't know the size of its own stream, so
+  # the adapter gets none, instead of a check against a size nobody declared.
+  defp found_size(%__MODULE__{name: :write, content: content} = op, %__MODULE__{content: %Sized{size: size} = sized})
+       when content != sized do
+    if op.options[:size] == size, do: drop_size(op), else: op
+  end
+
+  defp found_size(op, _caller), do: op
+
   defp normalize_dest(nil), do: {:ok, nil}
   defp normalize_dest(dest), do: Fil.Support.Path.normalize(dest)
 
   defp call_adapter(%__MODULE__{disk: %Disk{adapter: {module, state}}} = op), do: call_adapter(op, module, state)
 
-  # A stream reaches the adapter as non-empty binaries, checked against the `:size` the caller declared.
+  # A stream reaches the adapter as non-empty binaries, checked against its `:size`, if it has one.
   defp call_adapter(%__MODULE__{name: :write, content: content} = op, module, state) do
     module.write(state, op.path, adapter_content(content, op.options[:size]), op.options)
   end

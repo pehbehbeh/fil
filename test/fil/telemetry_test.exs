@@ -77,6 +77,18 @@ defmodule Fil.TelemetryTest do
                Enum.map(stops(), fn {measurements, metadata} -> {metadata.op, measurements[:bytes]} end)
     end
 
+    @tag :tmp_dir
+    test "bytes are the size a write found for a stream", %{disk: disk, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "a.txt")
+      File.write!(path, "content")
+
+      assert {:ok, _} = Fil.write(disk, "a.txt", File.stream!(path, 2))
+      assert {:ok, _} = Fil.write(disk, "b.txt", Fil.stream!(disk, "a.txt"))
+
+      assert [{:write, 7}, {:read, nil}, {:write, 7}] =
+               Enum.map(stops(), fn {measurements, metadata} -> {metadata.op, measurements[:bytes]} end)
+    end
+
     test "content that isn't iodata raises before any event, whatever the plugins do", %{disk: disk} do
       answered =
         Fil.attach(disk, :answer, fn op, _next, _opts -> Op.put_result(op, {:ok, Fil.ref(op.disk, op.path)}) end)
@@ -198,6 +210,27 @@ defmodule Fil.TelemetryTest do
       {:ok, _} = Fil.write(disk, "a.txt", "content")
       _ = events()
       :ok
+    end
+
+    test "a source that changes size is a conflict on the write's stop, not a stream exception", %{disk: disk} do
+      other = Fil.disk(adapter: Memory, root: "other")
+
+      for {changed, halted} <- [{"more content", true}, {"short", false}] do
+        source = Fil.stream!(disk, "a.txt")
+        {:ok, _} = Fil.write(disk, "a.txt", changed)
+        _ = events()
+
+        assert {:error, %Fil.ConflictError{op: :read, path: "a.txt"} = error} = Fil.write(other, "b.txt", source)
+
+        assert [
+                 {[:fil, :op, :start], _, %{op: :write}},
+                 {[:fil, :stream, :start], _, %{op: :read}},
+                 {[:fil, :stream, :stop], _, %{op: :read, halted: ^halted}},
+                 {[:fil, :op, :stop], _, %{op: :write, error: ^error}}
+               ] = events()
+
+        {:ok, _} = Fil.write(disk, "a.txt", "content")
+      end
     end
 
     test "the op ends when the stream is handed out, the stream span when it's read", %{disk: disk} do

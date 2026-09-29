@@ -86,11 +86,20 @@ defmodule Fil do
 
   @size_option [
     size: [
-      type: :non_neg_integer,
+      type: {:or, [:non_neg_integer, {:in, [:unknown]}]},
       doc: """
       The size of the content in bytes. S3 sends a stream of known size as it's read, in one request, and uploads one
       without a size in parts. Content of another size raises `ArgumentError` and writes nothing, whatever the plugins
       do with it. Plugins that transform the content drop the size.
+
+      Without it, a `File.Stream` that reads bytes (`File.stream!(path, 65_536)`, not lines) without a mode that
+      changes them (`:compressed`, `:trim_bom`, an encoding) has the size of its file, minus its `:read_offset`, and a
+      stream from `stream/3` the size its adapter found. When such a stream turns out to have another size, because
+      the file changed while it was read, the write returns `Fil.ConflictError` and writes nothing.
+
+      `size: :unknown` writes the stream as it's read, without a size (S3 uploads it in parts). Use it for a file that
+      grows while it's written, such as a log that's still appended to, which is then written as far as it was read,
+      and for files whose stat size may be wrong, such as those under `/sys` or on a network or FUSE file system.
       """
     ]
   ]
@@ -479,7 +488,9 @@ defmodule Fil do
   `content` is iodata, or a stream of it (see `t:content/0`). A stream is written as it's read, without holding the
   content in memory at once, and a file is only there once the stream has ended. If reading the stream raises, nothing
   is written: one of `Fil`'s errors (from a stream of `stream/3`, say) comes back as `{:error, error}`, and any other
-  exception propagates. Pass the size with `:size` if you know it, so S3 can send the stream in one request.
+  exception propagates. S3 sends a stream whose size it knows in one request, and uploads any other in parts. `Fil`
+  finds the size of a `File.Stream` of bytes and of a stream from `stream/3` itself; for any other stream, pass it with
+  `:size` if you know it.
 
   ## Options
 
@@ -499,7 +510,7 @@ defmodule Fil do
 
   Uploads and files from disk are streams too:
 
-      Fil.write(s3, "videos/intro.mp4", File.stream!("intro.mp4", 65_536), size: File.stat!("intro.mp4").size)
+      Fil.write(s3, "videos/intro.mp4", File.stream!("intro.mp4", 65_536))
 
   """
   @doc section: :operations
@@ -518,8 +529,8 @@ defmodule Fil do
     opts = validate!(opts, @write_schema)
     :ok = Content.validate!(content)
 
-    {content, size} = check_content!(content, opts[:size])
-    run(ref, :write, opts, [content: content], size)
+    {content, write_opts, size} = check_content!(content, opts)
+    run(ref, :write, write_opts, [content: content], size)
   end
 
   @doc "Writes a file. See `write/2`."
@@ -997,19 +1008,31 @@ defmodule Fil do
 
   # The caller's content is checked before plugins see it, so a plugin that collects, transforms or replaces it doesn't
   # hide bad content or a wrong size. Iodata is measured once, here, and its size is also the `:bytes` of the write's
-  # events. A stream is checked against `:size` while it's read (`Fil.Support.Content.sized/3`). Returns the content
-  # and its size, if it's known.
-  defp check_content!(content, size) do
-    if Content.iodata?(content) do
-      {content, check_iodata_size!(content, size)}
-    else
-      {check_stream_size(content, size), size}
+  # events. A stream is checked against `:size` while it's read (`Fil.Support.Content.sized/3`). Without `:size`, a
+  # stream whose size is known before it's read gets it (`Fil.Support.Content.known_size/1`), so S3 can send it in one
+  # request, and one that turns out to have another size is a conflict instead of a bad argument: the file changed. A
+  # size found this way stays with the stream (`Fil.Support.Sized`), so `Fil.Op` can tell it from one a caller or a
+  # plugin declared. Returns the content, the options and the size, if it's known. `size: :unknown` only turns off
+  # finding the size, so it's dropped here, and plugins and adapters never see it.
+  defp check_content!(content, opts) do
+    case Keyword.pop(opts, :size) do
+      {:unknown, without_size} -> check_content!(content, without_size, :unknown)
+      {size, _opts} -> check_content!(content, opts, size)
+    end
+  end
+
+  defp check_content!(content, opts, size) do
+    cond do
+      Content.iodata?(content) -> {content, opts, check_iodata_size!(content, size)}
+      is_integer(size) -> {Content.sized(content, size), opts, size}
+      size == :unknown -> {content, opts, nil}
+      true -> check_known_size(content, opts)
     end
   end
 
   defp check_iodata_size!(content, size) do
     case iodata_length!(content) do
-      length when size in [nil, length] -> length
+      length when size in [nil, :unknown, length] -> length
       length -> raise ArgumentError, "the content has #{length} bytes, but the :size option is #{size}"
     end
   end
@@ -1024,8 +1047,16 @@ defmodule Fil do
               __STACKTRACE__
   end
 
-  defp check_stream_size(stream, nil), do: stream
-  defp check_stream_size(stream, size), do: Content.sized(stream, size)
+  defp check_known_size(stream, opts) do
+    case Content.known_size(stream) do
+      {size, mismatch} ->
+        sized = %Sized{stream: Content.sized(stream, size, mismatch), size: size}
+        {sized, Keyword.put(opts, :size, size), size}
+
+      nil ->
+        {stream, opts, nil}
+    end
+  end
 
   # Parameters that signed URLs already use on some disk. They're rejected on every disk, so a URL that works on one
   # works on all.
@@ -1098,19 +1129,11 @@ defmodule Fil do
   defp name_op({:error, %{op: _} = error}, name), do: {:error, %{error | op: name}}
   defp name_op(result, _name), do: result
 
-  # An error the source raises while it's streamed comes back from the write with the source's context. When the
-  # source's adapter found the size and no plugin changed the content, the write gets the size, so S3 can stream too.
-  # A source that changes size while it's copied fails the copy with a conflict.
+  # The write sends the stream with the size the source's adapter found, if it did (see `check_content!/2`). An error
+  # the source raises while it's streamed, or a source that changes size meanwhile, comes back from the write with the
+  # source's context.
   defp cross_disk(:cp, src, dest, opts) do
-    with {:ok, content} <- run(src, :read, validate!([], @read_schema), streaming: true) do
-      case content do
-        %Sized{stream: stream, size: size} ->
-          write(dest, Content.sized(stream, size, &size_changed(&1, src)), Keyword.put(opts, :size, size))
-
-        content ->
-          write(dest, Content.chunks(content), opts)
-      end
-    end
+    with {:ok, content} <- stream(src), do: write(dest, content, opts)
   end
 
   defp cross_disk(:rename, src, dest, opts) do
@@ -1118,10 +1141,6 @@ defmodule Fil do
          {:ok, _} <- rm(src) do
       {:ok, dest_ref}
     end
-  end
-
-  defp size_changed(_message, %Ref{disk: disk, path: path}) do
-    %Fil.ConflictError{reason: :size_changed, op: :read, path: path, disk: disk}
   end
 
   defp resolve(%Ref{} = ref, name), do: resolve(ref, name, {%Op{disk: ref.disk, name: name, path: ref.path}, %{}})

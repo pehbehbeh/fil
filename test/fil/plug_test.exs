@@ -26,13 +26,10 @@ defmodule Fil.PlugTest do
     {:ok, local: local, memory: memory}
   end
 
-  # The disk comes from a describe tag, because Elixir 1.16 doesn't allow `unquote` in a test's context pattern.
   for adapter <- [:local, :memory] do
     describe "#{adapter} disk" do
-      @describetag adapter: adapter
-
       setup context do
-        {:ok, disk: Map.fetch!(context, context.adapter)}
+        {:ok, disk: Map.fetch!(context, unquote(adapter))}
       end
 
       test "GET downloads the file", %{disk: disk} do
@@ -259,7 +256,7 @@ defmodule Fil.PlugTest do
 
     test "a body Plug.Parsers already read is a 400, not an empty file", %{memory: disk} do
       {:ok, url} = Fil.signed_url(disk, "data.json", method: :put)
-      parsers = Plug.Parsers.init(parsers: [:json], json_decoder: Jason, pass: ["*/*"])
+      parsers = Plug.Parsers.init(parsers: [:json], json_decoder: JSON, pass: ["*/*"])
 
       conn =
         url

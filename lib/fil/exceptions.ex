@@ -84,7 +84,12 @@ defmodule Fil.ConflictError do
   @moduledoc """
   The file changed while the operation used it. Read it again and retry.
 
-  `Fil` returns it with `reason: :size_changed` for a copy across disks whose source changed size while it was copied.
+  `Fil` returns it with `reason: :size_changed` for a write of a stream whose size `Fil` found (a `File.Stream` or a
+  stream from `Fil.stream/3`, see the `:size` option of `Fil.write/4`), and for a copy across disks, when the file
+  changed size while it was read. For a `File.Stream`, the error has the write's context. For a stream from
+  `Fil.stream/3`, it has the context of the file that changed: `op: :read` with the source's path and disk (`op: :cp`
+  or `:rename` in a copy across disks).
+
   S3 returns it with `reason: "NoSuchUpload"` for an upload in parts that something else aborted while it ran, such as
   a lifecycle rule. Retrying can help, as with `Fil.UnavailableError`, because the next attempt reads the file as it is
   then, or starts a new upload.

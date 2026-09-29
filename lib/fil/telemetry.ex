@@ -51,8 +51,8 @@ defmodule Fil.Telemetry do
   `:bytes` counts the caller's content, before plugins change it:
 
     * a read: the size of the content it returns
-    * a write: the `:size` option, the size of iodata, or what was read from a stream without `:size` (0 if a plugin
-      answered without reading it)
+    * a write: the `:size` option, the size of iodata or of a stream whose size `Fil.write/4` found, or what was read
+      from any other stream (0 if a plugin answered without reading it)
 
   A read from `Fil.stream/3` has no `:bytes`, its stream events count them. Nor do copies, renames and the other
   operations.
@@ -94,7 +94,10 @@ defmodule Fil.Telemetry do
   `Stream.zip/2`, say) is dropped.
 
   When a stream goes into `Fil.write/4` and the source fails, the write's `:stop` has the source's error, whose `:op`
-  and `:path` name the source.
+  and `:path` name the source. A source that turns out to have another size than the write found for it (the file
+  changed while it was read) is reported the same way, with a `Fil.ConflictError` on the write's `:stop`. The write
+  checks the size, and the stream itself read fine, so its span ends with a `:stop` instead of an `:exception`, with
+  `halted: true` if the source was longer, and `false` if it ended short.
 
   ## Metrics
 

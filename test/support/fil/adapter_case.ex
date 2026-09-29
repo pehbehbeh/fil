@@ -284,14 +284,17 @@ defmodule Fil.AdapterCase do
         assert Fil.read(other_disk, "copy.bin") == {:ok, content}
       end
 
-      test "writes and streams empty content", %{disk: disk} do
+      test "writes and streams empty content", %{disk: disk, tmp_dir: tmp_dir} do
         empty = Stream.map([], & &1)
+        empty_file = Path.join(tmp_dir, "empty.txt")
+        File.write!(empty_file, "")
 
         assert {:ok, _} = Fil.write(disk, "empty.txt", empty)
         assert {:ok, _} = Fil.write(disk, "empty-sized.txt", empty, size: 0)
         assert {:ok, _} = Fil.write(disk, "empty-chunks.txt", Stream.map(["", [], ""], & &1))
+        assert {:ok, _} = Fil.write(disk, "empty-file.txt", File.stream!(empty_file, 2))
 
-        for path <- ["empty.txt", "empty-sized.txt", "empty-chunks.txt"] do
+        for path <- ["empty.txt", "empty-sized.txt", "empty-chunks.txt", "empty-file.txt"] do
           assert Fil.read(disk, path) == {:ok, ""}
           assert {:ok, stream} = Fil.stream(disk, path)
           assert Enum.to_list(stream) == []
@@ -349,18 +352,103 @@ defmodule Fil.AdapterCase do
         assert kept.path == "kept.txt"
       end
 
-      test "a stream of another size than :size raises and writes nothing", %{disk: disk} do
-        stream = chunked("hello", 2)
+      test "a stream of another size than :size raises and writes nothing", %{disk: disk, tmp_dir: tmp_dir} do
+        path = Path.join(tmp_dir, "hello.txt")
+        File.write!(path, "hello")
 
-        assert_raise ArgumentError, "the content has 5 bytes, but the :size option is 6", fn ->
-          Fil.write(disk, "sized.txt", stream, size: 6)
-        end
+        # The :size option wins over the size of a file stream.
+        for stream <- [chunked("hello", 2), File.stream!(path, 2)] do
+          assert_raise ArgumentError, "the content has 5 bytes, but the :size option is 6", fn ->
+            Fil.write(disk, "sized.txt", stream, size: 6)
+          end
 
-        assert_raise ArgumentError, "the content has more than 4 bytes, but the :size option is 4", fn ->
-          Fil.write(disk, "sized.txt", stream, size: 4)
+          assert_raise ArgumentError, "the content has more than 4 bytes, but the :size option is 4", fn ->
+            Fil.write(disk, "sized.txt", stream, size: 4)
+          end
         end
 
         refute Fil.exists?(disk, "sized.txt")
+      end
+
+      test "writes a file stream without its size", %{disk: disk, tmp_dir: tmp_dir} do
+        content = :crypto.strong_rand_bytes(large())
+        path = Path.join(tmp_dir, "source.bin")
+        File.write!(path, content)
+
+        assert {:ok, _} = Fil.write(disk, "file.bin", File.stream!(path, 65_536))
+        assert {:ok, %Fil.Stat{size: size}} = Fil.stat(disk, "file.bin")
+        assert size == large()
+        assert {:ok, read} = Fil.read(disk, "file.bin")
+        assert :crypto.hash(:sha256, read) == :crypto.hash(:sha256, content)
+
+        assert {:ok, _} = Fil.write(disk, "offset.bin", File.stream!(path, 65_536, read_offset: large() - 5))
+        assert Fil.read(disk, "offset.bin") == {:ok, binary_part(content, large() - 5, 5)}
+
+        assert {:ok, _} = Fil.write(disk, "past-the-end.bin", File.stream!(path, 65_536, read_offset: large() + 1))
+        assert Fil.read(disk, "past-the-end.bin") == {:ok, ""}
+      end
+
+      test "writes a file stream of lines, or one that changes the file's bytes", %{disk: disk, tmp_dir: tmp_dir} do
+        lines = Path.join(tmp_dir, "lines.txt")
+        File.write!(lines, "one\ntwo\n")
+        compressed = Path.join(tmp_dir, "lines.txt.gz")
+        File.write!(compressed, :zlib.gzip("one\ntwo\n"))
+        bom = Path.join(tmp_dir, "bom.txt")
+        File.write!(bom, "\uFEFFone\ntwo\n")
+
+        assert {:ok, _} = Fil.write(disk, "lines.txt", File.stream!(lines))
+        assert {:ok, _} = Fil.write(disk, "gunzipped.txt", File.stream!(compressed, 4, [:compressed]))
+        assert {:ok, _} = Fil.write(disk, "trimmed.txt", File.stream!(bom, 4, [:trim_bom]))
+        assert {:ok, _} = Fil.write(disk, "latin1.txt", File.stream!(bom, 4, encoding: :latin1))
+
+        for path <- ["lines.txt", "gunzipped.txt", "trimmed.txt"] do
+          assert Fil.read(disk, path) == {:ok, "one\ntwo\n"}
+        end
+
+        # Read as Latin-1, each byte of the BOM becomes a character of two bytes in UTF-8.
+        assert {:ok, <<"\u00EF\u00BB\u00BF", "one\ntwo\n">>} = Fil.read(disk, "latin1.txt")
+      end
+
+      test "a file that changes size while it's written is a conflict and writes nothing", %{
+        disk: disk,
+        tmp_dir: tmp_dir
+      } do
+        path = Path.join(tmp_dir, "changing.txt")
+
+        for change <- [&File.write!(&1, "more", [:append]), &File.write!(&1, "short")] do
+          File.write!(path, "content")
+
+          # The file changes after `Fil.write/4` found its size, before the adapter reads it.
+          changing =
+            Fil.attach(disk, :change, fn op, next, _opts ->
+              change.(path)
+              next.(op)
+            end)
+
+          assert {:error, %Fil.ConflictError{op: :write, path: "changed.txt", reason: :size_changed} = error} =
+                   Fil.write(changing, "changed.txt", File.stream!(path, 2))
+
+          assert error.disk == changing
+          refute Fil.exists?(disk, "changed.txt")
+        end
+      end
+
+      test "size: :unknown writes a file stream as it's read", %{disk: disk, tmp_dir: tmp_dir} do
+        path = Path.join(tmp_dir, "log.txt")
+        File.write!(path, "first\n")
+
+        # A log that's appended to after `Fil.write/4` looked at it, before the adapter reads it.
+        appending =
+          Fil.attach(disk, :append, fn op, next, _opts ->
+            File.write!(path, "second\n", [:append])
+            next.(op)
+          end)
+
+        assert {:ok, _} = Fil.write(appending, "log.txt", File.stream!(path, 2), size: :unknown)
+        assert Fil.read(disk, "log.txt") == {:ok, "first\nsecond\n"}
+
+        assert {:ok, _} = Fil.write(disk, "iodata.txt", "content", size: :unknown)
+        assert Fil.read(disk, "iodata.txt") == {:ok, "content"}
       end
 
       test "if_exists: :error applies to streams", %{disk: disk} do

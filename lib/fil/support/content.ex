@@ -23,6 +23,8 @@ defmodule Fil.Support.Content do
 
   @doc "The chunks of a stream as non-empty binaries. Iodata becomes a list of at most one binary."
   @spec chunks(iodata() | Enumerable.t()) :: Enumerable.t()
+  def chunks(%Sized{stream: stream} = sized), do: %{sized | stream: chunks(stream)}
+
   def chunks(content) do
     if iodata?(content) do
       content
@@ -49,11 +51,63 @@ defmodule Fil.Support.Content do
   end
 
   @doc """
-  The chunks of a stream, checked against the size the caller declared, so an adapter never finishes a write of the
-  wrong size. Each chunk is passed on only once the next one has arrived, and the last one once the stream has ended
-  at exactly `size` bytes. Storage that knows the size (a PutObject with its `content-length`) would store the content
-  as soon as it has all of it, so a stream that turns out longer raises before the last chunk goes out, and one that
-  ends short raises instead of ending.
+  The size of a stream that's known before it's read, and the error it raises in `sized/3` when it turns out to have
+  another size: a stream from `Fil.stream/3` whose adapter found the size, or a `File.Stream` that reads a file's bytes
+  as they are (see `file_size/1` below). `nil` for any other stream.
+  """
+  @spec known_size(Enumerable.t()) :: {non_neg_integer(), (String.t() -> Exception.t())} | nil
+  def known_size(%Sized{size: size, context: context}), do: {size, size_changed(context)}
+
+  def known_size(%File.Stream{} = stream) do
+    with size when is_integer(size) <- file_size(stream), do: {size, size_changed([])}
+  end
+
+  def known_size(_stream), do: nil
+
+  # A `File.Stream` of chunks of bytes (not lines), on this node, without an encoding, and with no mode that changes
+  # what's read (`:compressed`, `:trim_bom`), reads the file from its `:read_offset` to its end. The size is what the
+  # file has now; `sized/3` notices if it changes before the stream has been read. A file that can't be found, or isn't
+  # a regular file (a device or a pipe, whose size says nothing), has none, and fails the write when it's read. Nor
+  # does an empty one: the pseudo-files of `/proc` on Linux are regular files of size 0 that read thousands of bytes.
+  defp file_size(%File.Stream{line_or_bytes: bytes, raw: true, node: node, modes: modes, path: path})
+       when is_integer(bytes) and node == node() do
+    with true <- Enum.all?(modes, &plain_mode?/1),
+         {:ok, %File.Stat{type: :regular, size: size}} when size > 0 <- File.stat(path) do
+      max(size - read_offset(modes), 0)
+    else
+      _other -> nil
+    end
+  end
+
+  defp file_size(_stream), do: nil
+
+  # Modes that don't change the bytes read: `File.stream!/3` adds `:raw`, `:read_ahead` and `:binary` itself, and the
+  # others only apply when the stream is written to.
+  defp plain_mode?(mode) when mode in [:raw, :binary, :read_ahead, :append, :delayed_write], do: true
+  defp plain_mode?({:read_ahead, _size}), do: true
+  defp plain_mode?({:delayed_write, _size, _delay}), do: true
+  defp plain_mode?({:read_offset, _offset}), do: true
+  defp plain_mode?(_mode), do: false
+
+  defp read_offset(modes) do
+    case List.keyfind(modes, :read_offset, 0) do
+      {:read_offset, offset} -> offset
+      nil -> 0
+    end
+  end
+
+  # The file changed after its size was found. The error has the context of the read that found it, or none, so that
+  # the write fills in its own.
+  defp size_changed(context) do
+    fn _message -> Fil.Support.Error.put_context(%Fil.ConflictError{reason: :size_changed}, context) end
+  end
+
+  @doc """
+  The chunks of a stream, checked against `size`, which the caller declared or `known_size/1` found, so an adapter never
+  finishes a write of the wrong size. Each chunk is passed on only once the next one has arrived, and the last one once
+  the stream has ended at exactly `size` bytes. Storage that knows the size (a PutObject with its `content-length`)
+  would store the content as soon as it has all of it, so a stream that turns out longer raises before the last chunk
+  goes out, and one that ends short raises instead of ending.
   """
   @spec sized(Enumerable.t(), non_neg_integer() | nil, (String.t() -> Exception.t())) :: Enumerable.t()
   def sized(stream, size, mismatch \\ &ArgumentError.exception/1)
@@ -94,7 +148,7 @@ defmodule Fil.Support.Content do
   def put_context(stream, context, telemetry \\ nil)
 
   def put_context(%Sized{stream: stream} = sized, context, telemetry) do
-    %{sized | stream: put_context(stream, context, telemetry)}
+    %{sized | stream: put_context(stream, context, telemetry), context: context}
   end
 
   def put_context(stream, context, telemetry) do

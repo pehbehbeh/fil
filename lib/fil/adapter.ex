@@ -41,8 +41,8 @@ defmodule Fil.Adapter do
 
   Options that `File` has no equivalent for:
 
-    * `size:` on `c:write/4` is the size of a stream, when the caller knows it. Storage that needs the size before the
-      content uses it, and uploads a stream without one in parts
+    * `size:` on `c:write/4` is the size of a stream, when the caller knows it or `Fil.write/4` found it. Storage that
+      needs the size before the content uses it, and uploads a stream without one in parts
     * `checksum:` on `c:write/4` sends a checksum of the content where the storage keeps one, and storage that finds
       the content doesn't match fails with `Fil.ChecksumMismatchError`. Storage without checksums ignores the option
     * `checksum:` on `c:stat/3` fills in `Fil.Stat`'s `:checksum`, from the storage or computed from the content
@@ -109,9 +109,9 @@ defmodule Fil.Adapter do
 
   Optional. Without it, `Fil.stream/3` calls `c:read/3` and streams the file as one chunk.
 
-  Returns `{:ok, stream, size}` when the check found the size of the file, `{:ok, stream}` otherwise. `Fil` passes the
-  size on when it copies the file to another disk, so storage that needs the size before the content (S3) can stream
-  the copy too.
+  Returns `{:ok, stream, size}` when the check found the size of the file, `{:ok, stream}` otherwise. `Fil.write/4`
+  passes the size on when the stream is written, to another disk or in a copy across disks, so storage that needs the
+  size before the content (S3) can stream it too.
 
   The stream is lazy: it reads the file only when it's enumerated, and again each time it is, in whatever process
   enumerates it. It yields binaries of any size and raises an error struct when reading fails (`Fil` fills in its
@@ -125,8 +125,8 @@ defmodule Fil.Adapter do
   Writes `content`, creating parent directories as needed.
 
   `content` is iodata, or a stream of non-empty binaries. `Fil` checks a stream against the `:size` option while the
-  adapter reads it, when the caller gave one. If the stream raises, the adapter lets the error propagate and writes
-  nothing: the destination keeps what it had before.
+  adapter reads it, when the caller gave one or `Fil.write/4` found one. If the stream raises, the adapter lets the
+  error propagate and writes nothing: the destination keeps what it had before.
   """
   @callback write(state(), path(), iodata() | Enumerable.t(), opts()) :: :ok | error()
 

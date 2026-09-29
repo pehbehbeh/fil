@@ -187,6 +187,21 @@ defmodule FilTest do
       refute Fil.exists?(other, "a.txt")
     end
 
+    test "a stream from Fil.stream/3 that changes size while it's written is a conflict of the source", %{disk: disk} do
+      other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+
+      # The file shrinks after the check, before the write reads it.
+      source = Fil.stream!(disk, "a.txt")
+      {:ok, _} = Fil.write(disk, "a.txt", "short")
+
+      assert {:error, %Fil.ConflictError{op: :read, path: "a.txt", reason: :size_changed} = error} =
+               Fil.write(other, "b.txt", source)
+
+      assert error.disk == disk
+      refute Fil.exists?(other, "b.txt")
+    end
+
     test "a copy across disks returns an error the source raises while it's streamed", %{disk: disk} do
       other = Fil.disk(adapter: Fil.Adapter.Memory, root: "other")
       {:ok, _} = Fil.write(disk, "a.txt", "content")
