@@ -260,6 +260,21 @@ defmodule Fil.Adapter.LocalTest do
       assert Bitwise.band(mode, 0o7777) == 0o750
     end
 
+    test "move a symlink, not its target", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "target.txt", "target")
+
+      root = Path.join(tmp_dir, "primary")
+      link = Path.join(root, "link")
+      moved = Path.join(root, "moved")
+      File.ln_s!("target.txt", link)
+
+      assert {:ok, _} = Fil.rename(disk, "link", "moved", if_exists: :error)
+      assert File.read_link(moved) == {:ok, "target.txt"}
+      assert File.lstat(link) == {:error, :enoent}
+      assert Fil.read(disk, "moved") == {:ok, "target"}
+      assert Fil.read(disk, "target.txt") == {:ok, "target"}
+    end
+
     test "move a directory as before", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
       assert {:ok, _} = Fil.rename(disk, "dir", "moved/dir", if_exists: :error)

@@ -52,10 +52,11 @@ defmodule Fil.Adapter.Local do
     * `Fil.rename/4`: `File.rename/2`, which moves directories too. `if_exists: :error` hard-links the file to the
       destination and then removes the source. Where the link fails with `:eperm` or `:enotsup` (a filesystem without
       hard links, or on Linux a file of another user with `fs.protected_hardlinks` on), it creates the destination with
-      `O_EXCL` first and then moves the file there, like a write. A write that replaces the source after the link
-      fails the move with a `Fil.ConflictError` and leaves the destination as it was. A write in the short moment
-      between that check and the removal of the source is lost. A directory is still moved with `File.rename/2`, which
-      replaces an empty directory. A file or a directory with files in it is a `Fil.AlreadyExistsError`.
+      `O_EXCL` first and then moves the file there, like a write. A symlink is moved that way too, so the destination
+      is the link and not its target. A write that replaces the source after the link fails the move with a
+      `Fil.ConflictError` and leaves the destination as it was. A write in the short moment between that check and the
+      removal of the source is lost. A directory is still moved with `File.rename/2`, which replaces an empty
+      directory. A file or a directory with files in it is a `Fil.AlreadyExistsError`.
     * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Files whose name starts with `.fil-` are removed
       too, but not counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
@@ -326,18 +327,31 @@ defmodule Fil.Adapter.Local do
 
   # A hard link claims the destination only if it doesn't exist, and removing the source then completes the move.
   # Without hard links, `create/2` claims the destination with `O_EXCL` and moves the file there, which completes the
-  # move by itself. Directories can't be hard-linked, so they're moved with `File.rename/2`.
+  # move by itself. A symlink always takes that way, whatever it points to: on macOS, a hard link to a symlink links
+  # its target, so the destination would be the target's file instead of the link. Directories can't be hard-linked,
+  # so they're moved with `File.rename/2`.
   defp move_new(from, to) do
-    if File.dir?(from) do
-      move_dir(from, to)
-    else
-      case create(from, to) do
-        {:ok, :linked} -> remove_source(from, to)
-        {:ok, :moved} -> :ok
-        error -> error
-      end
+    cond do
+      symlink?(from) ->
+        from
+        |> claim(to)
+        |> complete_move(from, to)
+
+      File.dir?(from) ->
+        move_dir(from, to)
+
+      true ->
+        from
+        |> create(to)
+        |> complete_move(from, to)
     end
   end
+
+  defp symlink?(full), do: match?({:ok, %File.Stat{type: :symlink}}, File.lstat(full))
+
+  defp complete_move({:ok, :linked}, from, to), do: remove_source(from, to)
+  defp complete_move({:ok, :moved}, _from, _to), do: :ok
+  defp complete_move(error, _from, _to), do: error
 
   # `File.rename/2` puts a directory over an empty one, but not over a file (`:enotdir`) or over a directory with
   # something in it (`:enotempty`, or `:eexist` on Linux). For `if_exists: :error`, those are a destination that exists.
