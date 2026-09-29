@@ -175,4 +175,11 @@ defmodule Fil.Plugin.URLTest do
     refute inspect(disk) =~ "secret"
     refute inspect(Fil.ref(disk, "a.txt")) =~ "secret"
   end
+
+  test "Local and Memory build no URLs without it", %{tmp_dir: tmp_dir} do
+    for disk <- [Fil.disk(adapter: Fil.Adapter.Local, root: tmp_dir), Fil.disk(adapter: Fil.Adapter.Memory)] do
+      assert {:error, %Fil.UnsupportedError{op: :url, reason: :no_callback}} = Fil.url(disk, "a.txt")
+      assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :no_callback}} = Fil.signed_url(disk, "a.txt")
+    end
+  end
 end

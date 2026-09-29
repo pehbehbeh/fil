@@ -182,7 +182,10 @@ list).
 ## Testing conventions
 
 - `Fil.AdapterCase` (test/support) is the shared conformance suite, and every adapter runs it. New behaviour gets a
-  test there, not a copy per adapter.
+  test there, not a copy per adapter. Each test in it needs its sentence in the `Fil.Adapter` moduledoc (the contract,
+  or the options `File` has no equivalent for), because third-party adapters will be held to the suite once it's
+  public. A result that differs between adapters on purpose (S3 refuses what Local allows) is asserted as the set of
+  allowed results, and the exact result stays in the adapter's own test.
 - Cloud unit tests stub the storage with `Req.Test` (`Req.Test.stub(__MODULE__, &s3(&1, test))` or `Req.Test.expect/3`,
   and `req_options: [plug: {Req.Test, __MODULE__}]`), so `mix test` makes no network requests. The stubs are plugs, so
   the tests need Plug, which stays optional for users. Req runs the stub after its own request steps (signing included),

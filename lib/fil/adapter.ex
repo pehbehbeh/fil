@@ -39,6 +39,13 @@ defmodule Fil.Adapter do
   or move is `c:cp/4` or `c:rename/4` with `if_exists: :error`. It fails with the destination's path and leaves both
   files as they were.
 
+  A copy or a move onto its own path never loses the file. The adapter leaves it where it is, fails with
+  `Fil.AlreadyExistsError` when the call is exclusive, or refuses the call with `Fil.InvalidRequestError`
+  (`Fil.Adapter.S3`). A copy keeps the content type, where the storage keeps one.
+
+  The `:etag` that `c:stat/3` returns changes when a write changes the content. It can be weak, like the
+  `"size-mtime"` of `Fil.Adapter.Local`, which misses a change that keeps the size within the same second.
+
   Where an adapter returns `:ok`, the `Fil` function returns `{:ok, %Fil.Ref{}}`, and `Fil.ls/2` turns the pairs
   into refs.
 
@@ -48,7 +55,9 @@ defmodule Fil.Adapter do
       needs the size before the content uses it, and uploads a stream without one in parts
     * `checksum:` on `c:write/4` sends a checksum of the content where the storage keeps one, and storage that finds
       the content doesn't match fails with `Fil.ChecksumMismatchError`. Storage without checksums ignores the option
-    * `checksum:` on `c:stat/3` fills in `Fil.Stat`'s `:checksum`, from the storage or computed from the content
+    * `checksum:` on `c:stat/3` fills in `Fil.Stat`'s `:checksum`, from the storage or computed from the content. A
+      directory has no checksum, and a copy keeps the checksum of a file written in one part (S3 computes a new one
+      when it copies a file uploaded in parts)
     * `verify_checksum: true` on `c:read/3` fails with `Fil.ChecksumMismatchError` when the content doesn't match a
       stored checksum
 

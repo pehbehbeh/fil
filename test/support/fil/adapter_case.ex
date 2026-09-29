@@ -616,11 +616,15 @@ defmodule Fil.AdapterCase do
         assert {:ok, _} = Fil.write(disk, "keep.txt", "keep")
         assert {:ok, _} = Fil.write(disk, "trash/a.txt", "a")
         assert {:ok, _} = Fil.write(disk, "trash/nested/b.txt", "b")
+        assert {:ok, _} = Fil.write(disk, "trash.txt", "sibling file")
+        assert {:ok, _} = Fil.write(disk, "trashcan/c.txt", "sibling directory")
 
         assert {:ok, 2} = Fil.rm_rf(disk, "trash")
         assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "trash/a.txt")
         assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "trash/nested/b.txt")
         assert Fil.read(disk, "keep.txt") == {:ok, "keep"}
+        assert Fil.read(disk, "trash.txt") == {:ok, "sibling file"}
+        assert Fil.read(disk, "trashcan/c.txt") == {:ok, "sibling directory"}
       end
 
       test "deleting a missing prefix removes nothing", %{disk: disk} do
@@ -667,6 +671,18 @@ defmodule Fil.AdapterCase do
         assert {:ok, _} = Fil.write(disk, "statdir/file.txt", "x")
         assert {:ok, stat} = Fil.stat(disk, "statdir")
         assert stat.type == :directory
+
+        assert {:ok, %Fil.Stat{type: :directory, checksum: nil}} = Fil.stat(disk, "statdir", checksum: :crc32)
+      end
+
+      test "the etag changes with the content", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "etag.txt", "small")
+        assert {:ok, first} = Fil.stat(disk, "etag.txt")
+
+        assert {:ok, _} = Fil.write(disk, "etag.txt", "considerably larger content")
+        assert {:ok, second} = Fil.stat(disk, "etag.txt")
+
+        assert first.etag != second.etag
       end
 
       ## ----------------------------------------------------------------
@@ -757,6 +773,37 @@ defmodule Fil.AdapterCase do
         assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "draft.txt")
       end
 
+      test "a copy keeps the checksum and the content type", %{disk: disk} do
+        checksum =
+          :sha256
+          |> :crypto.hash("hello")
+          |> Base.encode64()
+
+        assert {:ok, _} = Fil.write(disk, "a.txt", "hello", checksum: :sha256, content_type: "text/plain")
+        assert {:ok, _} = Fil.cp(disk, "a.txt", "b.txt")
+
+        assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}, content_type: content_type}} =
+                 Fil.stat(disk, "b.txt", checksum: :sha256)
+
+        # Where the storage keeps a content type.
+        assert content_type in ["text/plain", nil]
+        assert Fil.read(disk, "b.txt", verify_checksum: true) == {:ok, "hello"}
+      end
+
+      test "a copy or a move onto itself never loses the file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "a.txt", "a")
+
+        # Local and Memory keep the file where it is or find it there, S3 refuses to copy an object onto itself.
+        for opts <- [[], [if_exists: :error]], copy_or_move <- [&Fil.cp/4, &Fil.rename/4] do
+          result = copy_or_move.(disk, "a.txt", "a.txt", opts)
+
+          assert match?({:ok, _}, result) or match?({:error, %Fil.AlreadyExistsError{}}, result) or
+                   match?({:error, %Fil.InvalidRequestError{}}, result)
+
+          assert Fil.read(disk, "a.txt") == {:ok, "a"}
+        end
+      end
+
       test "an error across disks names the call", %{disk: disk, other_disk: other_disk} do
         assert {:error, %Fil.NotFoundError{op: :cp, path: "nope.txt"}} =
                  Fil.cp(disk, "nope.txt", Fil.ref(other_disk, "target.txt"))
@@ -789,11 +836,13 @@ defmodule Fil.AdapterCase do
 
       test "if_exists: :error never replaces a file", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "once.txt", "first", if_exists: :error)
+        assert {:ok, _} = Fil.write(disk, "existing.txt", "original")
 
-        assert {:error, %Fil.AlreadyExistsError{}} =
-                 Fil.write(disk, "once.txt", "second", if_exists: :error)
+        assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "once.txt", "second", if_exists: :error)
+        assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "existing.txt", "clobber", if_exists: :error)
 
         assert Fil.read(disk, "once.txt") == {:ok, "first"}
+        assert Fil.read(disk, "existing.txt") == {:ok, "original"}
       end
 
       test "if_exists: :error never replaces a file on a copy or a move", %{disk: disk, other_disk: other_disk} do
