@@ -196,7 +196,9 @@ defmodule Fil.Tmp do
       :ok ->
         restrict(dir, key, parent, attempts)
 
-      # Someone else's directory, which the owner mustn't remove.
+      # Someone else's directory. The owner's entry for the name went in before the `mkdir`, so an owner that's killed
+      # before the `Tmp.delete/1` removes that directory at its exit. That's accepted: it takes a collision of the 40
+      # random bits first, which is practically impossible.
       {:error, :eexist} when attempts > 1 ->
         Tmp.delete(key)
         create_dir(parent, attempts - 1)
