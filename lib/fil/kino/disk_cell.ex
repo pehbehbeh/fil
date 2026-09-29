@@ -17,22 +17,18 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     # The options the text fields become, in the order of the generated code.
     @s3_options ~w(bucket region root endpoint)a
 
+    @text_fields ~w(root bucket region endpoint access_key_id_secret secret_access_key_secret session_token_secret)
+
     @impl Kino.JS.Live
     def init(attrs, ctx) do
-      endpoint = attrs["endpoint"] || ""
+      texts = Map.new(@text_fields, &{&1, attrs[&1] || ""})
 
-      fields = %{
-        "variable" => variable(attrs["variable"]),
-        "adapter" => if(Map.has_key?(@adapters, attrs["adapter"]), do: attrs["adapter"], else: "local"),
-        "root" => attrs["root"] || "",
-        "bucket" => attrs["bucket"] || "",
-        "region" => attrs["region"] || "",
-        "endpoint" => endpoint,
-        "path_style" => if(is_boolean(attrs["path_style"]), do: attrs["path_style"], else: endpoint != ""),
-        "access_key_id_secret" => attrs["access_key_id_secret"] || "",
-        "secret_access_key_secret" => attrs["secret_access_key_secret"] || "",
-        "session_token_secret" => attrs["session_token_secret"] || ""
-      }
+      fields =
+        Map.merge(texts, %{
+          "variable" => variable(attrs["variable"]),
+          "adapter" => if(Map.has_key?(@adapters, attrs["adapter"]), do: attrs["adapter"], else: "local"),
+          "path_style" => if(is_boolean(attrs["path_style"]), do: attrs["path_style"], else: texts["endpoint"] != "")
+        })
 
       {:ok, assign(ctx, fields: fields)}
     end
