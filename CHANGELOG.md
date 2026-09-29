@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Fil.Kino.browser/3` browses a disk in Livebook: one directory at a time, with a preview of images and text and a
+  download button. Kino is a new optional dependency.
 - `Fil.Plugin.Thumbnails` writes smaller copies of images when they're written, sized per variant, and deletes, copies
   and renames them with the image. They go under `thumbnails/`, or wherever a `:variant_path` function puts them, such
   as next to the image. `generate/1` makes them later, with `mode: :manual` or for images stored before. It needs the

@@ -35,6 +35,8 @@ Mix.install([{:fil, "~> 0.1"}])
 disk = Fil.disk(adapter: Fil.Adapter.Local, root: "storage")
 ```
 
+With [Kino](https://hexdocs.pm/kino) installed too, `Fil.Kino.browser/1` shows the files of a disk in Livebook.
+
 ## A module for your disks
 
 A disk is a plain value, so your application needs a place that builds it. One function per disk works well:

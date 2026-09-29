@@ -45,7 +45,9 @@ The Hex package is `fil`.
   on every adapter", "the storage refused access". Don't say "backend".
 - **Namespaces:** `Fil.Adapter.*` is only for adapters, `Fil.Plugin.*` only for plugins. `Fil.Plug` is the Plug
   that serves public and signed URLs (compiled only when the optional Plug dependency is there, listed under
-  Integrations in the docs). Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
+  Integrations in the docs). `Fil.Kino` is the Livebook integration, compiled only when the optional Kino dependency is
+  there, with its `@moduledoc false` modules under `Fil.Kino.*` and their JS and CSS in `lib/fil/kino/assets/`. Shared
+  internal helpers go in `Fil.Support.*` (`@moduledoc false`).
 - **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
   `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
   the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never
@@ -103,6 +105,9 @@ the latest Elixir, and runs `mix test` on every supported Elixir minor version (
 OTP it supports. The library supports every OTP that Elixir 1.18 supports, and the test suite needs OTP 27 or later
 (`:proc_lib.get_label/1`). The integration suite runs once, on the latest Elixir, against RustFS started from
 `compose.yml`. When `elixir:` in `mix.exs` changes, update the matrix.
+
+The checks job also compiles `fil` without its optional dependencies (`mix compile --no-optional-deps` in its own build
+path), so a module that uses Plug, Vix or Kino without a compile guard (`if Code.ensure_loaded?(...)`) fails the build.
 
 The last job, `CI passed`, fails if any other job failed, was cancelled or was skipped. It's the only check the ruleset
 on `main` requires, so the ruleset stays the same when the matrix changes. A new job goes into its `needs:`.
