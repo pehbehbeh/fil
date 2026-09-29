@@ -29,7 +29,13 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
               }
             })
 
-            xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? entry.progress(100) : entry.error())
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                entry.progress(100)
+              } else {
+                entry.error()
+              }
+            }
             xhr.onerror = () => entry.error()
 
             xhr.open("PUT", entry.meta.url, true)
