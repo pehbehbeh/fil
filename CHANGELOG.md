@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   when it's killed. `Fil.Tmp.path/1` returns the path for tools that need one, `Fil.Tmp.give_away/2` hands the
   directory to another process, and `Fil.Tmp.cleanup/1` removes it earlier.
   ([#18](https://github.com/pehbehbeh/fil/pull/18))
+- A File storage smart cell for Livebook, which generates the `Fil.disk/1` call for a Local, S3 or Memory disk, with
+  the S3 credentials from Livebook secrets. It's there when Kino is installed.
 - `Fil.Kino.upload/3` is a file field for Livebook that writes each upload to a directory of a disk, streamed from the
   file Livebook keeps. `writable: true` on `Fil.Kino.browser/3` adds it below the browser, together with a delete
   button for each file. ([#20](https://github.com/pehbehbeh/fil/pull/20))

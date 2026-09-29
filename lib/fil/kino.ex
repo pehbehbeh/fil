@@ -1,7 +1,7 @@
 if Code.ensure_loaded?(Kino.JS.Live) do
   defmodule Fil.Kino do
     @moduledoc """
-    Browses disks in [Livebook](https://livebook.dev), and uploads files to them.
+    Browses disks in [Livebook](https://livebook.dev), uploads files to them, and adds a smart cell that builds a disk.
 
         Mix.install([{:fil, "~> 0.2"}, {:kino, "~> 0.19"}])
 
@@ -37,6 +37,26 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     Livebook keeps an upload as a file in the notebook's runtime, and the field streams it from there into
     `Fil.write/4`, so large files don't have to fit in memory. The line below the field says what was written, or why
     not. An upload never replaces a file unless you pass `if_exists: :overwrite`.
+
+    ## Smart cell
+
+    With `Fil` and Kino installed, Livebook offers a File storage smart cell. It's a form for a Local, S3 or Memory disk
+    that generates the `Fil.disk/1` call, such as:
+
+        disk =
+          Fil.disk(
+            adapter: Fil.Adapter.S3,
+            bucket: "reports",
+            region: "eu-central-1",
+            access_key_id: System.fetch_env!("LB_AWS_ACCESS_KEY_ID"),
+            secret_access_key: System.fetch_env!("LB_AWS_SECRET_ACCESS_KEY")
+          )
+
+    The S3 credentials are Livebook secrets you pick in the form, so they're never part of the notebook. Without them,
+    the disk accesses a public bucket without signing. Empty fields are left out, so the adapter's defaults apply.
+
+    For a memory disk, the cell calls `Fil.Adapter.Memory.checkout/0` first. The store belongs to the evaluator (see
+    [Browser](#module-browser) for what that means for sections), and it's gone when the runtime restarts.
     """
 
     @browser_schema NimbleOptions.new!(
