@@ -114,7 +114,8 @@ matrix covers each of them. The integration suite runs once, on the latest Elixi
 `compose.yml`. When `elixir:` in `mix.exs` changes or a new OTP release comes out, update the matrix.
 
 The checks job also compiles `fil` without its optional dependencies (`mix compile --no-optional-deps` in its own build
-path), so a module that uses Plug, Vix or Kino without a compile guard (`if Code.ensure_loaded?(...)`) fails the build.
+path), so a module that uses Plug, Vix, Kino or Phoenix LiveView without a compile guard
+(`if Code.ensure_loaded?(...)`) fails the build.
 
 The last job, `CI passed`, fails if any other job failed, was cancelled or was skipped. It's the only check the ruleset
 on `main` requires, so the ruleset stays the same when the matrix changes. A new job goes into its `needs:`.
