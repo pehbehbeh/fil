@@ -4,8 +4,8 @@ This guide stores files from a Phoenix app on a disk: uploads from a LiveView fo
 controller, and links to the stored files. It uses the `MyApp.Storage.uploads/0` disk from the
 [installation guide](installation.md), with `Fil.Plugin.ContentType` attached.
 
-`Fil.LiveView` needs Phoenix LiveView 1.2 and Phoenix 1.8. They're optional dependencies of `Fil`, so a Phoenix 1.8 app
-needs nothing else.
+`Fil.LiveView` needs Phoenix LiveView 1.2. It's an optional dependency of `Fil`, so an app with LiveView 1.2 needs
+nothing else.
 
 ## LiveView uploads
 
@@ -71,10 +71,22 @@ def handle_event("save", _params, socket) do
       {:noreply, socket}
 
     {:error, error} ->
-      {:noreply, put_flash(socket, :error, Exception.message(error))}
+      {:noreply, put_flash(socket, :error, upload_error(error))}
   end
 end
+
+defp upload_error(%Fil.InvalidRequestError{reason: :extension}), do: "Only .jpg and .png files can be uploaded."
+defp upload_error(%Fil.AlreadyExistsError{}), do: "This file was uploaded already."
+
+defp upload_error(error) do
+  Logger.error("Avatar upload failed: " <> Exception.message(error))
+  "The upload failed. Please try again."
+end
 ```
+
+An error's message names the disk and the path in storage, so it's for logs, not for users. `upload_error/1` picks a
+text for the errors a user can do something about, from the error struct and its `:reason`, and logs the rest (with
+`require Logger` in the module).
 
 The disk is a function, so it's built when the form is submitted, from the config of the environment the app runs in.
 A `Fil.Ref` for a directory works as well, and the paths are then relative to it.
@@ -88,15 +100,16 @@ The result is a list of refs in the order of the file input. Store `ref.path` in
 with `Fil.ref/2` when you need the file again, because the disk can't be stored (see `Fil.Ref`).
 
 `Fil.LiveView` never replaces a file, unless you pass `if_exists: :overwrite`. With UUIDs in the path that doesn't
-happen anyway, but a `path:` that returns the same name twice gets a `Fil.AlreadyExistsError` instead of losing the
-first file.
+happen anyway, but a `path:` that returns a name that's taken gets a `Fil.AlreadyExistsError` instead of replacing
+that file. That includes two files of one submit with the same name: the second one fails, and then the first one is
+deleted again with the rest, as below.
 
 A failed write returns the error and keeps every entry in the upload. Files written before the error are deleted
 again, so the user can fix what's wrong and submit the form again, or cancel an entry. To show the error next to the
 form instead of in a flash, assign it:
 
 ```elixir
-{:error, error} -> {:noreply, assign(socket, :upload_error, Exception.message(error))}
+{:error, error} -> {:noreply, assign(socket, :upload_error, upload_error(error))}
 ```
 
 The files are written in the LiveView process, as with LiveView's own `consume_uploaded_entries/3`, so a large file
@@ -120,7 +133,7 @@ end
 defp handle_progress(:avatar, entry, socket) when entry.done? do
   case Fil.LiveView.consume_uploaded_entry(socket, entry, &MyApp.Storage.uploads/0) do
     {:ok, avatar} -> {:noreply, assign(socket, :avatar, avatar.path)}
-    {:error, error} -> {:noreply, put_flash(socket, :error, Exception.message(error))}
+    {:error, error} -> {:noreply, put_flash(socket, :error, upload_error(error))}
   end
 end
 
@@ -175,8 +188,12 @@ def create(conn, %{"document" => %Plug.Upload{} = upload}) do
   content = File.stream!(upload.path, 65_536)
 
   case Fil.write(MyApp.Storage.uploads(), "documents/#{id}.pdf", content, if_exists: :error) do
-    {:ok, document} -> json(conn, %{path: document.path})
-    {:error, error} -> conn |> put_status(422) |> json(%{error: Exception.message(error)})
+    {:ok, document} ->
+      json(conn, %{path: document.path})
+
+    {:error, error} ->
+      Logger.error("Document upload failed: " <> Exception.message(error))
+      conn |> put_status(500) |> json(%{error: "The upload failed."})
   end
 end
 ```
