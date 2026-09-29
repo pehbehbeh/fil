@@ -90,11 +90,66 @@ defmodule Fil.AdapterCase do
     )
   end
 
+  @doc """
+  Sends a request to a URL of the disk, the way an HTTP client does, for the tests of signed URLs. Returns the status,
+  the response headers as lowercase `{name, value}` pairs, and the body.
+
+  The default, `plug_request/4`, serves the URLs of `Fil.Plugin.URL` with `Fil.Plug`. An adapter whose storage signs
+  URLs itself overrides it and sends the request to the storage.
+  """
+  @spec plug_request(Fil.Disk.t(), atom(), String.t(), keyword()) ::
+          {pos_integer(), [{String.t(), String.t()}], binary()}
+  def plug_request(disk, method, url, opts) do
+    base_url =
+      Fil.Plugin.URL.base_url(disk) ||
+        raise ArgumentError, "the disk has no Fil.Plugin.URL to serve its URLs with Fil.Plug, override fil_request/4"
+
+    %URI{path: path, query: query} = URI.parse(url)
+    at = URI.parse(base_url).path || "/"
+    body = Keyword.get(opts, :body)
+
+    headers =
+      opts
+      |> Keyword.get(:headers, [])
+      |> put_content_length(body)
+
+    conn =
+      method
+      |> Plug.Test.conn(path <> "?" <> (query || ""), body)
+      |> put_req_headers(headers)
+      |> Fil.Plug.call(Fil.Plug.init(at: at, disk: disk))
+
+    {conn.status, conn.resp_headers, conn.resp_body}
+  end
+
+  # Like an HTTP client, the request says how long its body is.
+  defp put_content_length(headers, nil), do: headers
+
+  defp put_content_length(headers, body) do
+    length =
+      body
+      |> byte_size()
+      |> Integer.to_string()
+
+    [{"content-length", length} | headers]
+  end
+
+  defp put_req_headers(conn, headers) do
+    Enum.reduce(headers, conn, fn {name, value}, conn -> Plug.Conn.put_req_header(conn, name, value) end)
+  end
+
   @doc "Builds the disk under test."
   @callback fil_disk(map()) :: Fil.Disk.t()
 
   @doc "Builds the second disk, used by the cross-disk tests."
   @callback fil_other_disk(map()) :: Fil.Disk.t()
+
+  @doc """
+  Sends a request to a URL the disk built, and returns `{status, headers, body}`. `opts` has the request's `:body` (a
+  binary, or `nil`) and `:headers`. Defaults to `plug_request/4`.
+  """
+  @callback fil_request(Fil.Disk.t(), atom(), String.t(), keyword()) ::
+              {pos_integer(), [{String.t(), String.t()}], binary()}
 
   defmacro __using__(opts) do
     opts = NimbleOptions.validate!(opts, @schema)
@@ -121,7 +176,9 @@ defmodule Fil.AdapterCase do
         Fil.disk(adapter: Local, root: Path.join(tmp_dir, "other"))
       end
 
-      defoverridable fil_other_disk: 1
+      def fil_request(disk, method, url, opts), do: Fil.AdapterCase.plug_request(disk, method, url, opts)
+
+      defoverridable fil_other_disk: 1, fil_request: 4
 
       setup context do
         {:ok, disk: fil_disk(context), other_disk: fil_other_disk(context)}
@@ -1039,6 +1096,86 @@ defmodule Fil.AdapterCase do
         assert_raise ArgumentError, ~r/expires_in/, fn ->
           Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60 + 1)
         end
+      end
+
+      test "a signed URL downloads the file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "signed/a file.txt", "content")
+        assert {:ok, url} = Fil.signed_url(disk, "signed/a file.txt", expires_in: 60)
+
+        assert {200, _headers, "content"} = fil_request(disk, :get, url, [])
+      end
+
+      test "a signed URL uploads a file", %{disk: disk} do
+        assert {:ok, url} = Fil.signed_url(disk, "inbox/new.txt", method: :put, expires_in: 60)
+
+        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "uploaded")
+        assert status in 200..299
+        assert Fil.read(disk, "inbox/new.txt") == {:ok, "uploaded"}
+      end
+
+      test "a signed URL works only for its path and its method", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "report.txt", "report")
+        assert {:ok, _} = Fil.write(disk, "resume.txt", "resume")
+        assert {:ok, url} = Fil.signed_url(disk, "report.txt")
+
+        other_path = String.replace(url, "report.txt", "resume.txt")
+        assert {status, _headers, _body} = fil_request(disk, :get, other_path, [])
+        assert status in 400..499
+
+        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "replaced")
+        assert status in 400..499
+        assert Fil.read(disk, "report.txt") == {:ok, "report"}
+      end
+
+      test "a signed URL downloads with the signed disposition", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "7f3a.pdf", "PDF")
+        assert {:ok, plain} = Fil.signed_url(disk, "7f3a.pdf")
+        assert {:ok, url} = Fil.signed_url(disk, "7f3a.pdf", disposition: {:attachment, "Rechnung März.pdf"})
+
+        assert {200, headers, "PDF"} = fil_request(disk, :get, url, [])
+
+        assert for({"content-disposition", value} <- headers, do: value) == [
+                 ~s(attachment; filename="Rechnung M_rz.pdf"; filename*=UTF-8''Rechnung%20M%C3%A4rz.pdf)
+               ]
+
+        assert {200, headers, "PDF"} = fil_request(disk, :get, plain, [])
+        refute List.keymember?(headers, "content-disposition", 0)
+      end
+
+      test "a signed URL with query parameters works only with their signed values", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "index.html", "<html>")
+        assert {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}])
+
+        assert {200, _headers, "<html>"} = fil_request(disk, :get, url, [])
+
+        changed = String.replace(url, "trackingInfo=7", "trackingInfo=8")
+        assert {status, _headers, _body} = fil_request(disk, :get, changed, [])
+        assert status in 400..499
+      end
+
+      test "an upload URL bound to its content type, size and if_exists writes the file once", %{disk: disk} do
+        opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
+        assert {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
+        headers = [{"content-type", "image/png"}, {"if-none-match", "*"}]
+        other_type = List.keyreplace(headers, "content-type", 0, {"content-type", "text/html"})
+
+        # Another content type or size is refused.
+        for {headers, body} <- [{other_type, "png"}, {headers, "pngs"}] do
+          assert {status, _headers, _body} = fil_request(disk, :put, url, body: body, headers: headers)
+          assert status in 400..499
+        end
+
+        refute Fil.exists?(disk, "avatars/a.png")
+
+        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "png", headers: headers)
+        assert status in 200..299
+        assert {:ok, %Fil.Stat{size: 3, content_type: content_type}} = Fil.stat(disk, "avatars/a.png")
+        assert content_type in ["image/png", nil]
+
+        # S3 answers 412, Fil.Plug 409.
+        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "new", headers: headers)
+        assert status in 400..499
+        assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
       end
 
       ## ----------------------------------------------------------------

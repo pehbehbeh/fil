@@ -197,7 +197,9 @@ defmodule Fil.Adapter do
 
   `opts` has `:method`, `:expires_in` and `:query` as `Fil.signed_url/3` validated them, and for a download with
   `disposition:`, `:disposition` as the finished `content-disposition` header value. The storage has to send that header
-  with the download, and the URL's signature has to cover it and the `:query` parameters.
+  with the download, and the URL's signature has to cover it and the `:query` parameters. A request with another path,
+  method or parameter than the URL was signed for gets a status in the 4xx range, and an upload through it writes
+  nothing.
 
   An upload URL may get `:content_type`, `:size` and `:if_exists`. The signature has to cover them, so the storage
   refuses an upload with another `content-type` or `content-length`, and with `if_exists: :error` one that finds a file

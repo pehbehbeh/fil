@@ -185,7 +185,10 @@ list).
   test there, not a copy per adapter. Each test in it needs its sentence in the `Fil.Adapter` moduledoc (the contract,
   or the options `File` has no equivalent for), because third-party adapters will be held to the suite once it's
   public. A result that differs between adapters on purpose (S3 refuses what Local allows) is asserted as the set of
-  allowed results, and the exact result stays in the adapter's own test.
+  allowed results, and the exact result stays in the adapter's own test. Tests of signed URLs send their requests with
+  the case's `fil_request/4`: through `Fil.Plug` by default (disks with `Fil.Plugin.URL`), with Req to RustFS in
+  `Fil.Adapter.S3IntegrationTest`. They assert a refusal as a status in the 4xx range, because S3 and `Fil.Plug` answer
+  with different ones; the exact statuses stay in `plug_test.exs` and `s3_integration_test.exs`.
 - Feature tests whose subject is the storage path (`Fil.Plug`, `Fil.LiveView`) run on Local and Memory with
   `use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()`, `@moduletag :tmp_dir` and
   `Fil.DiskHelper.disk/2` in `setup` (never `setup_all`: a memory store belongs to the test process). Tests that need

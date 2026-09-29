@@ -68,9 +68,17 @@ defmodule Fil.Plugin.URL do
   @doc false
   # The secret `Fil.Plug` verifies requests with, or `nil` for a disk that doesn't sign URLs with this plugin.
   @spec secret(Fil.Disk.t()) :: String.t() | nil
-  def secret(%Fil.Disk{plugins: plugins}) do
+  def secret(%Fil.Disk{} = disk), do: option(disk, :secret)
+
+  @doc false
+  # The `:base_url` of the plugin on `disk`, or `nil` for a disk without it. `Fil.AdapterCase` mounts `Fil.Plug` at its
+  # path to serve the disk's signed URLs.
+  @spec base_url(Fil.Disk.t()) :: String.t() | nil
+  def base_url(%Fil.Disk{} = disk), do: option(disk, :base_url)
+
+  defp option(%Fil.Disk{plugins: plugins}, name) do
     case List.keyfind(plugins, __MODULE__, 0) do
-      {__MODULE__, _callback, opts} -> Keyword.get(opts, :secret)
+      {__MODULE__, _callback, opts} -> Keyword.get(opts, name)
       nil -> nil
     end
   end
