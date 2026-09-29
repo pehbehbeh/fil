@@ -101,6 +101,11 @@ defmodule Fil.Support.Tmp do
     end)
   end
 
+  # The call waits the default 5 seconds. One that times out still reaches the server, which monitors the caller when it
+  # gets to it (a caller that's dead by then is `:DOWN` right away), so a timeout only delays the cleanup. The entry is
+  # left behind only if the server crashes with the call still in its mailbox, and the second call of `put/2` is lost
+  # the same way. That's accepted: the server does nothing but monitor and insert a row per call, so it only falls that
+  # far behind on a node that's overloaded anyway, and a longer timeout would hold up every write then.
   defp monitor_self do
     :ets.member(@owners, self()) or GenServer.call(__MODULE__, :monitor) == :ok
   catch
