@@ -385,6 +385,18 @@ defmodule Fil.PlugTest do
     assert request(:get, url, {Function, :identity, [disk]}).status == 200
   end
 
+  test "raises when the disk function returns something else" do
+    assert_raise ArgumentError, ~r/to return a Fil.Disk, got: :nope/, fn ->
+      request(:get, "/storage/a.txt", fn -> :nope end)
+    end
+  end
+
+  test "refuses a disk option that is no disk, function or MFA" do
+    assert_raise NimbleOptions.ValidationError, ~r/invalid value for :disk option: expected a `Fil.Disk`/, fn ->
+      Fil.Plug.init(disk: :uploads)
+    end
+  end
+
   test "proxies an S3 disk" do
     # A stubbed S3: HeadObject and GetObject answer from the test, PutObject records the body.
     test = self()

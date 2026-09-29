@@ -2,11 +2,11 @@ if Code.ensure_loaded?(Plug) do
   defmodule Fil.Plug do
     @schema NimbleOptions.new!(
               disk: [
-                type: {:or, [{:struct, Fil.Disk}, {:fun, 0}, :mfa]},
+                type: Fil.Support.DiskOption.type([:disk, :fun, :mfa]),
                 required: true,
                 doc: """
-                The disk to serve: a `Fil.Disk`, or a function or `{module, function, args}` that returns one. Use a
-                function when the disk comes from runtime config, because plug options are compiled.
+                The disk to serve. #{Fil.Support.DiskOption.doc([:disk, :fun, :mfa])} Plug options are compiled, so a
+                disk from runtime config needs a function or an MFA.
                 """
               ],
               at: [
@@ -159,7 +159,7 @@ if Code.ensure_loaded?(Plug) do
       # Only disks that sign with `Fil.Plugin.URL` have a secret. Requests for any other disk (an S3 disk in production,
       # for example) pass through unless the plug is public, so the plug can stay in the endpoint in every environment.
       with true <- Enum.take(conn.path_info, length(at)) == at,
-           disk = disk(opts[:disk]),
+           disk = Fil.Disk.resolve(opts[:disk]),
            secret = Fil.Plugin.URL.secret(disk),
            true <- opts[:public] or secret != nil do
         conn
@@ -206,10 +206,6 @@ if Code.ensure_loaded?(Plug) do
         end
       end
     end
-
-    defp disk(%Fil.Disk{} = disk), do: disk
-    defp disk(fun) when is_function(fun, 0), do: fun.()
-    defp disk({module, function, args}), do: apply(module, function, args)
 
     defp method(%{method: method}) when method in ["GET", "HEAD"], do: {:ok, :get}
     defp method(%{method: "PUT"}), do: {:ok, :put}
