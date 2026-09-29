@@ -104,7 +104,9 @@ defmodule Fil.Ecto.RefTest do
       end
       """
 
-      assert_raise NimbleOptions.ValidationError, ~r/pass a capture such as/, fn -> Code.compile_string(code) end
+      assert_raise NimbleOptions.ValidationError, ~r/pass a capture with the module name/, fn ->
+        Code.compile_string(code)
+      end
     end
 
     test "gives the schema a parameterized type, in an array too" do
