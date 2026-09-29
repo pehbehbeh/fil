@@ -188,7 +188,8 @@ list).
   allowed results, and the exact result stays in the adapter's own test. Tests of signed URLs send their requests with
   the case's `fil_request/4`: through `Fil.Plug` by default (disks with `Fil.Plugin.URL`), with Req to RustFS in
   `Fil.Adapter.S3IntegrationTest`. They assert a refusal as a status in the 4xx range, because S3 and `Fil.Plug` answer
-  with different ones; the exact statuses stay in `plug_test.exs` and `s3_integration_test.exs`.
+  with different ones; `plug_test.exs` and `s3_integration_test.exs` keep exact statuses where they matter (409 and
+  412 for a second PUT, 403 for a changed expiry or signature).
 - Feature tests whose subject is the storage path (`Fil.Plug`, `Fil.LiveView`) run on Local and Memory with
   `use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()`, `@moduletag :tmp_dir` and
   `Fil.DiskHelper.disk/2` in `setup` (never `setup_all`: a memory store belongs to the test process). Tests that need

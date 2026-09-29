@@ -126,6 +126,7 @@ defmodule Fil.Adapter.S3IntegrationTest do
       refute Fil.exists?(disk, "avatars/a.png")
 
       assert {:ok, %{status: 200}} = put(url, "png", headers)
+      assert {:ok, %Fil.Stat{size: 3, content_type: "image/png"}} = Fil.stat(disk, "avatars/a.png")
       assert {:ok, %{status: 412}} = put(url, "new", headers)
       assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
     end

@@ -33,6 +33,10 @@ defmodule Fil.AdapterCase do
   temporary directory and can be overridden. Every case gets `@moduletag :tmp_dir`, so ExUnit gives each test its own
   directory.
 
+  `fil_request/4` sends the requests of the signed URL tests. It defaults to `plug_request/4`, which serves the disk
+  with `Fil.Plug`, for disks that sign with `Fil.Plugin.URL`. Override it when the storage signs its own URLs, and send
+  the request to the storage, as `Fil.Adapter.S3IntegrationTest` does.
+
   The suite is internal to `Fil` for now. Once it's public, third-party adapters can run it to show that they follow the
   contract.
 
