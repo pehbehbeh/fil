@@ -22,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Phoenix 1.8 generates, and a class attribute per part replaces the defaults. `Fil.LiveView.cancel_upload/2` handles
   its cancel buttons, and `Fil.LiveView.upload_error/2` turns LiveView's and Fil's upload errors into
   `{msgid, bindings}` for the app's `translate_error/1`. The [Phoenix guide](https://fil.hexdocs.pm/phoenix.html)
-  shows a complete form.
+  shows a complete form. ([#27](https://github.com/pehbehbeh/fil/pull/27))
 - `Fil.Ecto.Ref` stores refs in Ecto schemas: the column holds the path, and loading returns a `Fil.Ref` on the disk
   the field names. `{:array, Fil.Ecto.Ref}` holds several files in order, and `Fil.Ecto.Ref.removed/2` returns the refs
   a changeset drops, to delete after the commit. A ref fits a field when `Fil.Disk.same_storage?/2` finds its disk on
