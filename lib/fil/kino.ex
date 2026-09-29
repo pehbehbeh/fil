@@ -121,12 +121,12 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
     #{NimbleOptions.docs(@browser_schema)}
     """
-    @spec browser(Fil.Disk.t() | Fil.Ref.t()) :: Kino.JS.Live.t() | Kino.Layout.t()
+    @spec browser(Fil.Disk.t() | Fil.Ref.t()) :: Kino.JS.Live.t()
     def browser(%Fil.Disk{} = disk), do: browser(Fil.ref(disk, "."), [])
     def browser(%Fil.Ref{} = ref), do: browser(ref, [])
 
     @doc "Returns a file browser. See `browser/1`."
-    @spec browser(Fil.Disk.t(), Path.t()) :: Kino.JS.Live.t() | Kino.Layout.t()
+    @spec browser(Fil.Disk.t(), Path.t()) :: Kino.JS.Live.t()
     @spec browser(Fil.Ref.t(), keyword()) :: Kino.JS.Live.t() | Kino.Layout.t()
     def browser(%Fil.Disk{} = disk, path) when is_binary(path), do: browser(Fil.ref(disk, path), [])
 
