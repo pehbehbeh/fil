@@ -11,7 +11,7 @@ defmodule Fil.Kino.DiskCellTest do
 
   test "is registered with Kino" do
     assert DiskCell in Enum.map(Kino.SmartCell.definitions(), & &1.module)
-    assert %{name: "File storage"} = DiskCell.__smart_definition__()
+    assert %{name: "Fil disk"} = DiskCell.__smart_definition__()
   end
 
   describe "local" do

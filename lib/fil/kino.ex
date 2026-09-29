@@ -40,7 +40,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
     ## Smart cell
 
-    With `Fil` and Kino installed, Livebook offers a File storage smart cell. It's a form for a Local, S3 or Memory disk
+    With `Fil` and Kino installed, Livebook offers a Fil disk smart cell. It's a form for a Local, S3 or Memory disk
     that generates the `Fil.disk/1` call, such as:
 
         disk =

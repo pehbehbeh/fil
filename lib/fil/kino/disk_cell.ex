@@ -2,13 +2,13 @@ if Code.ensure_loaded?(Kino.JS.Live) do
   defmodule Fil.Kino.DiskCell do
     @moduledoc false
 
-    # The "File storage" smart cell: a form that generates the `Fil.disk/1` call for a Local, S3 or Memory disk.
+    # The "Fil disk" smart cell: a form that generates the `Fil.disk/1` call for a Local, S3 or Memory disk.
     # `Fil.Application` registers it when Kino is there. Secrets are names of Livebook secrets, without the `LB_` prefix
     # Livebook puts in front of them in the environment.
 
     use Kino.JS, assets_path: "lib/fil/kino/assets/disk_cell"
     use Kino.JS.Live
-    use Kino.SmartCell, name: "File storage"
+    use Kino.SmartCell, name: "Fil disk"
 
     @adapters %{"local" => Fil.Adapter.Local, "s3" => Fil.Adapter.S3, "memory" => Fil.Adapter.Memory}
 
