@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   local and memory disks through `Fil.Plug`. The consume functions then check each file instead of writing it. The
   browser side is one import in `app.js`, `import {uploaders} from "phoenix-colocated/fil"`, so `Fil.LiveView` needs
   Phoenix 1.8 as well.
+  ([#26](https://github.com/pehbehbeh/fil/pull/26))
 - `Fil.Ecto.Ref` stores refs in Ecto schemas: the column holds the path, and loading returns a `Fil.Ref` on the disk
   the field names. `{:array, Fil.Ecto.Ref}` holds several files in order, and `Fil.Ecto.Ref.removed/2` returns the refs
   a changeset drops, to delete after the commit. A ref fits a field when `Fil.Disk.same_storage?/2` finds its disk on
@@ -22,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.signed_url/3` takes `content_type:`, `size:` and `if_exists: :error` for `method: :put`, and the upload has to
   match them, on S3 and through `Fil.Plug`: another `content-type` or `content-length` is a `403`, and with
   `if_exists: :error` the URL writes the file once and can't replace it.
+  ([#26](https://github.com/pehbehbeh/fil/pull/26))
 - `Fil.LiveView` stores LiveView uploads on a disk: `consume_uploaded_entries/4` streams each file into `Fil.write/4` at
   a path you choose, and never replaces a file unless you pass `if_exists: :overwrite`. If a write fails, it deletes the
   files it wrote and keeps the entries, so the form can be submitted again. It needs Phoenix LiveView 1.2, an optional
@@ -96,6 +98,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `content_type`, `size` and `if_exists` are reserved names in the `query:` option of `Fil.signed_url/3`, which raises
   for them like for `expires` or `disposition`.
+  ([#26](https://github.com/pehbehbeh/fil/pull/26))
 - S3's `InvalidRequest` error code is a `Fil.InvalidRequestError` instead of a `Fil.UnknownError`. S3 sends it for a
   copy or a move of an object onto itself, for example. `Fil.Plug` still answers it with a `500` and logs it, because S3
   sends it for problems with the request or the bucket's configuration as well.
