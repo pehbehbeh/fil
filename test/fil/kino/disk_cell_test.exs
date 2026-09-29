@@ -69,9 +69,10 @@ defmodule Fil.Kino.DiskCellTest do
         "region" => "eu-central-1",
         "root" => "2026",
         "endpoint" => "http://localhost:9000",
-        "path_style" => true,
+        "path_style" => false,
         "access_key_id_secret" => "AWS_ACCESS_KEY_ID",
-        "secret_access_key_secret" => "AWS_SECRET_ACCESS_KEY"
+        "secret_access_key_secret" => "AWS_SECRET_ACCESS_KEY",
+        "session_token_secret" => "AWS_SESSION_TOKEN"
       }
 
       {_kino, source} = start_smart_cell!(DiskCell, attrs)
@@ -84,9 +85,10 @@ defmodule Fil.Kino.DiskCellTest do
                  region: "eu-central-1",
                  root: "2026",
                  endpoint: "http://localhost:9000",
-                 path_style: true,
+                 path_style: false,
                  access_key_id: System.fetch_env!("LB_AWS_ACCESS_KEY_ID"),
-                 secret_access_key: System.fetch_env!("LB_AWS_SECRET_ACCESS_KEY")
+                 secret_access_key: System.fetch_env!("LB_AWS_SECRET_ACCESS_KEY"),
+                 session_token: System.fetch_env!("LB_AWS_SESSION_TOKEN")
                )\
              """
     end
@@ -100,12 +102,92 @@ defmodule Fil.Kino.DiskCellTest do
         "endpoint" => "",
         "path_style" => false,
         "access_key_id_secret" => "",
-        "secret_access_key_secret" => ""
+        "secret_access_key_secret" => "",
+        "session_token_secret" => ""
       }
 
       {_kino, source} = start_smart_cell!(DiskCell, attrs)
 
       assert source == ~s[public = Fil.disk(adapter: Fil.Adapter.S3, bucket: "public")]
+    end
+  end
+
+  describe "path_style" do
+    test "is left out when it's on with an endpoint, the adapter's default" do
+      source = s3_source(%{"endpoint" => "http://localhost:9000", "path_style" => true})
+
+      assert source == ~s[s3 = Fil.disk(adapter: Fil.Adapter.S3, bucket: "b", endpoint: "http://localhost:9000")]
+    end
+
+    test "is generated when it's off with an endpoint" do
+      source = s3_source(%{"endpoint" => "http://localhost:9000", "path_style" => false})
+
+      assert source == """
+             s3 =
+               Fil.disk(
+                 adapter: Fil.Adapter.S3,
+                 bucket: "b",
+                 endpoint: "http://localhost:9000",
+                 path_style: false
+               )\
+             """
+    end
+
+    test "is generated when it's on without an endpoint" do
+      source = s3_source(%{"endpoint" => "", "path_style" => true})
+
+      assert source == ~s[s3 = Fil.disk(adapter: Fil.Adapter.S3, bucket: "b", path_style: true)]
+    end
+
+    test "is left out when it's off without an endpoint, the adapter's default" do
+      source = s3_source(%{"endpoint" => "", "path_style" => false})
+
+      assert source == ~s[s3 = Fil.disk(adapter: Fil.Adapter.S3, bucket: "b")]
+    end
+
+    test "defaults to on with an endpoint" do
+      {kino, source} =
+        start_smart_cell!(DiskCell, %{"variable" => "s3", "adapter" => "s3", "endpoint" => "http://localhost:9000"})
+
+      assert %{fields: %{"path_style" => true}} = connect(kino)
+      assert source == ~s[s3 = Fil.disk(adapter: Fil.Adapter.S3, endpoint: "http://localhost:9000")]
+    end
+
+    test "follows the endpoint until it's switched away from the default" do
+      {kino, _source} = start_smart_cell!(DiskCell, %{"variable" => "s3", "adapter" => "s3"})
+      endpoint = "http://localhost:9000"
+
+      update(kino, "endpoint", endpoint)
+      assert_broadcast_event(kino, "update", %{"fields" => %{"endpoint" => ^endpoint, "path_style" => true}})
+      assert_smart_cell_update(kino, %{"path_style" => true}, _source)
+
+      update(kino, "endpoint", "")
+      assert_broadcast_event(kino, "update", %{"fields" => %{"endpoint" => "", "path_style" => false}})
+      assert_smart_cell_update(kino, %{"path_style" => false}, "s3 = Fil.disk(adapter: Fil.Adapter.S3)")
+
+      update(kino, "path_style", false)
+      assert_broadcast_event(kino, "update", %{"fields" => %{"path_style" => false}})
+      update(kino, "endpoint", endpoint)
+      assert_broadcast_event(kino, "update", %{"fields" => %{"endpoint" => ^endpoint, "path_style" => true}})
+      assert_smart_cell_update(kino, %{"path_style" => true}, _source)
+
+      update(kino, "path_style", false)
+      assert_broadcast_event(kino, "update", %{"fields" => %{"path_style" => false}})
+      update(kino, "endpoint", "http://localhost:9090")
+      assert_broadcast_event(kino, "update", %{"fields" => fields})
+      assert fields == %{"endpoint" => "http://localhost:9090"}
+      assert_smart_cell_update(kino, %{"endpoint" => "http://localhost:9090", "path_style" => false}, source)
+      assert source =~ "path_style: false"
+
+      update(kino, "endpoint", "")
+      assert_broadcast_event(kino, "update", %{"fields" => fields})
+      assert fields == %{"endpoint" => ""}
+
+      assert_smart_cell_update(
+        kino,
+        %{"endpoint" => "", "path_style" => false},
+        "s3 = Fil.disk(adapter: Fil.Adapter.S3)"
+      )
     end
   end
 
@@ -179,5 +261,13 @@ defmodule Fil.Kino.DiskCellTest do
       assert [_source, second_name] = Regex.run(~r/^(disk\d*) = /, second)
       assert first_name != second_name
     end
+  end
+
+  defp update(kino, field, value), do: push_event(kino, "update_field", %{"field" => field, "value" => value})
+
+  defp s3_source(attrs) do
+    attrs = Map.merge(%{"variable" => "s3", "adapter" => "s3", "bucket" => "b"}, attrs)
+    {_kino, source} = start_smart_cell!(DiskCell, attrs)
+    source
   end
 end

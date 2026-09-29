@@ -53,7 +53,12 @@ if Code.ensure_loaded?(Kino.JS.Live) do
           )
 
     The S3 credentials are Livebook secrets you pick in the form, so they're never part of the notebook. Without them,
-    the disk accesses a public bucket without signing. Empty fields are left out, so the adapter's defaults apply.
+    the disk accesses a public bucket without signing. The session token is optional, for temporary credentials such as
+    those from AWS STS or SSO. Empty fields are left out, so the adapter's defaults apply.
+
+    The path-style switch shows what the disk does. `Fil.Adapter.S3` uses path-style URLs when there's an endpoint, so
+    the switch turns on when you enter one and off when you clear it, until you switch it the other way. The code sets
+    `path_style:` only when the switch differs from that default.
 
     For a memory disk, the cell calls `Fil.Adapter.Memory.checkout/0` first. The store belongs to the evaluator (see
     [Browser](#module-browser) for what that means for sections), and it's gone when the runtime restarts.

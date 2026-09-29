@@ -12,23 +12,26 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
     @adapters %{"local" => Fil.Adapter.Local, "s3" => Fil.Adapter.S3, "memory" => Fil.Adapter.Memory}
 
-    @s3_fields ~w(bucket region endpoint path_style access_key_id_secret secret_access_key_secret)
+    @s3_fields ~w(bucket region endpoint path_style access_key_id_secret secret_access_key_secret session_token_secret)
 
     # The options the text fields become, in the order of the generated code.
     @s3_options ~w(bucket region root endpoint)a
 
     @impl Kino.JS.Live
     def init(attrs, ctx) do
+      endpoint = attrs["endpoint"] || ""
+
       fields = %{
         "variable" => variable(attrs["variable"]),
         "adapter" => if(Map.has_key?(@adapters, attrs["adapter"]), do: attrs["adapter"], else: "local"),
         "root" => attrs["root"] || "",
         "bucket" => attrs["bucket"] || "",
         "region" => attrs["region"] || "",
-        "endpoint" => attrs["endpoint"] || "",
-        "path_style" => attrs["path_style"] == true,
+        "endpoint" => endpoint,
+        "path_style" => if(is_boolean(attrs["path_style"]), do: attrs["path_style"], else: endpoint != ""),
         "access_key_id_secret" => attrs["access_key_id_secret"] || "",
-        "secret_access_key_secret" => attrs["secret_access_key_secret"] || ""
+        "secret_access_key_secret" => attrs["secret_access_key_secret"] || "",
+        "session_token_secret" => attrs["session_token_secret"] || ""
       }
 
       {:ok, assign(ctx, fields: fields)}
@@ -49,9 +52,10 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       value = field_value(field, value, fields)
 
       if Map.has_key?(fields, field) and value != nil do
+        changes = changes(field, value, fields)
         # The client that sent it needs the update too, when an invalid variable name was replaced.
-        broadcast_event(ctx, "update", %{"fields" => %{field => value}})
-        {:noreply, assign(ctx, fields: Map.put(fields, field, value))}
+        broadcast_event(ctx, "update", %{"fields" => changes})
+        {:noreply, assign(ctx, fields: Map.merge(fields, changes))}
       else
         {:noreply, ctx}
       end
@@ -68,6 +72,18 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp field_value("path_style", _value, _fields), do: nil
     defp field_value(_field, value, _fields) when is_binary(value), do: String.trim(value)
     defp field_value(_field, _value, _fields), do: nil
+
+    # The path-style switch shows what the disk will do: `Fil.Adapter.S3` turns path-style on when there's an endpoint.
+    # So the switch follows the endpoint while it's at the default, and keeps its value once it's set to the other one.
+    defp changes("endpoint", endpoint, fields) do
+      if fields["path_style"] == (fields["endpoint"] != "") do
+        %{"endpoint" => endpoint, "path_style" => endpoint != ""}
+      else
+        %{"endpoint" => endpoint}
+      end
+    end
+
+    defp changes(field, value, _fields), do: %{field => value}
 
     @impl Kino.SmartCell
     def to_attrs(ctx) do
@@ -103,13 +119,18 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp options(%{"adapter" => "s3"} = attrs) do
       Enum.concat([
         strings(attrs, @s3_options),
-        if(attrs["path_style"], do: [path_style: true], else: []),
+        path_style(present?(attrs["endpoint"]), attrs["path_style"] == true),
         secret(:access_key_id, attrs["access_key_id_secret"]),
-        secret(:secret_access_key, attrs["secret_access_key_secret"])
+        secret(:secret_access_key, attrs["secret_access_key_secret"]),
+        secret(:session_token, attrs["session_token_secret"])
       ])
     end
 
     defp options(attrs), do: strings(attrs, [:root])
+
+    # Only when it isn't the adapter's default, which is on with an endpoint and off without.
+    defp path_style(endpoint?, path_style) when endpoint? == path_style, do: []
+    defp path_style(_endpoint?, path_style), do: [path_style: path_style]
 
     defp strings(attrs, options) do
       for option <- options, value = attrs[Atom.to_string(option)], present?(value), do: {option, value}
