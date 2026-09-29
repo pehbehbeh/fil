@@ -193,7 +193,9 @@ list).
   (`Plug.Conn.read_body/1`). Bind `test = self()` outside the stub and send to `test`, not `self()`: Req.Test finds the
   stub through `$callers`, so it may run in another process. Stubs are owned per test process, so the tests stay async.
   Tests `import Plug.Conn`, like `Fil.Plug` does.
-- Integration tests create their own buckets and use a unique prefix per test.
+- Integration tests create a bucket per run and give each test its own root in it, derived from the test name
+  (`:erlang.phash2(test, 4_294_967_296)`), so `fil_disk/1` returns the same disk each time it's called. Anything that
+  lists the whole bucket, such as the multipart uploads, filters by that root.
 - Telemetry tests attach with `Fil.TelemetryHelper.attach/1`, which forwards only the events of the test process and
   the processes it started (`$callers`), so they stay async. `:telemetry_test.attach_event_handlers/2` would forward
   every async test's events. Tests that attach a handler for every process (the default logger) are `async: false`.
