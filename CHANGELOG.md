@@ -60,7 +60,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - S3's `InvalidRequest` error code is a `Fil.InvalidRequestError` instead of a `Fil.UnknownError`. S3 sends it for a
-  copy or a move of an object onto itself, for example.
+  copy or a move of an object onto itself, for example. `Fil.Plug` still answers it with a `500` and logs it, because S3
+  sends it for problems with the request or the bucket's configuration as well.
   ([#16](https://github.com/pehbehbeh/fil/pull/16))
 - A copy or a move on a local disk that fails removes the directories it created for the destination, like a write.
   ([#16](https://github.com/pehbehbeh/fil/pull/16))
