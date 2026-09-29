@@ -114,8 +114,11 @@ if Code.ensure_loaded?(Plug) do
         as a chunked response, so it never has to fit in memory
       * `PUT` on a URL signed for `:put` writes the request body, with the request's `content-type`, the same as a
         presigned PUT on S3. The body is streamed into `Fil.write/4` as it's read, with the `content-length` as
-        `size:`. Plugins attached to the disk run as for any other write
-      * a request that doesn't match its signature, or comes after the URL expired, gets a `403`
+        `size:`. Plugins attached to the disk run as for any other write. A URL signed with `content_type:` or `size:`
+        takes only an upload with that `content-type` and `content-length`, and one signed with `if_exists: :error`
+        writes with it, so a second upload to the same path gets a `409` (see [Uploads](Fil.html#signed_url/1-uploads))
+      * a request that doesn't match its signature, or comes after the URL expired, gets a `403`, and so does an upload
+        whose `content-type` or `content-length` isn't the one its URL was signed with
       * an upload larger than `:max_body_size` gets a `413`, and one whose body something else already read (see
         [Mounting](#module-mounting)) a `400`. Neither writes anything
       * a missing file gets a `404`, and so does a file the storage denies access to, so a client can't tell which
@@ -175,36 +178,52 @@ if Code.ensure_loaded?(Plug) do
       conn = fetch_query_params(conn)
 
       with {:ok, method} <- method(conn),
-           {:ok, headers} <- authorize(conn, method, secret, opts[:public]) do
+           {:ok, signed} <- authorize(conn, method, secret, opts[:public]),
+           :ok <- check_upload(conn, method, signed) do
         # `path_info` keeps the percent-encoding of the request, and the disk wants the path itself.
         path = Enum.map_join(conn.path_info, "/", &URI.decode/1)
 
-        serve(conn, method, disk, path, headers, opts[:max_body_size])
+        serve(conn, method, disk, path, signed, opts[:max_body_size])
       else
-        {:error, :method_not_allowed} -> send_error(conn, 405, "method not allowed")
-        {:error, :expired} -> send_error(conn, 403, "the URL has expired")
-        {:error, :invalid_signature} -> send_error(conn, 403, "the URL signature is invalid")
-        {:error, :signature_required} -> send_error(conn, 403, "uploads need a signed URL")
+        {:error, reason} -> send_refusal(conn, reason)
       end
     end
 
-    # Returns the response headers the signed URL asks for. A public download needs no signature, but only a valid one
-    # can set the disposition, so nobody can make a link that serves the disk's files under another name.
+    defp send_refusal(conn, :method_not_allowed), do: send_error(conn, 405, "method not allowed")
+    defp send_refusal(conn, :expired), do: send_error(conn, 403, "the URL has expired")
+    defp send_refusal(conn, :invalid_signature), do: send_error(conn, 403, "the URL signature is invalid")
+    defp send_refusal(conn, :signature_required), do: send_error(conn, 403, "uploads need a signed URL")
+    defp send_refusal(conn, :upload_mismatch), do: send_error(conn, 403, "the upload doesn't match its signed URL")
+
+    # Returns the parameters the URL was signed with. A public download needs no signature, but only a valid one can set
+    # the disposition, so nobody can make a link that serves the disk's files under another name. A verified query has
+    # each parameter at most once, and only strings.
     defp authorize(conn, :get, secret, true) do
-      with {:error, _reason} <- authorize(conn, :get, secret, false), do: {:ok, []}
+      with {:error, _reason} <- authorize(conn, :get, secret, false), do: {:ok, %{}}
     end
 
     defp authorize(_conn, _method, nil, _public?), do: {:error, :signature_required}
 
     defp authorize(conn, method, secret, _public?) do
       with :ok <- Fil.Plugin.URL.verify(secret, method, conn.request_path, conn.query_string) do
-        # A verified query has at most one `disposition`, and it's a string.
-        case conn.query_params["disposition"] do
-          nil -> {:ok, []}
-          disposition -> {:ok, [{"content-disposition", disposition}]}
-        end
+        {:ok, conn.query_params}
       end
     end
+
+    # An upload URL signed with a content type or a size takes only a request with the same `content-type` or
+    # `content-length`, as S3 does for signed headers. A missing header doesn't match either.
+    defp check_upload(conn, :put, signed) do
+      content_type = signed["content_type"]
+      size = signed["size"]
+
+      cond do
+        content_type && get_req_header(conn, "content-type") != [content_type] -> {:error, :upload_mismatch}
+        size && get_req_header(conn, "content-length") != [size] -> {:error, :upload_mismatch}
+        true -> :ok
+      end
+    end
+
+    defp check_upload(_conn, :get, _signed), do: :ok
 
     defp method(%{method: method}) when method in ["GET", "HEAD"], do: {:ok, :get}
     defp method(%{method: "PUT"}), do: {:ok, :put}
@@ -213,7 +232,9 @@ if Code.ensure_loaded?(Plug) do
     # The file is streamed to the client (`Fil.stream/3`), so its size doesn't matter. The response is chunked, because
     # plugins can change the content, and then the stored size isn't the size sent. An error while streaming comes
     # after the status line, so it raises and the client gets a truncated response.
-    defp serve(conn, :get, disk, path, headers, _max_body_size) do
+    defp serve(conn, :get, disk, path, signed, _max_body_size) do
+      headers = for disposition <- List.wrap(signed["disposition"]), do: {"content-disposition", disposition}
+
       with {:ok, stat} <- Fil.stat(disk, path),
            :regular <- stat.type,
            {:ok, content} <- Fil.stream(disk, path) do
@@ -228,13 +249,16 @@ if Code.ensure_loaded?(Plug) do
     end
 
     # The request body is streamed into `Fil.write/4` as it's read, with the `content-length` as `size:`. A body that
-    # breaks a rule while it's read stops the write with a throw, before the stream ends, so nothing is written.
-    defp serve(conn, :put, disk, path, _headers, max_body_size) do
-      opts =
+    # breaks a rule while it's read stops the write with a throw, before the stream ends, so nothing is written. A URL
+    # signed with `if_exists: :error` writes with it, whether the client sent `if-none-match: *` or not.
+    defp serve(conn, :put, disk, path, signed, max_body_size) do
+      content_type =
         conn
         |> get_req_header("content-type")
         |> Enum.take(1)
         |> Enum.map(&{:content_type, &1})
+
+      opts = if signed["if_exists"] == "error", do: [{:if_exists, :error} | content_type], else: content_type
 
       length = content_length(conn)
 

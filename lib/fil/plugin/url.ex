@@ -41,9 +41,10 @@ defmodule Fil.Plugin.URL do
   runs through your application.
 
   A signed URL is `:base_url`, the path, and the query parameters `expires` (Unix seconds), `disposition` (the
-  `content-disposition` header value, only with `disposition:`), those of `query:`, and `signature`: an HMAC-SHA256 over
-  the method, the URL path, the expiry and every other parameter. A request with a parameter that wasn't signed is
-  refused, as on S3. `expires_in:` is capped at 7 days, as on S3, so a URL that works on one disk works on every disk.
+  `content-disposition` header value, only with `disposition:`), `content_type`, `size` and `if_exists=error` (only for
+  uploads with those options, which `Fil.Plug` enforces), those of `query:`, and `signature`: an HMAC-SHA256 over the
+  method, the URL path, the expiry and every other parameter. A request with a parameter that wasn't signed is refused,
+  as on S3. `expires_in:` is capped at 7 days, as on S3, so a URL that works on one disk works on every disk.
 
   ## Options
 
@@ -169,11 +170,15 @@ defmodule Fil.Plugin.URL do
     end
   end
 
-  # The parameters besides `expires` and `signature`, in the order they go into the URL.
+  # The parameters besides `expires` and `signature`, in the order they go into the URL. `Fil.Plug` enforces the ones
+  # of an upload.
   defp signed_params(opts) do
     disposition = for disposition <- List.wrap(opts[:disposition]), do: {"disposition", disposition}
+    content_type = for content_type <- List.wrap(opts[:content_type]), do: {"content_type", content_type}
+    size = for size <- List.wrap(opts[:size]), do: {"size", Integer.to_string(size)}
+    if_exists = if opts[:if_exists] == :error, do: [{"if_exists", "error"}], else: []
 
-    disposition ++ Keyword.get(opts, :query, [])
+    disposition ++ content_type ++ size ++ if_exists ++ Keyword.get(opts, :query, [])
   end
 
   # Without other parameters, the payload is the method, the path and the expiry, as in 0.1, so URLs signed then stay

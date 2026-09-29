@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the same storage: the same adapter and the same address, which adapters return from the new optional callback
   `c:Fil.Adapter.address/1` (the root on a local disk, the endpoint, region, bucket and prefix on S3), so plugins and
   rotated credentials don't count. Ecto is a new optional dependency. ([#25](https://github.com/pehbehbeh/fil/pull/25))
+- `Fil.signed_url/3` takes `content_type:`, `size:` and `if_exists: :error` for `method: :put`, and the upload has to
+  match them, on S3 and through `Fil.Plug`: another `content-type` or `content-length` is a `403`, and with
+  `if_exists: :error` the URL writes the file once and can't replace it.
 - `Fil.LiveView` stores LiveView uploads on a disk: `consume_uploaded_entries/4` streams each file into `Fil.write/4` at
   a path you choose, and never replaces a file unless you pass `if_exists: :overwrite`. If a write fails, it deletes the
   files it wrote and keeps the entries, so the form can be submitted again. It needs Phoenix LiveView 1.2, an optional
@@ -87,6 +90,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `content_type`, `size` and `if_exists` are reserved names in the `query:` option of `Fil.signed_url/3`, which raises
+  for them like for `expires` or `disposition`.
 - S3's `InvalidRequest` error code is a `Fil.InvalidRequestError` instead of a `Fil.UnknownError`. S3 sends it for a
   copy or a move of an object onto itself, for example. `Fil.Plug` still answers it with a `500` and logs it, because S3
   sends it for problems with the request or the bucket's configuration as well.

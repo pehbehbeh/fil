@@ -140,7 +140,9 @@ defmodule Fil.Adapter.S3 do
     * `Fil.rm_rf/3`: ListObjectsV2, then one DeleteObject per key.
     * `Fil.url/3`: the object URL, without a signature, so it works for public objects only.
     * `Fil.signed_url/3`: a presigned GET or PUT URL, with `response-content-disposition` for `disposition:`, and the
-      `query:` parameters.
+      `query:` parameters. An upload's `content_type:`, `size:` and `if_exists: :error` are signed headers
+      (`content-type`, `content-length` and `if-none-match: *`), so S3 refuses a PUT without them, or with other
+      values, with a `403`, and answers `412` when `if_exists: :error` finds an object.
     * `Fil.Disk.same_storage?/2`: compares `:endpoint`, `:region`, `:bucket` and the prefix from `:root`, so disks
       with other credentials, `:public_endpoint`, `:path_style` or `:req_options` are the same storage.
 
@@ -1127,7 +1129,8 @@ defmodule Fil.Adapter.S3 do
 
   # `Req.Utils.aws_sigv4_url/1` is private Req API. Req isn't pinned for it: if a release drops it, presigning crashes.
   # It has no option for a session token, but it signs any extra query parameters, so the token goes in that way, and so
-  # do the `response-content-disposition` S3 answers the download with and the caller's `:query`.
+  # do the `response-content-disposition` S3 answers the download with and the caller's `:query`. An upload's
+  # `:content_type`, `:size` and `if_exists: :error` become signed headers, which the client has to send as they are.
   defp presign(state, key, opts) do
     query =
       Enum.reject(
@@ -1148,10 +1151,21 @@ defmodule Fil.Adapter.S3 do
       method: Keyword.get(opts, :method, :get),
       url: object_url(state, key, [], public_base_url(state)),
       expires: Keyword.get(opts, :expires_in, 900),
+      headers: signed_upload_headers(opts),
       query: query
     ]
     |> Req.Utils.aws_sigv4_url()
     |> URI.to_string()
+  end
+
+  defp signed_upload_headers(opts) do
+    headers =
+      for {name, key} <- [{"content-type", :content_type}, {"content-length", :size}],
+          value = opts[key],
+          value != nil,
+          do: {name, to_string(value)}
+
+    put_if_exists(headers, opts)
   end
 
   defp object_url(state, key, params, base_url \\ nil) do

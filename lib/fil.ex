@@ -163,6 +163,29 @@ defmodule Fil do
                          object was uploaded with outside `Fil`, and the other disks send none.
                          """
                        ],
+                       content_type: [
+                         type: :string,
+                         doc: """
+                         The content type of the upload, for `method: :put` only. The client has to send it as the
+                         `content-type` header, and the file is stored with it. See Uploads below.
+                         """
+                       ],
+                       size: [
+                         type: :non_neg_integer,
+                         doc: """
+                         The size of the upload in bytes, for `method: :put` only. The request's `content-length` has
+                         to be the same. Browsers set it from the body.
+                         """
+                       ],
+                       if_exists: [
+                         type: {:in, [:error, :overwrite]},
+                         doc: """
+                         What an upload does if a file is already at the path, for `method: :put` only. With `:error`
+                         the client sends `if-none-match: *`, and an upload that finds a file there fails and leaves it
+                         alone, so the URL writes a file once and can't replace it later. Without it (or with
+                         `:overwrite`), an upload replaces the file.
+                         """
+                       ],
                        query: [
                          type: {:list, {:tuple, [:string, :string]}},
                          default: [],
@@ -170,7 +193,8 @@ defmodule Fil do
                          Extra query parameters, e.g. `[{"trackingInfo", "42"}]`, for a page that reads them from its
                          own URL. They're signed with the URL, so they can't be changed or added afterwards. Names that
                          signed URLs use themselves on some disk raise on every disk: `expires`, `disposition`,
-                         `signature`, and anything starting with `X-Amz-` or `response-`.
+                         `content_type`, `size`, `if_exists`, `signature`, and anything starting with `X-Amz-` or
+                         `response-`.
                          """
                        ]
                      )
@@ -803,6 +827,28 @@ defmodule Fil do
       iex> disk = Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
       iex> {:error, %Fil.UnsupportedError{op: :signed_url, reason: :no_callback}} = Fil.signed_url(disk, "cv.pdf")
 
+  ## Uploads
+
+  A URL signed with `method: :put` takes a `PUT` with the file as its body. `:content_type`, `:size` and
+  `if_exists: :error` tie it to one upload, because the URL's signature covers them:
+
+      Fil.signed_url(disk, "avatars/7f3a.png",
+        method: :put,
+        content_type: "image/png",
+        size: 48_213,
+        if_exists: :error
+      )
+
+  The client then has to send these headers, on every disk:
+
+    * `content-type: image/png`
+    * `content-length: 48213`, which browsers set from the body (a script can't set it)
+    * `if-none-match: *`
+
+  A request with another content type or length is refused with a `403`, by S3 and by `Fil.Plug`. With
+  `if_exists: :error`, an upload to a path that has a file fails and leaves the file alone: S3 answers `412`,
+  `Fil.Plug` answers `409`. So the URL writes once, and nobody who has it can replace the file later. Some
+  S3-compatible servers ignore `if-none-match` (see `Fil.Adapter.S3`).
   """
   @doc section: :operations
   @spec signed_url(Ref.t()) :: result(String.t())
@@ -817,6 +863,7 @@ defmodule Fil do
   def signed_url(ref, opts) when is_list(opts) do
     opts = validate!(opts, @signed_url_schema)
     check_disposition!(opts)
+    check_upload_options!(opts)
     check_query!(opts[:query])
 
     # The file name for `disposition: :attachment` comes from the normalized path, so `docs/..` doesn't become `..`.
@@ -1095,7 +1142,18 @@ defmodule Fil do
   end
 
   defp reserved_query_param?(name) do
-    name in ["expires", "disposition", "signature"] or String.starts_with?(name, ["x-amz-", "response-"])
+    name in ["expires", "disposition", "content_type", "size", "if_exists", "signature"] or
+      String.starts_with?(name, ["x-amz-", "response-"])
+  end
+
+  defp check_upload_options!(opts) do
+    if opts[:method] == :get do
+      for name <- [:content_type, :size, :if_exists], Keyword.has_key?(opts, name) do
+        raise ArgumentError, "the #{inspect(name)} option only applies to uploads (method: :put)"
+      end
+    end
+
+    :ok
   end
 
   defp check_disposition!(opts) do
