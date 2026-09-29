@@ -249,6 +249,16 @@ defmodule Fil.Ecto.RefTest do
     end
   end
 
+  describe "load" do
+    test "keeps a path that can't be normalized, which operations refuse", %{disk: disk} do
+      params = Fil.Ecto.Ref.init(disk: &Storage.uploads/0)
+
+      assert {:ok, %Fil.Ref{path: "../x.png", disk: ^disk} = escape} = Fil.Ecto.Ref.load("../x.png", nil, params)
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.read(escape)
+      assert {:ok, %Fil.Ref{path: "."}} = Fil.Ecto.Ref.load("", nil, params)
+    end
+  end
+
   describe "embedded schemas" do
     test "store the path and load a ref", %{disk: disk} do
       photo = %Photo{id: "1", file: Fil.ref(disk, "g.png")}

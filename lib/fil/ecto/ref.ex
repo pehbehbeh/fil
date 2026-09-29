@@ -73,7 +73,9 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
 
     `put_change/3` doesn't cast, so dumping the value checks it again: a string or a ref on another disk in a
     `put_change/3` raises `Ecto.ChangeError` at the insert or update, instead of storing a path that means another
-    file. `c:Ecto.Repo.insert_all/3` and `c:Ecto.Repo.update_all/3` take refs and refuse strings the same way.
+    file. `c:Ecto.Repo.insert_all/3` and `c:Ecto.Repo.update_all/3` take refs too. `insert_all/3` raises
+    `Ecto.ChangeError` for a string, and `update_all/3` raises `Ecto.Query.CastError`, because its values are query
+    parameters.
 
     A schemaless changeset gets the type from `Ecto.ParameterizedType.init/2`:
 
@@ -105,6 +107,10 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
 
         # in MyApp.Storage
         def uploads, do: :persistent_term.get({__MODULE__, :uploads})
+
+    Loading takes the stored path as it is, as `Fil.ref/2` does. A path that can't be normalized, such as
+    `"../x.png"`, still loads as a ref, and an operation on it returns a `Fil.InvalidRequestError`. An empty string
+    loads as the disk root, `"."`.
 
     After `c:Ecto.Repo.insert/2`, the struct holds the refs that were cast or put, with their own disks, and a reload
     gives refs on the field's disk. Both name the same files.
