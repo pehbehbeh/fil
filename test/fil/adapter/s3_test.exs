@@ -14,6 +14,35 @@ defmodule Fil.Adapter.S3Test do
   @access_key_id "AKIDEXAMPLE"
   @secret_access_key "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
 
+  describe "same storage" do
+    test "compares endpoint, region, bucket and prefix, not how the storage is reached" do
+      base = [adapter: S3, bucket: "b", region: "eu-central-1", endpoint: "http://localhost:9000", root: "uploads"]
+      uploads = Fil.disk(base)
+
+      reached_otherwise = [
+        access_key_id: @access_key_id,
+        secret_access_key: @secret_access_key,
+        session_token: "token",
+        public_endpoint: "http://localhost:9090",
+        path_style: false,
+        part_size: 2 * @part,
+        req_options: [receive_timeout: 1_000]
+      ]
+
+      for {key, value} <- reached_otherwise do
+        assert Fil.Disk.same_storage?(uploads, Fil.disk([{key, value} | base])), "#{key} changed the storage"
+      end
+
+      assert Fil.Disk.same_storage?(uploads, Fil.disk(Keyword.put(base, :root, "/uploads/")))
+
+      addressing = [bucket: "c", region: "us-east-1", endpoint: "http://localhost:9001", root: "other"]
+
+      for {key, value} <- addressing do
+        refute Fil.Disk.same_storage?(uploads, Fil.disk(Keyword.put(base, key, value))), "#{key} kept the storage"
+      end
+    end
+  end
+
   describe "init/1" do
     test "requires a bucket" do
       assert_raise ArgumentError, ~r/required :bucket option not found/, fn ->

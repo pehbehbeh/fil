@@ -145,6 +145,33 @@ defmodule Fil.Disk do
   end
 
   @doc """
+  Returns whether two disks are the same storage, so a path names the same file on both.
+
+  They are when they have the same adapter and the same address (`c:Fil.Adapter.address/1`): the same root on a local
+  disk, the same bucket, region, endpoint and prefix on S3. Plugins don't count, and neither do credentials or other
+  options that only change how the storage is reached:
+
+      iex> uploads = Fil.disk(adapter: Fil.Adapter.S3, bucket: "uploads", region: "eu-central-1")
+      iex> rotated = Fil.disk(adapter: Fil.Adapter.S3, bucket: "uploads", region: "eu-central-1", session_token: "new")
+      iex> Fil.Disk.same_storage?(uploads, rotated)
+      true
+      iex> Fil.Disk.same_storage?(uploads, Fil.disk(adapter: Fil.Adapter.S3, bucket: "backups", region: "eu-central-1"))
+      false
+
+  `Fil.Ecto.Ref` uses it to check that a ref fits a field.
+  """
+  @spec same_storage?(t(), t()) :: boolean()
+  def same_storage?(%__MODULE__{adapter: {module, state}}, %__MODULE__{adapter: {module, other}}) do
+    address(module, state) == address(module, other)
+  end
+
+  def same_storage?(%__MODULE__{}, %__MODULE__{}), do: false
+
+  defp address(module, state) do
+    if function_exported?(module, :address, 1), do: module.address(state), else: state
+  end
+
+  @doc """
   Returns the adapter module backing `disk`.
 
       iex> Fil.Disk.adapter(Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil"))

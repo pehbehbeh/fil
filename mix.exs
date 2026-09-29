@@ -50,9 +50,14 @@ defmodule Fil.MixProject do
       # It's listed only so `mix compile --no-optional-deps` leaves it out: it needs Plug, which that flag leaves out.
       {:phoenix_live_view, "~> 1.2", optional: true},
       {:phoenix, "~> 1.6", optional: true},
+      # Optional: Fil.Ecto.Ref stores refs in Ecto schemas.
+      {:ecto, "~> 3.12", optional: true},
 
       # Test
       {:lazy_html, ">= 0.1.0", only: :test},
+      # Fil.Ecto.Ref's tests round-trip through an in-memory SQLite database.
+      {:ecto_sql, "~> 3.12", only: :test},
+      {:ecto_sqlite3, "~> 0.25", only: :test},
 
       # Development
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
@@ -90,7 +95,7 @@ defmodule Fil.MixProject do
       groups_for_modules: [
         Adapters: ~r/^Fil\.Adapter(\.\w+)?$/,
         Plugins: ~r/^Fil\.Plugin\./,
-        Integrations: [Fil.Plug, Fil.Kino, Fil.LiveView],
+        Integrations: [Fil.Plug, Fil.Kino, Fil.LiveView, Fil.Ecto.Ref],
         Errors: ~r/^Fil\.\w+Error$/
       ]
     ]

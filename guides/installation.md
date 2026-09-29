@@ -173,7 +173,7 @@ A `Plug.Upload` is a file on the local disk already, so a write streams it to an
 ```
 
 Uploads from a LiveView form are streamed to a disk the same way with `Fil.LiveView`, see the
-[Phoenix guide](phoenix.md).
+[Phoenix guide](phoenix.md). A `Fil.Ecto.Ref` field stores the refs in an Ecto schema.
 
 Tools like `pdftotext` or `ffmpeg` need a local path. `Fil.tmp/1` returns a ref to a file in a temporary directory of
 its own, so a copy from any disk puts the file there, and `Fil.Tmp.path/1` returns its path:

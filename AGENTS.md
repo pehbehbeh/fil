@@ -49,12 +49,13 @@ The Hex package is `fil`.
   there, with its `@moduledoc false` modules under `Fil.Kino.*`. Their JS and CSS share `lib/fil/kino/assets/`, with
   an entrypoint per module (`use Kino.JS, entrypoint: "browser.js"`) and Livebook's palette and fonts in `theme.css`,
   which every widget imports first. `Fil.LiveView` is the LiveView integration, compiled only when the optional
-  `phoenix_live_view` dependency is there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an MFA
-  and turn it into a disk with `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented by
-  `Fil.Support.DiskOption` (`Fil.Plug`), or as an argument that may also be a `%Fil.Ref{}` for a directory
-  (`Fil.LiveView`). Options that end up in compiled code, such as a plug's, take a function only as a capture with its
-  module (`:remote_fun`), because they can't hold an anonymous function. Shared internal helpers go in `Fil.Support.*`
-  (`@moduledoc false`).
+  `phoenix_live_view` dependency is there. `Fil.Ecto.Ref` is the Ecto type, compiled only when the optional Ecto
+  dependency is there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an MFA and turn it into a disk
+  with `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented by `Fil.Support.DiskOption`
+  (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}` for a directory (`Fil.LiveView`).
+  Options that end up in compiled code, such as a plug's or an Ecto field's, take a function only as a capture with its
+  module (`:remote_fun`), because they can't hold an anonymous function. `Fil.Ecto.Ref` takes no `%Fil.Disk{}` either,
+  so no credentials end up in the beam. Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
 - **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
   `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
   the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never
@@ -200,6 +201,10 @@ list).
   The LiveView's session is signed and refuses functions, so the test passes an agent with the upload options and the
   function the form's submit calls. The LiveView process finds the test's memory store through `$callers`, so the tests
   need no `allow/2` and stay async.
+- `Fil.Ecto.Ref` tests that need a database start an in-memory SQLite repo of their own with `start_supervised!/1`
+  (`name: nil`, `database: ":memory:"`, `pool_size: 1`), point `Repo.put_dynamic_repo/1` at it and run the SQLite
+  migration from the docs with `Ecto.Migrator.up/4`, which uses the dynamic repo. So they stay async without a sandbox.
+  Postgres and MySQL aren't in CI: the type does nothing per database, and they were checked by hand when it was added.
 
 ## Etiquette
 

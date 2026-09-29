@@ -60,6 +60,8 @@ defmodule Fil.Adapter.Local do
       too, but not counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
       `Fil.Plug` serves them.
+    * `Fil.Disk.same_storage?/2`: compares the expanded `:root`, so `"priv/storage"` and its absolute path are the
+      same storage.
 
   When a writer is killed before it's done (a request process that the server stops when the client disconnects, for
   example), `Fil`'s application removes its `.fil-` file and the directories it created once the process is gone. The
@@ -115,6 +117,9 @@ defmodule Fil.Adapter.Local do
       {:ok, %__MODULE__{root: Path.expand(root)}}
     end
   end
+
+  @impl Fil.Adapter
+  def address(state), do: state.root
 
   # Each callback works with the POSIX atoms from `File` and turns an error into a struct at the end (`to_error/1`).
 

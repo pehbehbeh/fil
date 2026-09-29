@@ -192,5 +192,15 @@ defmodule Fil.Adapter do
   """
   @callback signed_url(state(), path(), opts()) :: {:ok, String.t()} | error()
 
-  @optional_callbacks stream: 3, url: 3, signed_url: 3
+  @doc """
+  Returns the address of the files: what decides which file a path names, such as the root directory, or the bucket and
+  prefix.
+
+  Optional. `Fil.Disk.same_storage?/2` compares two disks of the adapter by it. Leave out credentials and options that
+  only change how the storage is reached, so a disk with rotated credentials is still the same storage. Without this
+  callback, the whole state is compared.
+  """
+  @callback address(state()) :: term()
+
+  @optional_callbacks stream: 3, url: 3, signed_url: 3, address: 1
 end

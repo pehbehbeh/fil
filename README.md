@@ -55,7 +55,8 @@ With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes t
 - **Streaming.** Files can be read and written as streams on every disk, so large files don't have to fit in memory.
 - **URLs on every disk.** Public and signed GET and PUT URLs, from S3 itself or from `Fil.Plugin.URL` and `Fil.Plug`.
 - **Phoenix uploads.** `Fil.LiveView` stores LiveView uploads on any disk (see the
-  [Phoenix guide](https://fil.hexdocs.pm/phoenix.html)).
+  [Phoenix guide](https://fil.hexdocs.pm/phoenix.html)), and
+  [`Fil.Ecto.Ref`](https://fil.hexdocs.pm/Fil.Ecto.Ref.html) stores the refs in Ecto schemas.
 - **Safe by default.** Paths can't climb out of the disk root, `if_exists: :error` never replaces a file, and S3
   verifies checksums.
 - **Errors you can act on.** Each error, such as `Fil.NotFoundError` or `Fil.UnavailableError`, says what to do next
