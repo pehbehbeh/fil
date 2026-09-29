@@ -46,6 +46,11 @@ defmodule Fil.MixProject do
       {:vix, "~> 0.33", optional: true},
       # Optional: Fil.Kino browses disks in Livebook and adds a smart cell.
       {:kino, "~> 0.19", optional: true},
+      # Optional: Fil.LiveView stores LiveView uploads on a disk.
+      {:phoenix_live_view, "~> 1.2", optional: true},
+
+      # Test
+      {:lazy_html, ">= 0.1.0", only: :test},
 
       # Development
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
