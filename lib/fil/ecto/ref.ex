@@ -105,9 +105,9 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
         # in MyApp.Storage
         def uploads, do: :persistent_term.get({__MODULE__, :uploads})
 
-    Loading takes the stored path as it is, as `Fil.ref/2` does. A path that can't be normalized, such as
-    `"../x.png"`, still loads as a ref, and an operation on it returns a `Fil.InvalidRequestError`. An empty string
-    loads as the disk root, `"."`.
+    Loading builds the ref with `Fil.ref/2`, which normalizes the path and keeps one it can't normalize, such as
+    `"../x.png"`, unchanged. An operation on that ref returns a `Fil.InvalidRequestError`. An empty string loads as the
+    disk root, `"."`.
 
     After `c:Ecto.Repo.insert/2`, the struct holds the refs that were cast or put, with their own disks, and a reload
     gives refs on the field's disk. Both name the same files.
@@ -137,6 +137,10 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
           Enum.each(removed, &Fil.rm/1)
           {:ok, product}
         end
+
+    `removed/2` compares with `changeset.data`, the record as it was loaded, so when two requests edit the same record
+    at once, one can delete a file that the other saves again, unless you use `Ecto.Changeset.optimistic_lock/3` or load
+    the record with a row lock in the transaction.
 
     Clearing a single file works the same way, with `put_change(:avatar, nil)`. Inside a transaction, delete after the
     outermost one. If a delete fails, the file stays on the disk without a record, which is better than a record without
