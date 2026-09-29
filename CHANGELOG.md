@@ -63,8 +63,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   copy or a move of an object onto itself, for example. `Fil.Plug` still answers it with a `500` and logs it, because S3
   sends it for problems with the request or the bucket's configuration as well.
   ([#16](https://github.com/pehbehbeh/fil/pull/16))
-- A copy or a move on a local disk that fails removes the directories it created for the destination, like a write.
-  ([#16](https://github.com/pehbehbeh/fil/pull/16))
 - `Fil.Plug` answers an upload that the disk refuses for its content, a `Fil.InvalidRequestError` that isn't about the
   path, with a `422` instead of a `404`.
   ([#14](https://github.com/pehbehbeh/fil/pull/14))
@@ -105,6 +103,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   is atomic: a hard link on local disk, `:ets.insert_new/2` in memory, and `If-None-Match: *` on the CopyObject on S3.
   On local disk and in memory, a write that replaces the source during such a move stays, and the move fails with a
   `Fil.ConflictError`. A move without `if_exists: :error` in memory keeps that write too, like one on local disk.
+  ([#16](https://github.com/pehbehbeh/fil/pull/16))
+- A copy or a move on local disk that failed left behind the directories it created for the destination. It removes
+  them now, like a write.
   ([#16](https://github.com/pehbehbeh/fil/pull/16))
 
 ## [0.1.0] - 2026-09-27
