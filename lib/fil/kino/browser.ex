@@ -5,7 +5,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     # The server of `Fil.Kino.browser/3`. The client lists, previews and downloads through events, and the server only
     # reads files that are in the current listing, so the widget isn't a generic read API for the page.
 
-    use Kino.JS, assets_path: "lib/fil/kino/assets/browser"
+    use Kino.JS, assets_path: "lib/fil/kino/assets", entrypoint: "browser.js"
     use Kino.JS.Live
 
     # A listing shows this many entries, and says how many more there are.

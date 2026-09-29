@@ -1,0 +1,41 @@
+/* The look all Fil widgets share: Livebook's palette and fonts, the way kino_db's connection cell and Kino's own
+   widgets use them. Livebook's iframe comes without styles, so every widget imports this file first. */
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  --gray-50: #f8fafc;
+  --gray-100: #f0f5f9;
+  --gray-200: #e1e8f0;
+  --gray-300: #cad5e0;
+  --gray-400: #91a4b7;
+  --gray-500: #61758a;
+  --gray-600: #445668;
+  --gray-700: #304254;
+  --gray-800: #1c2a3a;
+  --gray-900: #0d1829;
+  --blue-100: #ecf0ff;
+  --blue-600: #3e64ff;
+  --red-50: #fdf3f4;
+  --red-300: #f1a3a6;
+  --red-600: #db1920;
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--gray-800);
+}
+
+input,
+select,
+textarea,
+button {
+  font-family: inherit;
+}
+
+[hidden] {
+  display: none !important;
+}

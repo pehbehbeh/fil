@@ -46,8 +46,9 @@ The Hex package is `fil`.
 - **Namespaces:** `Fil.Adapter.*` is only for adapters, `Fil.Plugin.*` only for plugins. `Fil.Plug` is the Plug
   that serves public and signed URLs (compiled only when the optional Plug dependency is there, listed under
   Integrations in the docs). `Fil.Kino` is the Livebook integration, compiled only when the optional Kino dependency is
-  there, with its `@moduledoc false` modules under `Fil.Kino.*` and their JS and CSS in `lib/fil/kino/assets/`. Shared
-  internal helpers go in `Fil.Support.*` (`@moduledoc false`).
+  there, with its `@moduledoc false` modules under `Fil.Kino.*`. Their JS and CSS share `lib/fil/kino/assets/`, with
+  an entrypoint per module (`use Kino.JS, entrypoint: "browser.js"`) and Livebook's palette and fonts in `theme.css`,
+  which every widget imports first. Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
 - **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
   `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
   the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never
