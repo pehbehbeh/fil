@@ -62,7 +62,11 @@ defmodule Fil.Adapter.Memory do
       `:content_type` is the `content_type:` the write stored. `checksum:` returns the stored checksum if the write
       used the same algorithm, and `nil` otherwise. A stat on a directory returns `%Fil.Stat{type: :directory}` with
       every other field `nil`.
-    * `Fil.cp/4`: the copy keeps the content type and the checksum. Copying a directory is a `Fil.NotFoundError`.
+    * `Fil.cp/4`: the copy keeps the content type and the checksum. `if_exists: :error` uses `:ets.insert_new/2`, like
+      a write. Copying a directory is a `Fil.NotFoundError`.
+    * `Fil.rename/4`: a copy, then removing the source, only while it's still the file that was copied (checked and
+      removed in one step with `:ets.select_delete/2`). A write that replaced the source meanwhile stays. With
+      `if_exists: :error`, it fails the move with a `Fil.ConflictError`, and the destination is left as it was.
     * `Fil.url/3` and `Fil.signed_url/3`: a memory store has no URLs. Attach `Fil.Plugin.URL` to build them, and
       `Fil.Plug` serves them, in a test through `Phoenix.ConnTest` too.
 
@@ -74,6 +78,7 @@ defmodule Fil.Adapter.Memory do
   | --- | --- | --- |
   | a missing file | `Fil.NotFoundError` | `:enoent` |
   | an exclusive create finding the file already there | `Fil.AlreadyExistsError` | `:eexist` |
+  | a source that a write replaced during a move with `if_exists: :error` | `Fil.ConflictError` | `:source_changed` |
   | `verify_checksum: true` and content that doesn't match | `Fil.ChecksumMismatchError` | `:checksum_mismatch` |
   """
 
@@ -180,10 +185,7 @@ defmodule Fil.Adapter.Memory do
     content = Content.to_binary(content)
     entry = {key(state, path), content, Keyword.get(opts, :content_type), now(), checksum(content, opts)}
 
-    case Keyword.get(opts, :if_exists, :overwrite) do
-      :overwrite -> insert(store!(), entry)
-      :error -> if :ets.insert_new(store!(), entry), do: :ok, else: {:error, %Fil.AlreadyExistsError{reason: :eexist}}
-    end
+    put(store!(), entry, opts)
   end
 
   # The file is looked up again when the stream is read, like on the other adapters.
@@ -239,23 +241,71 @@ defmodule Fil.Adapter.Memory do
   end
 
   @impl Fil.Adapter
-  def cp(state, src, dest, _opts) do
-    store = store!()
+  def cp(state, src, dest, opts) do
+    with {:ok, _source, _copy} <- copy(store!(), state, src, dest, opts), do: :ok
+  end
 
+  # Returns the source's entry and the copy's, so a move can check that neither changed.
+  defp copy(store, state, src, dest, opts) do
     case :ets.lookup(store, key(state, src)) do
-      [{_key, content, content_type, _mtime, checksum}] ->
-        insert(store, {key(state, dest), content, content_type, now(), checksum})
+      [{_key, content, content_type, _mtime, checksum} = source] ->
+        copy = {key(state, dest), content, content_type, now(), checksum}
+
+        case put(store, copy, opts) do
+          :ok -> {:ok, source, copy}
+          error -> at_dest(error, dest)
+        end
 
       [] ->
         {:error, %Fil.NotFoundError{reason: :enoent}}
     end
   end
 
+  # A file renamed onto itself stays as it is, unless the rename mustn't replace a file: then it's already there.
   @impl Fil.Adapter
-  def rename(_state, path, path, _opts), do: :ok
+  def rename(state, path, path, opts) do
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite -> :ok
+      :error -> cp(state, path, path, opts)
+    end
+  end
 
   def rename(state, src, dest, opts) do
-    with :ok <- cp(state, src, dest, opts), do: rm(state, src, opts)
+    store = store!()
+
+    with {:ok, source, copy} <- copy(store, state, src, dest, opts) do
+      case Keyword.get(opts, :if_exists, :overwrite) do
+        :overwrite -> remove_source(store, source)
+        :error -> remove_source(store, source, copy)
+      end
+    end
+  end
+
+  # A move removes the source only while it's still the entry it copied, so a write that replaced the source meanwhile
+  # stays, as it does after a `File.rename/2` on local disk.
+  defp remove_source(store, source) do
+    delete_entry(store, source)
+    :ok
+  end
+
+  # Like on local disk, an exclusive move whose source a write replaced meanwhile removes its copy again and fails with
+  # a conflict. A source that something else removed leaves the copy as the only one, so the move stands.
+  defp remove_source(store, {key, _content, _content_type, _mtime, _checksum} = source, copy) do
+    cond do
+      delete_entry(store, source) -> :ok
+      :ets.member(store, key) -> conflict(store, copy)
+      true -> :ok
+    end
+  end
+
+  defp conflict(store, copy) do
+    delete_entry(store, copy)
+    {:error, %Fil.ConflictError{reason: :source_changed}}
+  end
+
+  # Deletes the entry only if it's still exactly this one, and says whether it did.
+  defp delete_entry(store, {key, _content, _content_type, _mtime, _checksum} = entry) do
+    :ets.select_delete(store, [{{key, :_, :_, :_, :_}, [{:"=:=", :"$_", {:const, entry}}], [true]}]) == 1
   end
 
   @impl Fil.Adapter
@@ -292,6 +342,16 @@ defmodule Fil.Adapter.Memory do
     true = :ets.insert(store, entry)
     :ok
   end
+
+  # `if_exists: :error` uses `:ets.insert_new/2`, which checks and inserts in one step.
+  defp put(store, entry, opts) do
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite -> insert(store, entry)
+      :error -> if :ets.insert_new(store, entry), do: :ok, else: {:error, %Fil.AlreadyExistsError{reason: :eexist}}
+    end
+  end
+
+  defp at_dest({:error, error}, dest), do: {:error, %{error | path: dest}}
 
   ## ------------------------------------------------------------------
   ## Keys

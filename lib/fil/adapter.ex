@@ -26,6 +26,7 @@ defmodule Fil.Adapter do
   | `c:stream/3` on a missing file | `File.stream!/3` raises when it's read | `{:error, %Fil.NotFoundError{}}` |
   | `c:write/4` into a missing directory | `{:error, :enoent}` | creates the missing parents |
   | exclusive `c:write/4` on an existing file | `{:error, :eexist}` | `{:error, %Fil.AlreadyExistsError{}}` |
+  | exclusive `c:cp/4` or `c:rename/4` onto an existing file | replaces it | `{:error, %Fil.AlreadyExistsError{}}` |
   | `c:cp/4` or `c:rename/4` into a missing directory | `{:error, :enoent}` | creates the missing parents |
   | `c:rm/3` on a missing file | `{:error, :enoent}` | `:ok` |
   | `c:ls/3` on a missing directory | `{:error, :enoent}` | `{:ok, []}` |
@@ -34,7 +35,9 @@ defmodule Fil.Adapter do
   | `c:rm_rf/3` on `"reports"` | the directory `reports` | `reports` and all of `reports/`, not `reports.txt` |
   | paths | relative to the working directory, or absolute | relative to the disk root, never above it |
 
-  An exclusive write is `File.write/3` with `[:exclusive]`, and `c:write/4` with `if_exists: :error`.
+  An exclusive write is `File.write/3` with `[:exclusive]`, and `c:write/4` with `if_exists: :error`. An exclusive copy
+  or move is `c:cp/4` or `c:rename/4` with `if_exists: :error`. It fails with the destination's path and leaves both
+  files as they were.
 
   Where an adapter returns `:ok`, the `Fil` function returns `{:ok, %Fil.Ref{}}`, and `Fil.ls/2` turns the pairs
   into refs.
@@ -149,6 +152,9 @@ defmodule Fil.Adapter do
 
   A copy across two disks doesn't call this: `Fil` reads the file with `c:read/3` on the source adapter and writes it
   with `c:write/4` on the destination adapter.
+
+  With `if_exists: :error`, an existing destination fails the copy with `Fil.AlreadyExistsError`, `:path` set to the
+  destination, and the destination keeps its content.
   """
   @callback cp(state(), path(), path(), opts()) :: :ok | error()
 
@@ -157,6 +163,9 @@ defmodule Fil.Adapter do
 
   A move across two disks doesn't call this: `Fil` copies the file as described in `c:cp/4`, then removes the source
   with `c:rm/3`.
+
+  With `if_exists: :error`, an existing destination fails the move as it fails `c:cp/4`, and the source stays where it
+  is.
   """
   @callback rename(state(), path(), path(), opts()) :: :ok | error()
 

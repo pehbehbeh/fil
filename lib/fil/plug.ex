@@ -124,7 +124,8 @@ if Code.ensure_loaded?(Plug) do
       * a failed write gets a `409` if the file already exists or changed meanwhile, `422` if the disk refuses the
         content (a `Fil.InvalidRequestError` about the content, such as from `Fil.Plugin.Thumbnails` for a file that
         isn't an image), `507` if the storage is full and `503` if it's unavailable. Any other error is a `500` with a
-        generic body, and its message goes to the `Logger`
+        generic body, and its message goes to the `Logger`. So is S3's `InvalidRequest`, on a download too, because S3
+        sends it for problems with the request or the bucket's configuration as well
     """
 
     @behaviour Plug
@@ -138,6 +139,11 @@ if Code.ensure_loaded?(Plug) do
 
     # The reasons of a `Fil.InvalidRequestError` that are about the path, not the content (see the adapters' tables).
     @path_reasons [:ebadpath, :eisdir, :enotdir, :enametoolong, :eloop, "KeyTooLongError"]
+
+    # The reasons of a `Fil.InvalidRequestError` that are about the request or the storage's configuration, which the
+    # client can't fix. S3 sends `InvalidRequest` for a PutObject without `Content-MD5` in a bucket with object lock, or
+    # with a checksum header it doesn't support, for example. They're a `500` that's logged, like an unknown error.
+    @request_reasons ["InvalidRequest"]
 
     @impl Plug
     def init(opts) do
@@ -350,10 +356,14 @@ if Code.ensure_loaded?(Plug) do
     end
 
     # An upload the disk refuses for its content is a 422. One refused for its path is a 404, as on a download.
-    defp send_write_error(conn, %Fil.InvalidRequestError{reason: reason}) when reason not in @path_reasons,
-      do: send_error(conn, 422, "the content can't be stored here")
+    defp send_write_error(conn, %Fil.InvalidRequestError{reason: reason})
+         when reason not in @path_reasons and reason not in @request_reasons,
+         do: send_error(conn, 422, "the content can't be stored here")
 
     defp send_write_error(conn, error), do: send_fil_error(conn, error)
+
+    defp send_fil_error(conn, %Fil.InvalidRequestError{reason: reason} = error) when reason in @request_reasons,
+      do: send_server_error(conn, error)
 
     # A denied file is a 404 too, so a client can't tell which files exist.
     defp send_fil_error(conn, %error{})
@@ -364,9 +374,11 @@ if Code.ensure_loaded?(Plug) do
     defp send_fil_error(conn, %Fil.ConflictError{}), do: send_error(conn, 409, "the file changed, try again")
     defp send_fil_error(conn, %Fil.StorageFullError{}), do: send_error(conn, 507, "no space left")
     defp send_fil_error(conn, %Fil.UnavailableError{}), do: send_error(conn, 503, "the storage is unavailable")
+    defp send_fil_error(conn, error), do: send_server_error(conn, error)
+
     # The message contains the path, the disk and what the storage reported, so it goes to the log and the client
     # gets a generic body.
-    defp send_fil_error(conn, error) do
+    defp send_server_error(conn, error) do
       Logger.error("Fil.Plug: " <> Exception.message(error))
       send_error(conn, 500, "internal server error")
     end

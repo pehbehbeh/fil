@@ -122,6 +122,25 @@ defmodule Fil.Adapter.LocalTest do
              |> File.ls!() == ["x.txt"]
     end
 
+    test "copies and moves that fail remove the directories they created", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "kept/x.txt", "x")
+
+      assert {:error, %Fil.NotFoundError{}} = Fil.cp(disk, "nope.txt", "kept/new/a.txt")
+      assert {:error, %Fil.NotFoundError{}} = Fil.rename(disk, "nope.txt", "fresh/deeper/a.txt")
+      assert {:error, %Fil.NotFoundError{}} = Fil.cp(disk, "nope.txt", "fresh/a.txt", if_exists: :error)
+      assert {:error, %Fil.NotFoundError{}} = Fil.rename(disk, "nope.txt", "fresh/a.txt", if_exists: :error)
+
+      root = Path.join(tmp_dir, "primary")
+
+      assert root
+             |> File.ls!()
+             |> Enum.sort() == ["kept"]
+
+      assert root
+             |> Path.join("kept")
+             |> File.ls!() == ["x.txt"]
+    end
+
     test "under a file create no directories", %{disk: disk, tmp_dir: tmp_dir} do
       assert {:ok, _} = Fil.write(disk, "file.txt", "content")
 
@@ -145,6 +164,134 @@ defmodule Fil.Adapter.LocalTest do
                Fil.write(disk, "once.txt", "clobber", if_exists: :error)
 
       assert Fil.read(disk, "once.txt") == {:ok, "original"}
+    end
+  end
+
+  describe "copies and moves with if_exists: :error" do
+    test "that fail leave no temporary files behind", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "source.txt", "source")
+      assert {:ok, _} = Fil.write(disk, "kept/taken.txt", "taken")
+
+      assert {:error, %Fil.AlreadyExistsError{reason: :eexist}} =
+               Fil.cp(disk, "source.txt", "kept/taken.txt", if_exists: :error)
+
+      assert {:error, %Fil.InvalidRequestError{reason: :enotdir, path: "source.txt/deeper/copy.txt"}} =
+               Fil.cp(disk, "source.txt", "source.txt/deeper/copy.txt", if_exists: :error)
+
+      root = Path.join(tmp_dir, "primary")
+
+      assert root
+             |> File.ls!()
+             |> Enum.sort() == ["kept", "source.txt"]
+
+      assert root
+             |> Path.join("kept")
+             |> File.ls!() == ["taken.txt"]
+    end
+
+    test "onto a directory or from a directory are :eisdir", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "source.txt", "source")
+      assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
+
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir, path: "dir"}} =
+               Fil.cp(disk, "source.txt", "dir", if_exists: :error)
+
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir, path: "dir"}} =
+               Fil.rename(disk, "source.txt", "dir", if_exists: :error)
+
+      assert {:error, %Fil.InvalidRequestError{reason: :eisdir, path: "dir"}} =
+               Fil.cp(disk, "dir", "copy", if_exists: :error)
+
+      assert Fil.read(disk, "source.txt") == {:ok, "source"}
+    end
+
+    test "move a directory onto neither a file nor a directory with files", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
+      assert {:ok, _} = Fil.write(disk, "taken.txt", "taken")
+      assert {:ok, _} = Fil.write(disk, "full/other.txt", "other")
+
+      assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "taken.txt"}} =
+               Fil.rename(disk, "dir", "taken.txt", if_exists: :error)
+
+      assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "full"}} =
+               Fil.rename(disk, "dir", "full", if_exists: :error)
+
+      assert Fil.read(disk, "dir/file.txt") == {:ok, "content"}
+      assert Fil.read(disk, "taken.txt") == {:ok, "taken"}
+      assert Fil.read(disk, "full/other.txt") == {:ok, "other"}
+    end
+
+    test "that can't remove the source remove the destination again", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "locked/a.txt", "a")
+
+      locked = Path.join(tmp_dir, "primary/locked")
+      File.chmod!(locked, 0o555)
+      on_exit(fn -> File.chmod(locked, 0o755) end)
+
+      assert {:error, %Fil.AccessDeniedError{op: :rename, path: "locked/a.txt"}} =
+               Fil.rename(disk, "locked/a.txt", "b.txt", if_exists: :error)
+
+      assert Fil.read(disk, "locked/a.txt") == {:ok, "a"}
+      refute Fil.exists?(disk, "b.txt")
+    end
+
+    test "that run at the same time leave no temporary files behind", %{disk: disk, tmp_dir: tmp_dir} do
+      for i <- 1..8, do: assert({:ok, _} = Fil.write(disk, "sources/#{i}.txt", "#{i}"))
+
+      1..8
+      |> Task.async_stream(fn i -> Fil.cp(disk, "sources/#{i}.txt", "target/a.txt", if_exists: :error) end)
+      |> Stream.run()
+
+      assert tmp_dir
+             |> Path.join("primary/target")
+             |> File.ls!() == ["a.txt"]
+    end
+
+    test "keep the source's permissions, like File.cp/2", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "run.sh", "echo")
+
+      root = Path.join(tmp_dir, "primary")
+      source = Path.join(root, "run.sh")
+      copy = Path.join(root, "copies/run.sh")
+      File.chmod!(source, 0o750)
+
+      assert {:ok, _} = Fil.cp(disk, "run.sh", "copies/run.sh", if_exists: :error)
+      assert %File.Stat{mode: mode} = File.stat!(copy)
+      assert Bitwise.band(mode, 0o7777) == 0o750
+    end
+
+    test "move a symlink, not its target", %{disk: disk, tmp_dir: tmp_dir} do
+      assert {:ok, _} = Fil.write(disk, "target.txt", "target")
+
+      root = Path.join(tmp_dir, "primary")
+      link = Path.join(root, "link")
+      moved = Path.join(root, "moved")
+      File.ln_s!("target.txt", link)
+
+      assert {:ok, _} = Fil.rename(disk, "link", "moved", if_exists: :error)
+      assert File.read_link(moved) == {:ok, "target.txt"}
+      assert File.lstat(link) == {:error, :enoent}
+      assert Fil.read(disk, "moved") == {:ok, "target"}
+      assert Fil.read(disk, "target.txt") == {:ok, "target"}
+    end
+
+    test "move a directory as before", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
+      assert {:ok, _} = Fil.rename(disk, "dir", "moved/dir", if_exists: :error)
+      assert Fil.read(disk, "moved/dir/file.txt") == {:ok, "content"}
+      refute Fil.exists?(disk, "dir")
+    end
+
+    test "onto the same file find it there", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "a.txt", "a")
+
+      assert {:error, %Fil.AlreadyExistsError{op: :cp, path: "a.txt"}} =
+               Fil.cp(disk, "a.txt", "a.txt", if_exists: :error)
+
+      assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "a.txt"}} =
+               Fil.rename(disk, "a.txt", "a.txt", if_exists: :error)
+
+      assert Fil.read(disk, "a.txt") == {:ok, "a"}
     end
   end
 

@@ -46,8 +46,17 @@ defmodule Fil.Adapter.Local do
     * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too, temporary `.fil-`
       files of writes aren't. The disk reserves that prefix, so a file of your own whose name starts with `.fil-` is
       skipped as well. A path that isn't a directory lists nothing, the same as a missing one.
-    * `Fil.cp/4`: `File.cp/2`. Copying a directory is a `Fil.InvalidRequestError`.
-    * `Fil.rename/4`: `File.rename/2`.
+    * `Fil.cp/4`: `File.cp/2`. `if_exists: :error` copies to a `.fil-` temporary file instead and hard-links it to the
+      destination, like a write. A copy or a move that fails removes the directories it created, like a write. Copying
+      a directory is a `Fil.InvalidRequestError`.
+    * `Fil.rename/4`: `File.rename/2`, which moves directories too. `if_exists: :error` hard-links the file to the
+      destination and then removes the source. Where the link fails with `:eperm` or `:enotsup` (a filesystem without
+      hard links, or on Linux a file of another user with `fs.protected_hardlinks` on), it creates the destination with
+      `O_EXCL` first and then moves the file there, like a write. A symlink is moved that way too, so the destination
+      is the link and not its target. A write that replaces the source after the link fails the move with a
+      `Fil.ConflictError` and leaves the destination as it was. A write in the short moment between that check and the
+      removal of the source is lost. A directory is still moved with `File.rename/2`, which replaces an empty
+      directory. A file or a directory with files in it is a `Fil.AlreadyExistsError`.
     * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Files whose name starts with `.fil-` are removed
       too, but not counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
@@ -67,6 +76,7 @@ defmodule Fil.Adapter.Local do
   | a name that's too long, a symlink loop | `Fil.InvalidRequestError` | `:enametoolong`, `:eloop` |
   | a path that resolves outside the root | `Fil.InvalidRequestError` | `:ebadpath` |
   | an exclusive create finding the file already there | `Fil.AlreadyExistsError` | `:eexist` |
+  | a source that a write replaced during a move with `if_exists: :error` | `Fil.ConflictError` | `:source_changed` |
   | a full disk, a used-up quota | `Fil.StorageFullError` | `:enospc`, `:edquot` |
   | too many open files | `Fil.UnavailableError` | `:emfile`, `:enfile` |
   | any other POSIX error | `Fil.UnknownError` | the atom |
@@ -118,10 +128,10 @@ defmodule Fil.Adapter.Local do
   def ls(state, prefix, opts), do: to_error(list(state, prefix, opts))
 
   @impl Fil.Adapter
-  def cp(state, src, dest, _opts), do: to_error(transfer(&File.cp/2, state, src, dest))
+  def cp(state, src, dest, opts), do: to_error(copy(state, src, dest, opts))
 
   @impl Fil.Adapter
-  def rename(state, src, dest, _opts), do: to_error(transfer(&File.rename/2, state, src, dest))
+  def rename(state, src, dest, opts), do: to_error(move(state, src, dest, opts))
 
   @impl Fil.Adapter
   def rm_rf(state, prefix, _opts), do: to_error(rm_tree(state, prefix))
@@ -173,14 +183,20 @@ defmodule Fil.Adapter.Local do
   # happens in between (an error, or a stream that raises), the temporary file is removed, and so are the directories
   # this write created, so the disk is left as it was.
   defp write_file(state, path, content, opts) do
+    chunks = if is_binary(content) or is_list(content), do: [content], else: content
+
+    put_file(state, path, fn _tmp, io -> write_chunks(io, chunks) end, opts)
+  end
+
+  # `fill` gets the temporary file's path and its open handle, and writes the content into it.
+  defp put_file(state, path, fill, opts) do
     with {:ok, full} <- full_path(state, path),
          {:ok, created} <- make_parents(full),
          {:ok, tmp, io, created} <- open_tmp(full, created) do
-      write_into(full, {tmp, io}, created, content, opts)
+      write_into(full, {tmp, io}, created, fill, opts)
     else
       {:error, reason, created} ->
-        remove_dirs(created)
-        {:error, reason}
+        undo_parents({:error, reason}, created)
 
       {:error, reason} ->
         {:error, reason}
@@ -212,10 +228,10 @@ defmodule Fil.Adapter.Local do
 
   defp open_exclusive(tmp), do: :file.open(tmp, [:write, :exclusive, :raw, :binary])
 
-  defp write_into(full, {tmp, io}, created, content, opts) do
+  defp write_into(full, {tmp, io}, created, fill, opts) do
     result =
       try do
-        place(tmp, io, full, content, opts)
+        place(tmp, io, full, fill, opts)
       catch
         kind, reason ->
           discard(tmp, created)
@@ -226,14 +242,23 @@ defmodule Fil.Adapter.Local do
     result
   end
 
-  defp place(tmp, io, full, content, opts) do
-    with :ok <- write_tmp(io, content) do
+  defp place(tmp, io, full, fill, opts) do
+    with :ok <- write_tmp(tmp, io, fill) do
       case Keyword.get(opts, :if_exists, :overwrite) do
-        :overwrite -> File.rename(tmp, full)
-        :error -> create(tmp, full)
+        :overwrite ->
+          File.rename(tmp, full)
+
+        :error ->
+          tmp
+          |> create(full)
+          |> placed()
       end
     end
   end
+
+  # A write only needs to know that the file is in place, not how it got there.
+  defp placed({:ok, _how}), do: :ok
+  defp placed(error), do: error
 
   defp discard(tmp, created) do
     _ = File.rm(tmp)
@@ -258,15 +283,149 @@ defmodule Fil.Adapter.Local do
     end
   end
 
+  # A copy that mustn't replace a file is a write with the source's content: it goes to a temporary file, which is then
+  # hard-linked into place.
+  defp copy(state, src, dest, opts) do
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite -> transfer(&File.cp/2, state, src, dest)
+      :error -> copy_new(state, src, dest, opts)
+    end
+  end
+
+  defp copy_new(state, src, dest, opts) do
+    with {:ok, from} <- full_path(state, src),
+         {:ok, io} <- open_read(from) do
+      try do
+        state
+        |> put_file(dest, &copy_into(&1, &2, io), opts)
+        |> at_dest(dest)
+      after
+        :file.close(io)
+      end
+    end
+  end
+
+  # The copy gets the source's permissions, like `File.cp/2` gives it.
+  defp copy_into(tmp, tmp_io, io) do
+    with {:ok, info} <- :file.read_file_info(io, [:raw]),
+         {:ok, _bytes} <- :file.copy(io, tmp_io) do
+      %File.Stat{mode: mode} = File.Stat.from_record(info)
+      File.chmod(tmp, Bitwise.band(mode, 0o7777))
+    end
+  end
+
+  defp move(state, src, dest, opts) do
+    case Keyword.get(opts, :if_exists, :overwrite) do
+      :overwrite ->
+        transfer(&File.rename/2, state, src, dest)
+
+      :error ->
+        result = transfer(&move_new/2, state, src, dest)
+        at_dest(result, dest)
+    end
+  end
+
+  # A hard link claims the destination only if it doesn't exist, and removing the source then completes the move.
+  # Without hard links, `create/2` claims the destination with `O_EXCL` and moves the file there, which completes the
+  # move by itself. A symlink always takes that way, whatever it points to: on macOS, a hard link to a symlink links
+  # its target, so the destination would be the target's file instead of the link. Directories can't be hard-linked,
+  # so they're moved with `File.rename/2`.
+  defp move_new(from, to) do
+    cond do
+      symlink?(from) ->
+        from
+        |> claim(to)
+        |> complete_move(from, to)
+
+      File.dir?(from) ->
+        move_dir(from, to)
+
+      true ->
+        from
+        |> create(to)
+        |> complete_move(from, to)
+    end
+  end
+
+  defp symlink?(full), do: match?({:ok, %File.Stat{type: :symlink}}, File.lstat(full))
+
+  defp complete_move({:ok, :linked}, from, to), do: remove_source(from, to)
+  defp complete_move({:ok, :moved}, _from, _to), do: :ok
+  defp complete_move(error, _from, _to), do: error
+
+  # `File.rename/2` puts a directory over an empty one, but not over a file (`:enotdir`) or over a directory with
+  # something in it (`:enotempty`, or `:eexist` on Linux). For `if_exists: :error`, those are a destination that exists.
+  defp move_dir(from, to) do
+    case File.rename(from, to) do
+      {:error, reason} when reason in [:enotdir, :enotempty] -> {:error, :eexist}
+      result -> result
+    end
+  end
+
+  # Until the source is removed, it's the same file as the link. A write that replaced the source after the link was
+  # made put a new file there, which stays: the move removes its link and fails with a conflict. A write between that
+  # check and the removal is still lost. Whatever fails, the link is removed only while it's still the file this move
+  # linked, so both files stay as they were. A source that something else removed meanwhile leaves the link as the
+  # only copy, so the move stands.
+  defp remove_source(from, to) do
+    with {:ok, linked} <- file_id(to) do
+      case file_id(from) do
+        {:ok, ^linked} -> unlink_source(from, to, linked)
+        {:ok, _other} -> unlink(to, linked, %Fil.ConflictError{reason: :source_changed})
+        {:error, :enoent} -> :ok
+        {:error, reason} -> unlink(to, linked, reason)
+      end
+    end
+  end
+
+  defp unlink_source(from, to, linked) do
+    case File.rm(from) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> unlink(to, linked, reason)
+    end
+  end
+
+  defp unlink(to, linked, reason) do
+    if file_id(to) == {:ok, linked}, do: File.rm(to)
+    {:error, reason}
+  end
+
+  defp file_id(full) do
+    with {:ok, %File.Stat{major_device: device, inode: inode}} <- File.lstat(full), do: {:ok, {device, inode}}
+  end
+
+  # An exclusive copy or move that fails because the destination exists, is a directory or is under a file has the
+  # destination's path.
+  defp at_dest({:error, reason}, dest) when reason in [:eexist, :eisdir, :enotdir],
+    do: {:error, %{to_struct(reason) | path: dest}}
+
+  defp at_dest(result, _dest), do: result
+
+  # The destination's missing parents are created first, and removed again when the copy or move fails, like a write's.
   # A destination under a file fails on the destination side, so the error has that path.
   defp transfer(fun, state, src, dest) do
     with {:ok, from} <- full_path(state, src),
          {:ok, to} <- full_path(state, dest) do
-      case ensure_parent(to) do
-        :ok -> missing(fun.(from, to))
-        {:error, reason} -> {:error, %{to_struct(reason) | path: dest}}
+      case make_parents(to) do
+        {:ok, created} ->
+          result = fun.(from, to)
+
+          result
+          |> missing()
+          |> undo_parents(created)
+
+        {:error, reason, created} ->
+          undo_parents({:error, %{to_struct(reason) | path: dest}}, created)
       end
     end
+  end
+
+  defp undo_parents(:ok, _created), do: :ok
+
+  defp undo_parents(error, created) do
+    remove_dirs(created)
+    error
   end
 
   defp rm_tree(state, prefix) do
@@ -362,20 +521,8 @@ defmodule Fil.Adapter.Local do
     end)
   end
 
-  # Creates the parents of a copy's or a move's destination. A parent that's a file is `:enotdir` on macOS and
-  # `:eexist` on Linux, so both become `:enotdir`.
-  defp ensure_parent(full) do
-    parent = Path.dirname(full)
-
-    case File.mkdir_p(parent) do
-      :ok -> :ok
-      {:error, :eexist} -> {:error, :enotdir}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   # A path through a file (`report.txt/x`) is `:enotdir` to the filesystem, but that file doesn't exist, which
-  # is what an object store says too. `cp/4` and `rename/4` call it after `ensure_parent/1`, so there it can only be the
+  # is what an object store says too. `cp/4` and `rename/4` call it after `make_parents/1`, so there it can only be the
   # source, and a destination under a file stays `:enotdir`.
   defp missing({:error, :enotdir}), do: {:error, :enoent}
   defp missing(result), do: result
@@ -388,12 +535,10 @@ defmodule Fil.Adapter.Local do
   ## Writing
   ## ------------------------------------------------------------------
 
-  defp write_tmp(io, content) do
-    chunks = if is_binary(content) or is_list(content), do: [content], else: content
-
+  defp write_tmp(tmp, io, fill) do
     result =
       try do
-        write_chunks(io, chunks)
+        fill.(tmp, io)
       catch
         kind, reason ->
           _ = :file.close(io)
@@ -415,10 +560,11 @@ defmodule Fil.Adapter.Local do
 
   # A hard link to the finished temporary file creates the destination only if it doesn't exist yet, in one step, so an
   # exclusive write never shows a partial file either. Filesystems without hard links (some network shares) claim the
-  # name with `O_EXCL` instead and then move the content in, so the file is empty until the move.
+  # name with `O_EXCL` instead and then move the content in, so the file is empty until the move. The result says which
+  # happened: after `:linked` the file is still at `tmp` too, after `:moved` it's gone from there.
   defp create(tmp, full) do
     case :file.make_link(tmp, full) do
-      :ok -> :ok
+      :ok -> {:ok, :linked}
       {:error, :eexist} -> {:error, directory_or(full, :eexist)}
       {:error, reason} when reason in [:enotsup, :eperm] -> claim(tmp, full)
       {:error, reason} -> {:error, reason}
@@ -429,7 +575,7 @@ defmodule Fil.Adapter.Local do
     case :file.open(full, [:write, :exclusive, :raw]) do
       {:ok, io} ->
         :ok = :file.close(io)
-        File.rename(tmp, full)
+        claimed(File.rename(tmp, full), full)
 
       {:error, :eexist} ->
         {:error, directory_or(full, :eexist)}
@@ -437,6 +583,14 @@ defmodule Fil.Adapter.Local do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # A move that fails leaves the empty file behind, which is removed again.
+  defp claimed(:ok, _full), do: {:ok, :moved}
+
+  defp claimed(error, full) do
+    _ = File.rm(full)
+    error
   end
 
   defp tmp_path(full) do

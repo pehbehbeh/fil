@@ -796,6 +796,77 @@ defmodule Fil.AdapterCase do
         assert Fil.read(disk, "once.txt") == {:ok, "first"}
       end
 
+      test "if_exists: :error never replaces a file on a copy or a move", %{disk: disk, other_disk: other_disk} do
+        assert {:ok, _} = Fil.write(disk, "source.txt", "source")
+        assert {:ok, _} = Fil.write(disk, "taken.txt", "taken")
+        assert {:ok, _} = Fil.write(other_disk, "taken.txt", "other")
+
+        assert {:error, %Fil.AlreadyExistsError{op: :cp, path: "taken.txt", disk: ^disk}} =
+                 Fil.cp(disk, "source.txt", "taken.txt", if_exists: :error)
+
+        assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "taken.txt", disk: ^disk}} =
+                 Fil.rename(disk, "source.txt", "taken.txt", if_exists: :error)
+
+        assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "taken.txt", disk: ^other_disk}} =
+                 Fil.rename(disk, "source.txt", Fil.ref(other_disk, "taken.txt"), if_exists: :error)
+
+        assert Fil.read(disk, "source.txt") == {:ok, "source"}
+        assert Fil.read(disk, "taken.txt") == {:ok, "taken"}
+        assert Fil.read(other_disk, "taken.txt") == {:ok, "other"}
+      end
+
+      test "if_exists: :error lets one of several concurrent copies and moves win", %{disk: disk} do
+        for i <- 1..8, do: assert({:ok, _} = Fil.write(disk, "sources/#{i}.txt", "#{i}"))
+
+        results =
+          1..8
+          |> Task.async_stream(
+            fn
+              i when rem(i, 2) == 0 -> Fil.cp(disk, "sources/#{i}.txt", "target.txt", if_exists: :error)
+              i -> Fil.rename(disk, "sources/#{i}.txt", "target.txt", if_exists: :error)
+            end,
+            max_concurrency: 8
+          )
+          |> Enum.map(fn {:ok, result} -> result end)
+
+        {won, lost} = Enum.split_with(results, &match?({:ok, _}, &1))
+
+        assert [_winner] = won
+        assert Enum.all?(lost, &match?({:error, %Fil.AlreadyExistsError{}}, &1))
+
+        assert {:ok, content} = Fil.read(disk, "target.txt")
+        winner = String.to_integer(content)
+
+        for i <- 1..8 do
+          moved? = i == winner and rem(i, 2) == 1
+          assert Fil.exists?(disk, "sources/#{i}.txt") == not moved?
+        end
+      end
+
+      test "if_exists: :error copies and moves onto a missing file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "source.txt", "source")
+
+        assert {:ok, copy} = Fil.cp(disk, "source.txt", "copies/source.txt", if_exists: :error)
+        assert {:ok, moved} = Fil.rename(disk, "source.txt", "moved/source.txt", if_exists: :error)
+
+        assert Fil.read(copy) == {:ok, "source"}
+        assert Fil.read(moved) == {:ok, "source"}
+        refute Fil.exists?(disk, "source.txt")
+      end
+
+      test "copies and moves replace a file by default", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "first.txt", "first")
+        assert {:ok, _} = Fil.write(disk, "second.txt", "second")
+        assert {:ok, _} = Fil.write(disk, "taken.txt", "taken")
+
+        assert {:ok, _} = Fil.cp(disk, "first.txt", "taken.txt")
+        assert Fil.read(disk, "taken.txt") == {:ok, "first"}
+
+        assert {:ok, _} = Fil.rename(disk, "second.txt", "taken.txt", if_exists: :overwrite)
+        assert Fil.read(disk, "taken.txt") == {:ok, "second"}
+        refute Fil.exists?(disk, "second.txt")
+      end
+
       ## ----------------------------------------------------------------
       ## Checksums
       ## ----------------------------------------------------------------

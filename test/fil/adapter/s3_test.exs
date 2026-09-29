@@ -236,6 +236,7 @@ defmodule Fil.Adapter.S3Test do
       for {code, error} <- [
             {"NoSuchKey", Fil.NotFoundError},
             {"AccessDenied", Fil.AccessDeniedError},
+            {"InvalidRequest", Fil.InvalidRequestError},
             {"EntityTooLarge", Fil.InvalidRequestError},
             {"KeyTooLongError", Fil.InvalidRequestError},
             {"PreconditionFailed", Fil.AlreadyExistsError},
@@ -1179,6 +1180,20 @@ defmodule Fil.Adapter.S3Test do
       assert {:error, %Fil.UnknownError{reason: "InvalidArgument"}} = Fil.cp(disk(), "a.txt", "b.txt")
     end
 
+    test "a copy onto itself is an invalid request, or not found without a source" do
+      stub([response(400, error_xml("InvalidRequest")), response(200)])
+
+      assert {:error, %Fil.InvalidRequestError{op: :cp, path: "a.txt", reason: "InvalidRequest"}} =
+               Fil.cp(disk(), "a.txt", "a.txt", if_exists: :error)
+
+      assert [%{method: "PUT"}, %{method: "HEAD"}] = requests()
+
+      stub([response(400, error_xml("InvalidRequest")), response(404)])
+
+      assert {:error, %Fil.NotFoundError{reason: {:http_status, 404}}} = Fil.rename(disk(), "a.txt", "a.txt")
+      assert [%{method: "PUT"}, %{method: "HEAD"}] = requests()
+    end
+
     test "rename copies and then deletes" do
       stub([response(200, "<CopyObjectResult/>"), response(204)])
 
@@ -1186,6 +1201,36 @@ defmodule Fil.Adapter.S3Test do
 
       assert ref.path == "b.txt"
       assert Enum.map(requests(), & &1.method) == ["PUT", "DELETE"]
+    end
+
+    test "if_exists: :error sends If-None-Match: * with the copy" do
+      stub([response(200, "<CopyObjectResult/>"), response(200, "<CopyObjectResult/>")])
+
+      assert {:ok, _} = Fil.cp(disk(), "a.txt", "b.txt", if_exists: :error)
+      assert header(request!(), "if-none-match") == "*"
+
+      assert {:ok, _} = Fil.cp(disk(), "a.txt", "b.txt")
+      assert header(request!(), "if-none-match") == nil
+    end
+
+    test "a copy that finds the destination fails with its path" do
+      stub([response(412, error_xml("PreconditionFailed")), response(409, error_xml("ConditionalRequestConflict"))])
+
+      assert {:error, %Fil.AlreadyExistsError{op: :cp, path: "b.txt", reason: "PreconditionFailed"}} =
+               Fil.cp(disk(), "a.txt", "b.txt", if_exists: :error)
+
+      assert {:error, %Fil.AlreadyExistsError{op: :cp, path: "b.txt", reason: "ConditionalRequestConflict"}} =
+               Fil.cp(disk(), "a.txt", "b.txt", if_exists: :error)
+    end
+
+    test "a rename that finds the destination keeps the source" do
+      stub([response(412, error_xml("PreconditionFailed"))])
+
+      assert {:error, %Fil.AlreadyExistsError{op: :rename, path: "b.txt"}} =
+               Fil.rename(disk(), "a.txt", "b.txt", if_exists: :error)
+
+      assert [%{method: "PUT"} = copy] = requests()
+      assert header(copy, "if-none-match") == "*"
     end
   end
 

@@ -218,6 +218,37 @@ defmodule Fil.PlugTest do
       assert log =~ ~s|could not write "a.txt"|
       assert log =~ "InvalidArgument"
     end
+
+    @tag :capture_log
+    test "S3's InvalidRequest is a 500 that's logged, on an upload and a download", %{memory: disk} do
+      error = %Fil.InvalidRequestError{reason: "InvalidRequest"}
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+
+      failing =
+        Fil.attach(disk, :failing, fn
+          %Fil.Op{name: name} = op, _next, _opts when name in [:write, :stat, :read] ->
+            Fil.Op.put_result(op, {:error, error})
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      {:ok, put_url} = Fil.signed_url(failing, "a.txt", method: :put)
+      {:ok, get_url} = Fil.signed_url(failing, "a.txt")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          for {method, url, body} <- [{:put, put_url, "content"}, {:get, get_url, nil}] do
+            conn = request(method, url, failing, body)
+
+            assert conn.status == 500
+            assert conn.resp_body == "internal server error"
+          end
+        end)
+
+      assert log =~ ~s|could not write "a.txt"|
+      assert log =~ "InvalidRequest"
+    end
   end
 
   describe "upload size" do
