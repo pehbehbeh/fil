@@ -178,11 +178,11 @@ defmodule Fil.Tmp do
     |> disk()
   end
 
-  # The entry comes before the directory, so an owner that's killed during `mkdir` leaves nothing behind. The directory
-  # is empty until the `chmod`, so nobody can read anything in it before.
+  # The entry comes before the directory, so an owner that's killed during `mkdir` leaves nothing behind.
   #
-  # The `:eexist` retry, a failed `mkdir` and a failed `chmod` have no tests: `System.tmp_dir!/0` only returns a
-  # writable directory, and the names are random, so none of them is easy to provoke.
+  # The `:eexist` retry, a failed `mkdir`, a failed `chmod` and a directory that isn't empty after it have no tests:
+  # `System.tmp_dir!/0` only returns a writable directory, the names are random, and nothing can run between `mkdir`
+  # and `chmod` in a test, so none of them is easy to provoke.
   defp create_dir(parent, attempts) do
     dir =
       parent
@@ -194,7 +194,7 @@ defmodule Fil.Tmp do
 
     case File.mkdir(dir) do
       :ok ->
-        restrict(dir, key)
+        restrict(dir, key, parent, attempts)
 
       # Someone else's directory, which the owner mustn't remove.
       {:error, :eexist} when attempts > 1 ->
@@ -207,10 +207,23 @@ defmodule Fil.Tmp do
     end
   end
 
-  defp restrict(dir, key) do
-    case File.chmod(dir, 0o700) do
-      :ok ->
-        dir
+  # `mkdir` applies the umask, so under a umask that lets the group or others write, they can put files into the
+  # directory until the `chmod`, and keep them open afterwards. A directory that isn't empty after the `chmod` is given
+  # up and the next name tried, and after the last attempt it raises like a name that's taken. The directory stays where
+  # it is with what's in it, because the files aren't the owner's to remove, and its entry goes, so the owner's exit
+  # leaves it alone. Only a kill right before `Tmp.delete/1` still removes it.
+  defp restrict(dir, key, parent, attempts) do
+    with :ok <- File.chmod(dir, 0o700),
+         {:ok, []} <- File.ls(dir) do
+      dir
+    else
+      {:ok, _names} when attempts > 1 ->
+        Tmp.delete(key)
+        create_dir(parent, attempts - 1)
+
+      {:ok, _names} ->
+        Tmp.delete(key)
+        raise error(:eexist, dir)
 
       {:error, reason} ->
         _result = File.rmdir(dir)
