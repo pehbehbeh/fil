@@ -137,7 +137,10 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       end
     end
 
-    # The size from the listing decides, so a file that's too large is never read.
+    # The size from the listing decides, so a file that's too large is never read. A file the listing has no size for
+    # isn't read either.
+    defp check_size(%{stat: %{size: nil}} = file, _max, _message), do: {:error, "the size of #{file.path} is unknown"}
+
     defp check_size(file, max, message) do
       if fits?(file.stat.size, max), do: :ok, else: {:error, "#{file.path} is #{message}"}
     end

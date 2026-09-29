@@ -52,6 +52,18 @@ defmodule Fil.Kino.BrowserTest do
       assert_broadcast_event(browser, "listing", %{path: "nope", entries: []})
     end
 
+    test "shows a path that climbs out of the root as an error, and keeps working", %{disk: disk} do
+      browser = Fil.Kino.browser(disk)
+      connect(browser)
+
+      push_event(browser, "open", %{"path" => "../x"})
+      assert_send_event(browser, "error", %{message: message})
+      assert message =~ "../x"
+
+      push_event(browser, "refresh", %{})
+      assert_broadcast_event(browser, "listing", %{path: ".", entries: []})
+    end
+
     test "refresh shows files written after connect", %{disk: disk} do
       browser = Fil.Kino.browser(disk)
       assert %{entries: []} = connect(browser)
@@ -91,6 +103,34 @@ defmodule Fil.Kino.BrowserTest do
         "preview_image",
         {:binary, %{path: "logo.png", type: "image/png"}, <<137, 80, 78, 71>>}
       )
+    end
+
+    test "has no preview for text that isn't valid UTF-8", %{disk: disk} do
+      Fil.write!(disk, "latin1.txt", <<"caf", 0xE9>>)
+      browser = Fil.Kino.browser(disk)
+      connect(browser)
+
+      push_event(browser, "preview", %{"path" => "latin1.txt"})
+      assert_send_event(browser, "preview", %{path: "latin1.txt", kind: "none"})
+    end
+
+    test "doesn't read a file the listing has no size for", %{disk: disk} do
+      Fil.write!(disk, "a.txt", "a")
+
+      browser =
+        disk
+        |> notify_reads()
+        |> drop_sizes()
+        |> Fil.Kino.browser()
+
+      assert %{entries: [%{size: nil, previewable: false, downloadable: false}]} = connect(browser)
+
+      push_event(browser, "preview", %{"path" => "a.txt"})
+      assert_send_event(browser, "error", %{message: "the size of a.txt is unknown"})
+
+      push_event(browser, "download", %{"path" => "a.txt"})
+      assert_send_event(browser, "error", %{message: "the size of a.txt is unknown"})
+      refute_received {:read, _path}
     end
 
     test "has no preview for binary files", %{disk: disk} do
@@ -221,6 +261,19 @@ defmodule Fil.Kino.BrowserTest do
   test "bad options raise ArgumentError", %{disk: disk} do
     assert_raise ArgumentError, ~r/max_preview_size/, fn -> Fil.Kino.browser(disk, ".", max_preview_size: 0) end
     assert_raise ArgumentError, ~r/unknown options \[:writable\]/, fn -> Fil.Kino.browser(disk, ".", writable: true) end
+  end
+
+  # Lists every file without a size, as a storage might that doesn't report one.
+  defp drop_sizes(disk) do
+    Fil.attach(disk, :drop_sizes, fn op, next, _opts ->
+      case next.(op) do
+        %{name: :ls, result: {:ok, refs}} = op ->
+          Fil.Op.put_result(op, {:ok, Enum.map(refs, &put_in(&1.stat.size, nil))})
+
+        op ->
+          op
+      end
+    end)
   end
 
   # Tells the test process about every read, so a test can check that nothing was read.
