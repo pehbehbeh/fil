@@ -7,7 +7,7 @@ defmodule Fil.Ecto.RefTest.Photo do
   use Ecto.Schema
 
   embedded_schema do
-    field(:file, Fil.Ecto.Ref, disk: &Fil.Ecto.RefTest.Storage.uploads/0)
+    field :file, Fil.Ecto.Ref, disk: &Fil.Ecto.RefTest.Storage.uploads/0
   end
 end
 
@@ -15,10 +15,10 @@ defmodule Fil.Ecto.RefTest.User do
   use Ecto.Schema
 
   schema "users" do
-    field(:name, :string)
-    field(:avatar, Fil.Ecto.Ref, disk: &Fil.Ecto.RefTest.Storage.uploads/0)
-    field(:photos, {:array, Fil.Ecto.Ref}, disk: {Fil.Ecto.RefTest.Storage, :uploads, []}, default: [])
-    embeds_many(:gallery, Fil.Ecto.RefTest.Photo, on_replace: :delete)
+    field :name, :string
+    field :avatar, Fil.Ecto.Ref, disk: &Fil.Ecto.RefTest.Storage.uploads/0
+    field :photos, {:array, Fil.Ecto.Ref}, disk: {Fil.Ecto.RefTest.Storage, :uploads, []}, default: []
+    embeds_many :gallery, Fil.Ecto.RefTest.Photo, on_replace: :delete
   end
 end
 
