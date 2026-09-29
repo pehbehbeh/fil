@@ -44,6 +44,8 @@ defmodule Fil.MixProject do
       {:plug, "~> 1.14", optional: true},
       # Optional: Fil.Plugin.Thumbnails resizes images with libvips.
       {:vix, "~> 0.33", optional: true},
+      # Optional: Fil.Kino browses disks in Livebook.
+      {:kino, "~> 0.19", optional: true},
 
       # Development
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
