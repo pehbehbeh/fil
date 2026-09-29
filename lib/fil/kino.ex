@@ -1,7 +1,7 @@
 if Code.ensure_loaded?(Kino.JS.Live) do
   defmodule Fil.Kino do
     @moduledoc """
-    Browses disks in [Livebook](https://livebook.dev).
+    Browses disks in [Livebook](https://livebook.dev), and uploads files to them.
 
         Mix.install([{:fil, "~> 0.2"}, {:kino, "~> 0.19"}])
 
@@ -23,6 +23,16 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     Livebook is the evaluator of the cell. Livebook evaluates all regular sections in one process, so after
     `Fil.Adapter.Memory.checkout/0` in one cell, a browser in any regular section sees the files. A branching section
     has a process of its own, and needs a `checkout/0` of its own.
+
+    ## Upload
+
+    `upload/3` is a file field that writes each file you pick straight to a directory of the disk:
+
+        Fil.Kino.upload(disk, "reports", accept: [".pdf"])
+
+    Livebook keeps an upload as a file in the notebook's runtime, and the field streams it from there into
+    `Fil.write/4`, so large files don't have to fit in memory. The line below the field says what was written, or why
+    not. An upload never replaces a file unless you pass `if_exists: :overwrite`.
     """
 
     @browser_schema NimbleOptions.new!(
@@ -46,6 +56,39 @@ if Code.ensure_loaded?(Kino.JS.Live) do
                         """
                       ]
                     )
+
+    @upload_schema NimbleOptions.new!(
+                     label: [
+                       type: :string,
+                       doc: ~S"""
+                       The label of the field. `"Upload to memory:reports"` for a memory disk and the path
+                       `"reports"`, by default.
+                       """
+                     ],
+                     accept: [
+                       type: {:or, [{:in, [:any]}, {:list, :string}]},
+                       default: :any,
+                       doc: """
+                       The file types the field accepts, as a list of extensions (`".pdf"`) or MIME types
+                       (`"image/*"`), or `:any`. Passed to `Kino.Input.file/2`, which raises on an empty list.
+                       """
+                     ],
+                     if_exists: [
+                       type: {:in, [:error, :overwrite]},
+                       default: :error,
+                       doc: """
+                       What to do when the directory already has a file of that name. `:error` keeps the file and
+                       shows a `Fil.AlreadyExistsError`, `:overwrite` replaces it. See `Fil.write/4`.
+                       """
+                     ],
+                     on_upload: [
+                       type: {:fun, 1},
+                       doc: """
+                       Called with the `Fil.Ref` of each file after it was written, for example to process it. It
+                       runs in a process Kino starts for the field.
+                       """
+                     ]
+                   )
 
     @doc """
     Returns a file browser for a disk or a ref, starting at the root or at `path`.
@@ -84,6 +127,49 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     def browser(%Fil.Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
       browser(Fil.ref(disk, path), opts)
     end
+
+    @doc """
+    Returns a file field that writes each uploaded file to the root of a disk, or to `path`.
+
+        Fil.Kino.upload(disk)
+        Fil.Kino.upload(disk, "reports", accept: [".pdf"], on_upload: &IO.inspect/1)
+        Fil.Kino.upload(reports)
+        Fil.Kino.upload(reports, if_exists: :overwrite)
+
+    A file is written under the name it had on your computer. A name that isn't a plain file name, such as `..` or one
+    with a `/` or a `\\`, is refused. It returns a `Kino.Layout` of Kino's file input and a status line, which renders
+    as the result of a cell. The field stays usable after an error.
+
+    ## Options
+
+    #{NimbleOptions.docs(@upload_schema)}
+    """
+    @spec upload(Fil.Disk.t() | Fil.Ref.t()) :: Kino.Layout.t()
+    def upload(%Fil.Disk{} = disk), do: upload(Fil.ref(disk, "."), [])
+    def upload(%Fil.Ref{} = ref), do: upload(ref, [])
+
+    @doc "Returns a file field that writes to a disk. See `upload/1`."
+    @spec upload(Fil.Disk.t(), Path.t()) :: Kino.Layout.t()
+    @spec upload(Fil.Ref.t(), keyword()) :: Kino.Layout.t()
+    def upload(%Fil.Disk{} = disk, path) when is_binary(path), do: upload(Fil.ref(disk, path), [])
+
+    def upload(%Fil.Ref{} = ref, opts) when is_list(opts) do
+      opts =
+        opts
+        |> validate!(@upload_schema)
+        |> Keyword.put_new_lazy(:label, fn -> default_label(ref) end)
+
+      Fil.Kino.Upload.new(ref.disk, ref.path, opts, self())
+    end
+
+    @doc "Returns a file field that writes to a disk. See `upload/1`."
+    @spec upload(Fil.Disk.t(), Path.t(), keyword()) :: Kino.Layout.t()
+    def upload(%Fil.Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
+      upload(Fil.ref(disk, path), opts)
+    end
+
+    defp default_label(%Fil.Ref{disk: disk, path: "."}), do: "Upload to #{Fil.Disk.label(disk)}"
+    defp default_label(%Fil.Ref{disk: disk, path: path}), do: "Upload to #{Fil.Disk.label(disk)}:#{path}"
 
     defp validate!(opts, schema) do
       case NimbleOptions.validate(opts, schema) do
