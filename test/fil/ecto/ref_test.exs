@@ -321,12 +321,6 @@ defmodule Fil.Ecto.RefTest do
       {:ok, a: Fil.ref(disk, "a.png"), b: Fil.ref(disk, "b.png"), c: Fil.ref(disk, "c.png")}
     end
 
-    defp stored(fields) do
-      User
-      |> struct(fields)
-      |> Ecto.put_meta(state: :loaded)
-    end
-
     defp removed(user, field, value) do
       user
       |> change()
@@ -335,16 +329,16 @@ defmodule Fil.Ecto.RefTest do
     end
 
     test "returns a replaced or cleared single file", %{a: a, b: b} do
-      user = stored(avatar: a)
+      user = %User{avatar: a}
 
       assert removed(user, :avatar, b) == [a]
       assert removed(user, :avatar, nil) == [a]
       assert removed(user, :avatar, a) == []
-      assert removed(stored([]), :avatar, b) == []
+      assert removed(%User{}, :avatar, b) == []
     end
 
     test "returns the refs an array drops, in their old order", %{a: a, b: b, c: c} do
-      user = stored(photos: [a, nil, b, c])
+      user = %User{photos: [a, nil, b, c]}
 
       assert removed(user, :photos, [c, a]) == [b]
       assert removed(user, :photos, [b, c, a]) == []
@@ -353,18 +347,27 @@ defmodule Fil.Ecto.RefTest do
     end
 
     test "compares paths, not stats or disks", %{a: a, b: b, disk: disk} do
-      user = stored(photos: [%{a | stat: %Fil.Stat{size: 1}}, b])
+      user = %User{photos: [%{a | stat: %Fil.Stat{size: 1}}, b]}
       attached = with_plugin(disk)
 
       assert removed(user, :photos, [a, Fil.ref(attached, "b.png")]) == []
     end
 
-    test "is empty without a change, and for a record that isn't stored", %{a: a, b: b} do
-      assert stored(avatar: a)
-             |> change()
-             |> Fil.Ecto.Ref.removed(:avatar) == []
+    test "is empty without a change", %{a: a} do
+      changeset = change(%User{avatar: a})
 
-      assert removed(%User{avatar: a}, :avatar, b) == []
+      assert Fil.Ecto.Ref.removed(changeset, :avatar) == []
+    end
+
+    test "compares with the data, whatever the record's state", %{a: a, b: b} do
+      loaded = Ecto.put_meta(%User{id: 1, avatar: a}, state: :loaded)
+
+      assert removed(%User{avatar: a}, :avatar, b) == [a]
+      assert removed(%{loaded | id: nil}, :avatar, b) == [a]
+    end
+
+    test "returns each path once", %{a: a, b: b} do
+      assert removed(%User{photos: [a, b, a]}, :photos, []) == [a, b]
     end
 
     test "skips strings in the data of a schemaless changeset", %{a: a} do
@@ -378,10 +381,10 @@ defmodule Fil.Ecto.RefTest do
 
     test "raises for a field of another type" do
       assert_raise ArgumentError, ~r/expected :name to be a Fil.Ecto.Ref/, fn ->
-        removed(stored([]), :name, "x")
+        removed(%User{}, :name, "x")
       end
 
-      assert_raise ArgumentError, fn -> removed(stored([]), :gallery, []) end
+      assert_raise ArgumentError, fn -> removed(%User{}, :gallery, []) end
     end
   end
 end

@@ -246,9 +246,9 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
     @doc """
     Returns the refs that `changeset` drops from `field`, a `Fil.Ecto.Ref` or `{:array, Fil.Ecto.Ref}` field.
 
-    These are the refs in the changeset's data whose path isn't among the paths of the change, in their order. Without
-    a change, or for a record that isn't stored yet, the list is empty. Nothing is deleted; delete the refs after the
-    commit (see [Deleting replaced files](#module-deleting-replaced-files)).
+    These are the refs in the changeset's data whose path isn't among the paths of the change, in their order, each
+    path once. Without a change the list is empty. Nothing is deleted; delete the refs after the commit (see
+    [Deleting replaced files](#module-deleting-replaced-files)).
 
         iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
         iex> type = Ecto.ParameterizedType.init(Fil.Ecto.Ref, disk: {Fil, :disk, [[adapter: Fil.Adapter.Memory]]})
@@ -262,6 +262,9 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
     It compares paths, not whole refs, so a kept ref with a `:stat` or on the disk with other plugins isn't removed.
     `nil` in an array field is skipped, and so are strings in the data (a schemaless changeset may hold paths). An
     array field changed to `nil` drops all its refs. Raises `ArgumentError` when `field` isn't one of the two types.
+
+    It compares with the changeset's data, whatever the record's state. For a changeset on a copy of another record,
+    such as `%{product | id: nil}`, the refs it returns still belong to that record, so don't delete them.
     """
     @spec removed(Ecto.Changeset.t(), atom()) :: [Fil.Ref.t()]
     def removed(%Ecto.Changeset{} = changeset, field) when is_atom(field) do
@@ -285,10 +288,6 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
           raise ArgumentError, "expected #{inspect(field)} to be a Fil.Ecto.Ref or {:array, Fil.Ecto.Ref} field"
       end
     end
-
-    # A record that isn't stored yet has nothing to drop, even when the struct was built with refs (such as a copy of
-    # another record, whose files that record still uses).
-    defp dropped(%{__meta__: %Ecto.Schema.Metadata{state: :built}}, _field, _new), do: []
 
     defp dropped(data, field, new) do
       kept =
