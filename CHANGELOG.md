@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   match them, on S3 and through `Fil.Plug`: another `content-type` or `content-length` is a `403`, and with
   `if_exists: :error` the URL writes the file once and can't replace it.
   ([#26](https://github.com/pehbehbeh/fil/pull/26))
+- `Fil.LiveView.upload_field/1` is an upload field for LiveView forms, with drag and drop, previews, progress, cancel
+  buttons, and remove buttons for the files the record already has. It's styled with daisyUI like the components
+  Phoenix 1.8 generates, and a class attribute per part replaces the defaults. `Fil.LiveView.cancel_upload/2` handles
+  its cancel buttons, and `Fil.LiveView.upload_error/2` turns LiveView's and Fil's upload errors into
+  `{msgid, bindings}` for the app's `translate_error/1`. The [Phoenix guide](https://fil.hexdocs.pm/phoenix.html)
+  shows a complete form.
 - `Fil.Ecto.Ref` stores refs in Ecto schemas: the column holds the path, and loading returns a `Fil.Ref` on the disk
   the field names. `{:array, Fil.Ecto.Ref}` holds several files in order, and `Fil.Ecto.Ref.removed/2` returns the refs
   a changeset drops, to delete after the commit. A ref fits a field when `Fil.Disk.same_storage?/2` finds its disk on
