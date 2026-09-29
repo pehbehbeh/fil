@@ -55,6 +55,8 @@ The Hex package is `fil`.
   stored. A new storage failure maps onto an existing struct; `Fil.UnknownError` is for responses nobody has mapped
   yet. A new error goes into `lib/fil/exceptions.ex` and `t:Fil.error/0`; the docs sidebar picks it up by name
   (`Fil.*Error`). Bad options raise, because they're programming errors. `{:error, _}` is only for storage conditions.
+  Building functions (`Fil.disk/1`, `Fil.ref/2`, `Fil.tmp/0,1`) return the value itself and raise: `Fil.tmp/0,1`
+  raises the mapped error struct when it can't create its directory, as `System.tmp_dir!/0` raises without one.
 - **Telemetry:** `Fil.Op.run/1` wraps every operation in an `[:fil, :op]` span (`Fil.Support.Telemetry`), so a new
   operation emits events without code of its own. Each enumeration of a stream from `Fil.stream/3` is a
   `[:fil, :stream]` span, emitted where `Fil.Support.Content.put_context/3` already wraps the stream. The event

@@ -94,6 +94,7 @@ defmodule Fil.Adapter.Local do
   alias Fil.Stat
   alias Fil.Support.Checksum
   alias Fil.Support.Tmp
+  alias Fil.Support.Unique
 
   # The size of the chunks `Fil.stream/3` reads.
   @chunk_size 65_536
@@ -481,17 +482,20 @@ defmodule Fil.Adapter.Local do
   defp to_error({:error, reason}) when is_atom(reason), do: {:error, to_struct(reason)}
   defp to_error(result), do: result
 
-  defp to_struct(:enoent), do: %Fil.NotFoundError{reason: :enoent}
+  # `Fil.Tmp` maps the errors of creating a temporary directory with it too.
+  @doc false
+  @spec to_struct(term()) :: Fil.error()
+  def to_struct(:enoent), do: %Fil.NotFoundError{reason: :enoent}
 
-  defp to_struct(reason) when reason in [:eacces, :eperm, :erofs], do: %Fil.AccessDeniedError{reason: reason}
+  def to_struct(reason) when reason in [:eacces, :eperm, :erofs], do: %Fil.AccessDeniedError{reason: reason}
 
-  defp to_struct(reason) when reason in [:eisdir, :enotdir, :enametoolong, :eloop, :ebadpath],
+  def to_struct(reason) when reason in [:eisdir, :enotdir, :enametoolong, :eloop, :ebadpath],
     do: %Fil.InvalidRequestError{reason: reason}
 
-  defp to_struct(:eexist), do: %Fil.AlreadyExistsError{reason: :eexist}
-  defp to_struct(reason) when reason in [:enospc, :edquot], do: %Fil.StorageFullError{reason: reason}
-  defp to_struct(reason) when reason in [:emfile, :enfile], do: %Fil.UnavailableError{reason: reason}
-  defp to_struct(reason), do: %Fil.UnknownError{reason: reason}
+  def to_struct(:eexist), do: %Fil.AlreadyExistsError{reason: :eexist}
+  def to_struct(reason) when reason in [:enospc, :edquot], do: %Fil.StorageFullError{reason: reason}
+  def to_struct(reason) when reason in [:emfile, :enfile], do: %Fil.UnavailableError{reason: reason}
+  def to_struct(reason), do: %Fil.UnknownError{reason: reason}
 
   ## ------------------------------------------------------------------
   ## Paths
@@ -625,21 +629,7 @@ defmodule Fil.Adapter.Local do
   defp tmp_path(full) do
     full
     |> Path.dirname()
-    |> Path.join(@tmp_prefix <> unique())
-  end
-
-  defp unique do
-    counter =
-      [:positive]
-      |> System.unique_integer()
-      |> Integer.to_string(36)
-
-    time =
-      :microsecond
-      |> System.system_time()
-      |> Integer.to_string(36)
-
-    counter <> "-" <> time
+    |> Path.join(@tmp_prefix <> Unique.name())
   end
 
   ## ------------------------------------------------------------------

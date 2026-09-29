@@ -93,6 +93,51 @@ defmodule Fil.Support.TmpServerTest do
     assert tree(tmp_dir) == ["new", "new/a.txt"]
   end
 
+  test "stopping the application removes temporary directories" do
+    on_exit(fn -> {:ok, _apps} = Application.ensure_all_started(:fil) end)
+    frames = Fil.tmp()
+    dir = Fil.Tmp.path(frames)
+
+    :ok = Application.stop(:fil)
+
+    refute File.exists?(dir)
+  end
+
+  test "Fil.tmp/0,1 raises without the application, and the rest of Fil.Tmp finds no directories" do
+    on_exit(fn -> {:ok, _apps} = Application.ensure_all_started(:fil) end)
+    frames = Fil.tmp()
+    :ok = Application.stop(:fil)
+
+    assert_raise RuntimeError, ~r/needs the :fil application/, fn -> Fil.tmp() end
+    assert_raise RuntimeError, ~r/needs the :fil application/, fn -> Fil.tmp("report.pdf") end
+    assert_raise ArgumentError, ~r/removed already/, fn -> Fil.Tmp.path(frames) end
+    assert_raise ArgumentError, ~r/removed already/, fn -> Fil.Tmp.give_away(frames, self()) end
+    assert Fil.Tmp.cleanup() == :ok
+  end
+
+  test "a restarted server removes the temporary directories of the owners the tables name" do
+    test = self()
+
+    owner =
+      spawn(fn ->
+        send(test, {:created, Fil.tmp()})
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive {:created, frames}
+    dir = Fil.Tmp.path(frames)
+
+    :ok = :sys.suspend(Tmp)
+    on_exit(fn -> :sys.resume(Tmp) end)
+    {:ok, restarted} = GenServer.start(Tmp, nil)
+    on_exit(fn -> Process.exit(restarted, :kill) end)
+
+    kill(owner)
+    Tmp.sync(restarted)
+
+    refute File.exists?(dir)
+  end
+
   # A second server stands in for the one the supervisor starts after a crash. The first one is suspended, so only the
   # second one handles the `:DOWN`s.
   test "a restarted server removes what the owners the tables name leave behind", %{disk: disk, tmp_dir: tmp_dir} do

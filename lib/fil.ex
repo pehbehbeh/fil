@@ -203,6 +203,31 @@ defmodule Fil do
   defdelegate ref(disk, path), to: Ref, as: :new
 
   @doc """
+  Creates a temporary directory and returns a ref to it. Shorthand for `Fil.Tmp.new/0`, which lists what it raises.
+
+      iex> Fil.tmp()
+      #Fil.Ref<local:.>
+
+  The directory is removed when the calling process exits, see `Fil.Tmp`.
+  """
+  @doc section: :building
+  @spec tmp() :: Ref.t()
+  defdelegate tmp(), to: Fil.Tmp, as: :new
+
+  @doc """
+  Creates a temporary directory and returns a ref to the file `name` in it. Shorthand for `Fil.Tmp.new/1`, which lists
+  the names it takes.
+
+      iex> Fil.tmp("report.pdf")
+      #Fil.Ref<local:report.pdf>
+
+  The directory is removed when the calling process exits, see `Fil.Tmp`.
+  """
+  @doc section: :building
+  @spec tmp(Path.t()) :: Ref.t()
+  defdelegate tmp(name), to: Fil.Tmp, as: :new
+
+  @doc """
   Attaches a plugin callback to a disk under a name.
 
       iex> disk =

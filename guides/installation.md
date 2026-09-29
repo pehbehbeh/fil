@@ -162,6 +162,65 @@ plug Fil.Plug, at: "/uploads", disk: &MyApp.Storage.uploads/0
 In production, `uploads` has no `Fil.Plugin.URL`, so its URLs go to S3 and the plug lets every request pass.
 `Fil.Plug` also serves public files without a signature, see its documentation.
 
+## Uploads and temporary files
+
+A `Plug.Upload` is a file on the local disk already, so a write streams it to any disk without reading it into memory:
+
+```elixir
+%Plug.Upload{path: path} = params["document"]
+{:ok, document} = Fil.write(MyApp.Storage.uploads(), "documents/#{id}.pdf", File.stream!(path, 65_536))
+```
+
+Tools like `pdftotext` or `ffmpeg` need a local path. `Fil.tmp/1` returns a ref to a file in a temporary directory of
+its own, so a copy from any disk puts the file there, and `Fil.Tmp.path/1` returns its path:
+
+```elixir
+report = Fil.tmp("report.pdf")
+{:ok, _} = Fil.cp(document, report)
+{text, 0} = System.cmd("pdftotext", [Fil.Tmp.path(report), "-"])
+```
+
+`Fil.tmp/0` returns the directory itself, for a tool that writes several files. They're files on its disk like any
+other, so they can go back to the storage with `Fil.cp/3`:
+
+```elixir
+uploads = MyApp.Storage.uploads()
+video = Fil.tmp("video.mp4")
+{:ok, _} = Fil.cp(Fil.ref(uploads, "videos/#{id}.mp4"), video)
+
+frames = Fil.tmp()
+{_, 0} = System.cmd("ffmpeg", ["-i", Fil.Tmp.path(video), Fil.Tmp.path(frames.disk, "%03d.png")])
+{:ok, pngs} = Fil.ls(frames)
+
+for png <- pngs do
+  {:ok, _} = Fil.cp(png, Fil.ref(uploads, "frames/#{id}/#{png.path}"))
+end
+```
+
+A temporary directory is removed when the process that created it exits. [Cowboy](https://github.com/ninenines/cowboy)
+(with `Plug.Cowboy`) runs every request in a process of its own, and so does [Bandit](https://github.com/mtrudel/bandit)
+for HTTP/2, so there the directory goes with the request. Bandit runs the HTTP/1.1 requests of a keep-alive connection
+one after another in the connection's process, though, so the directory stays until the client closes the connection.
+Call `Fil.Tmp.cleanup/1` once the files aren't needed anymore, which works on every server:
+
+```elixir
+def show(conn, %{"id" => id}) do
+  report = Fil.tmp("report.pdf")
+  {:ok, _} = Fil.cp(Fil.ref(MyApp.Storage.uploads(), "documents/#{id}.pdf"), report)
+  {text, 0} = System.cmd("pdftotext", [Fil.Tmp.path(report), "-"])
+  :ok = Fil.Tmp.cleanup()
+  text(conn, text)
+end
+```
+
+A request that raises closes Bandit's connection, which removes its directories too. Don't clean up in a
+`Plug.Conn.register_before_send/2` callback when the response sends a temporary file: the callback runs before the file
+goes out.
+
+A GenServer or a LiveView runs much longer and calls `Fil.Tmp.cleanup/1` the same way. A `Task` owns what it creates
+too, so a file that should outlive the task is created by the caller, or handed to it with `Fil.Tmp.give_away/2`.
+`Fil.Tmp` has the details.
+
 ## Testing
 
 `Fil.Adapter.Memory` keeps files in a store that belongs to the test process. Check one out in every test that touches
