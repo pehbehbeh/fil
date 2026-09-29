@@ -5,8 +5,7 @@ if Code.ensure_loaded?(Plug) do
                 type: Fil.Support.DiskOption.type([:disk, :fun, :mfa]),
                 required: true,
                 doc: """
-                The disk to serve. #{Fil.Support.DiskOption.doc([:disk, :fun, :mfa])} Plug options are compiled, so a
-                disk from runtime config needs a function or an MFA.
+                The disk to serve. #{Fil.Support.DiskOption.doc([:disk, :fun, :mfa])}
                 """
               ],
               at: [
