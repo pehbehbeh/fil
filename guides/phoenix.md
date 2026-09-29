@@ -21,8 +21,10 @@ end
 
 LiveView accepts a file when its extension or its type matches `accept:`, and the type comes from the browser. A file
 named `evil.html` that the browser sends as `image/png` passes. `Fil.LiveView` checks the extension of the path it
-writes against the extensions in `accept:` and refuses that file, so list extensions there, not only types such as
-`image/*`. With types only, the extension isn't checked, unless you pass `extensions:`.
+writes against the extensions `accept:` allows, the ones it lists and those of its exact types (`image/png` allows
+`.png`), and refuses that file. A wildcard such as `image/*` allows no extension of its own: with only wildcards the
+extension isn't checked, and next to extensions (`~w(.pdf image/*)`) it lets no image through. So list the extensions
+a wildcard stands for too, in `accept:` or in `extensions:`.
 
 ### The form
 

@@ -19,8 +19,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                 The extensions the path may end with, such as `[".jpg", ".png"]`. They're compared with the path
                 `:path` returned, in lowercase, before anything is written. A path with another extension, or without
                 one, gives a `Fil.InvalidRequestError` with `reason: :extension`, and an empty list refuses every file.
-                Without this option, the consume functions take the extensions in the upload's `accept:` list, and
-                `store_entry/4` checks none.
+                Without this option, the consume functions take the extensions the upload's `accept:` allows (see
+                [Paths](#module-paths)), and `store_entry/4` checks none.
                 """
               ],
               if_exists: [
@@ -83,9 +83,11 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     LiveView's `accept:` lets a file through when its type or its extension matches, and the type comes from the
     browser. With `accept: ~w(.png)`, a file named `evil.html` sent as `image/png` is accepted, and `filename/1` would
-    name it `<uuid>.html`. So the consume functions check the extension of the final path against the extensions in
-    `accept:` (or `:extensions`, when given), and refuse the file before anything is written. Use extensions in
-    `accept:`, such as `~w(.jpg .png)`, so the check applies; with only types (`~w(image/*)`) nothing is checked.
+    name it `<uuid>.html`. So the consume functions check the extension of the final path before anything is written,
+    against the extensions `accept:` allows: the ones it lists, and those of its exact types (`image/png` allows
+    `.png`). `:extensions` replaces that list. A wildcard such as `image/*` allows no extension of its own, so with only
+    wildcards nothing is checked, and a mixed list such as `~w(.pdf image/*)` refuses every image with
+    `reason: :extension`. List the extensions a wildcard stands for too, in `accept:` or in `:extensions`.
 
     Every file is written with the content type of its path (`MIME.from_path/1`), never the type the browser sent. A
     path with an unknown extension is stored as `application/octet-stream`, which takes precedence over the
@@ -133,6 +135,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     # How much of the temporary file is read at a time.
     @chunk_size 65_536
+
+    # The `accept:` filters that stand for a kind of file, not one type.
+    @wildcards ~w(audio/* image/* video/*)
 
     @typedoc "Where the files go: a ref for a directory, or a disk as `Fil.Disk.resolve/1` takes it."
     @type target :: Fil.Ref.t() | Fil.Disk.source()
@@ -385,12 +390,28 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       end
     end
 
-    # The extensions in `accept:`, or nil for an upload that accepts only types or anything.
-    defp accepted_extensions(conf) do
-      case MapSet.to_list(conf.acceptable_exts) do
-        [] -> nil
-        extensions -> extensions
-      end
+    # The extensions `accept:` allows: the ones it lists, and those of its exact types. LiveView keeps the list as the
+    # `accept` attribute of the file input. Wildcards allow none, and nil means no check: for `accept: :any`, or a list
+    # of wildcards only.
+    defp accepted_extensions(%{accept: :any}), do: nil
+
+    defp accepted_extensions(%{accept: accept}) do
+      extensions =
+        accept
+        |> String.split(",")
+        |> Enum.flat_map(&filter_extensions/1)
+        |> Enum.uniq()
+
+      if extensions != [], do: extensions
+    end
+
+    defp filter_extensions("." <> _name = extension), do: [extension]
+    defp filter_extensions(wildcard) when wildcard in @wildcards, do: []
+
+    defp filter_extensions(type) do
+      type
+      |> MIME.extensions()
+      |> Enum.map(&("." <> &1))
     end
   end
 end

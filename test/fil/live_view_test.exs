@@ -141,7 +141,32 @@ defmodule Fil.LiveViewTest do
                upload([%{name: "a.TXT", content: "text", type: "image/png"}], [accept: ~w(image/*)], consume)
     end
 
-    test "checks no extension when accept: has only types", %{disk: disk} do
+    test "allows the extensions of the exact types in accept:, and refuses others", %{disk: disk} do
+      consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
+      accept = [accept: ~w(image/png image/jpeg)]
+
+      assert {:ok, [png]} = upload([%{name: "a.png", content: "png"}], accept, consume)
+      assert {:ok, [jpeg]} = upload([%{name: "a.JPEG", content: "jpeg"}], accept, consume)
+      assert png.path =~ ~r/\.png\z/
+      assert jpeg.path =~ ~r/\.jpeg\z/
+
+      # LiveView accepts the file for the type the browser sends.
+      assert {:error, %Fil.InvalidRequestError{reason: :extension}} =
+               upload([%{name: "evil.html", content: "<script>", type: "image/png"}], accept, consume)
+
+      assert {:ok, [_png, _jpeg]} = Fil.ls(disk, ".")
+    end
+
+    test "refuses files a wildcard accepts in a list with extensions", %{disk: disk} do
+      consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
+
+      assert {:error, %Fil.InvalidRequestError{reason: :extension}} =
+               upload([%{name: "a.png", content: "png"}], [accept: ~w(.pdf image/*)], consume)
+
+      assert {:ok, [_pdf]} = upload([%{name: "a.pdf", content: "pdf"}], [accept: ~w(.pdf image/*)], consume)
+    end
+
+    test "checks no extension when accept: has only wildcards", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
 
       assert {:ok, [ref]} =
