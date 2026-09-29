@@ -24,7 +24,14 @@
   color: var(--gray-800);
 }
 
-.fil-crumbs .fil-link {
+.fil-crumbs .fil-button--danger:hover,
+.fil-button--danger:focus-visible {
+  color: var(--red-600);
+  background-color: var(--red-50);
+  border-color: var(--red-300);
+}
+
+.fil-link {
   font-weight: 600;
   color: var(--gray-800);
 }
@@ -129,7 +136,7 @@
 
 .fil-actions span {
   display: inline-flex;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
 }
 
