@@ -173,15 +173,14 @@ upload:
 def create(conn, %{"document" => %Plug.Upload{} = upload}) do
   id = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
   content = File.stream!(upload.path, 65_536)
-  %File.Stat{size: size} = File.stat!(upload.path)
 
-  case Fil.write(MyApp.Storage.uploads(), "documents/#{id}.pdf", content, size: size, if_exists: :error) do
+  case Fil.write(MyApp.Storage.uploads(), "documents/#{id}.pdf", content, if_exists: :error) do
     {:ok, document} -> json(conn, %{path: document.path})
     {:error, error} -> conn |> put_status(422) |> json(%{error: Exception.message(error)})
   end
 end
 ```
 
-With `size:`, S3 sends the file in one request instead of uploading it in parts. As with LiveView, `upload.filename`
-and `upload.content_type` come from the browser, so the path above is one the server picked, and the content type
-comes from its extension through `Fil.Plugin.ContentType`.
+`Fil.write/4` finds the size of the file stream, so S3 sends the file in one request instead of uploading it in parts.
+As with LiveView, `upload.filename` and `upload.content_type` come from the browser, so the path above is one the
+server picked, and the content type comes from its extension through `Fil.Plugin.ContentType`.

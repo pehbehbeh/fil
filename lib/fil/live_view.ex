@@ -310,15 +310,10 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     defp store(target, %{path: tmp_path}, entry, opts) do
       ref = build_ref(target, entry, opts[:path])
 
+      # `Fil.write/4` finds the size of the temporary file, so S3 sends it in one request.
       with :ok <- check_extension(ref, opts[:extensions]) do
-        %File.Stat{size: size} = File.stat!(tmp_path)
         content = File.stream!(tmp_path, @chunk_size)
-
-        Fil.write(ref, content,
-          size: size,
-          if_exists: opts[:if_exists],
-          content_type: MIME.from_path(ref.path)
-        )
+        Fil.write(ref, content, if_exists: opts[:if_exists], content_type: MIME.from_path(ref.path))
       end
     end
 
