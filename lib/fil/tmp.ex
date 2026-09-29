@@ -60,6 +60,9 @@ defmodule Fil.Tmp do
   @doc """
   Creates a temporary directory and returns a ref to it, with path `"."`. `Fil.tmp/0` is the same function.
 
+      iex> Fil.Tmp.new()
+      #Fil.Ref<local:.>
+
   When the directory can't be created, it raises the error struct `Fil.Adapter.Local` would return, such as a
   `Fil.AccessDeniedError` or a `Fil.StorageFullError`, with the directory as `:path`. Without the `:fil` application
   running, it raises a `RuntimeError`.
@@ -73,6 +76,9 @@ defmodule Fil.Tmp do
   @doc """
   Creates a temporary directory and returns a ref to the file `name` in it. The file doesn't exist until something
   writes it. `Fil.tmp/1` is the same function.
+
+      iex> Fil.Tmp.new("pages/1.png")
+      #Fil.Ref<local:pages/1.png>
 
   The name has to be a relative path that stays inside the directory (see "The directory" above). Anything else raises
   `ArgumentError` before a directory is created. Otherwise it raises like `new/0`.
