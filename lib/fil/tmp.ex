@@ -36,9 +36,11 @@ defmodule Fil.Tmp do
 
     * a temporary file created inside a `Task` is gone when the task returns. Create it in the caller and pass it in, or
       hand it to the caller with `give_away/2`.
-    * a long-lived process (a GenServer, a LiveView, a channel) keeps its temporary files for as long as it runs. Call
-      `cleanup/1` once it's done with them. A write to a temporary ref after that creates an ordinary directory, with
-      the default mode, which `Fil` doesn't remove.
+    * a long-lived process (a GenServer, a LiveView, a channel) keeps its temporary files for as long as it runs. So
+      does a request on Bandit over HTTP/1.1, whose process serves the whole keep-alive connection (see
+      [Uploads and temporary files](installation.md#uploads-and-temporary-files)). Call `cleanup/1` once it's done
+      with them. A write to a temporary ref after that creates an ordinary directory, with the default mode, which
+      `Fil` doesn't remove.
     * `Fil.rm_rf/1` on the directory removes it, but it stays registered to its owner, and a later write creates it
       again without the `0o700` mode. `cleanup/1` removes both.
     * a temporary ref works only on the node that created it.

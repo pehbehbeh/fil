@@ -197,10 +197,29 @@ for png <- pngs do
 end
 ```
 
-A temporary directory is removed when the process that created it exits, so a request process needs no cleanup. A
-GenServer or a LiveView runs much longer and calls `Fil.Tmp.cleanup/1` once it's done with its files. A `Task` owns
-what it creates too, so a file that should outlive the task is created by the caller, or handed to it with
-`Fil.Tmp.give_away/2`. `Fil.Tmp` has the details.
+A temporary directory is removed when the process that created it exits. [Cowboy](https://github.com/ninenines/cowboy)
+(with `Plug.Cowboy`) runs every request in a process of its own, and so does [Bandit](https://github.com/mtrudel/bandit)
+for HTTP/2, so there the directory goes with the request. Bandit runs the HTTP/1.1 requests of a keep-alive connection
+one after another in the connection's process, though, so the directory stays until the client closes the connection.
+Call `Fil.Tmp.cleanup/1` once the files aren't needed anymore, which works on every server:
+
+```elixir
+def show(conn, %{"id" => id}) do
+  report = Fil.tmp("report.pdf")
+  {:ok, _} = Fil.cp(Fil.ref(MyApp.Storage.uploads(), "documents/#{id}.pdf"), report)
+  {text, 0} = System.cmd("pdftotext", [Fil.Tmp.path(report), "-"])
+  :ok = Fil.Tmp.cleanup()
+  text(conn, text)
+end
+```
+
+A request that raises closes Bandit's connection, which removes its directories too. Don't clean up in a
+`Plug.Conn.register_before_send/2` callback when the response sends a temporary file: the callback runs before the file
+goes out.
+
+A GenServer or a LiveView runs much longer and calls `Fil.Tmp.cleanup/1` the same way. A `Task` owns what it creates
+too, so a file that should outlive the task is created by the caller, or handed to it with `Fil.Tmp.give_away/2`.
+`Fil.Tmp` has the details.
 
 ## Testing
 
