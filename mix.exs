@@ -11,6 +11,7 @@ defmodule Fil.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      compilers: compilers(),
       deps: deps(),
       aliases: aliases(),
       description: "Fil is a pluggable file storage abstraction for Elixir.",
@@ -32,6 +33,19 @@ defmodule Fil.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
+  # LiveView's compiler writes the manifest of Fil's colocated JS (`phoenix-colocated/fil/index.js`), which apps import
+  # the uploader of `Fil.LiveView` from. It writes only the manifest of the project it runs in, so Fil runs it itself
+  # when LiveView is there, and apps without LiveView compile Fil without it. In an app, Mix evaluates this again after
+  # LiveView is compiled. In Fil's own checkout, LiveView isn't loaded yet when Mix reads this, so no manifest is
+  # written. Nothing in the tests needs it; `mix run -e "Phoenix.LiveView.ColocatedAssets.compile()"` writes it.
+  defp compilers do
+    if Code.ensure_loaded?(Mix.Tasks.Compile.PhoenixLiveView) do
+      [:phoenix_live_view | Mix.compilers()]
+    else
+      Mix.compilers()
+    end
+  end
+
   defp deps do
     [
       # Core
@@ -46,10 +60,10 @@ defmodule Fil.MixProject do
       {:vix, "~> 0.33", optional: true},
       # Optional: Fil.Kino browses disks in Livebook and adds a smart cell.
       {:kino, "~> 0.19", optional: true},
-      # Optional: Fil.LiveView stores LiveView uploads on a disk. Phoenix comes with LiveView, which sets its version.
-      # It's listed only so `mix compile --no-optional-deps` leaves it out: it needs Plug, which that flag leaves out.
+      # Optional: Fil.LiveView stores LiveView uploads on a disk. Its uploader for direct uploads is colocated JS, which
+      # needs Phoenix 1.8 (LiveView 1.2 allows older ones), so Phoenix is listed for its version.
       {:phoenix_live_view, "~> 1.2", optional: true},
-      {:phoenix, "~> 1.6", optional: true},
+      {:phoenix, "~> 1.8", optional: true},
       # Optional: Fil.Ecto.Ref stores refs in Ecto schemas.
       {:ecto, "~> 3.12", optional: true},
 
