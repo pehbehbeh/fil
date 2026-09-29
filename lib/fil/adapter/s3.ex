@@ -134,7 +134,9 @@ defmodule Fil.Adapter.S3 do
       itself, so that's a `Fil.InvalidRequestError`, `reason: "InvalidRequest"`, with or without `if_exists: :error`
       (the other adapters copy the file onto itself, or return a `Fil.AlreadyExistsError` with `if_exists: :error`).
     * `Fil.rename/4`: CopyObject, then DeleteObject. A copy that fails, with `if_exists: :error` too, fails before the
-      source is deleted. Renaming an object onto itself fails like the copy.
+      source is deleted. Renaming an object onto itself fails like the copy. The DeleteObject removes whatever is at the
+      source by then, so a write that replaces the source between the two requests is lost. The other adapters keep
+      it, and with `if_exists: :error` fail the move with a `Fil.ConflictError`.
     * `Fil.rm_rf/3`: ListObjectsV2, then one DeleteObject per key.
     * `Fil.url/3`: the object URL, without a signature, so it works for public objects only.
     * `Fil.signed_url/3`: a presigned GET or PUT URL, with `response-content-disposition` for `disposition:`, and the

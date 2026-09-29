@@ -97,10 +97,11 @@ defmodule Fil.ConflictError do
   `Fil.stream/3`, it has the context of the file that changed: `op: :read` with the source's path and disk (`op: :cp`
   or `:rename` in a copy across disks).
 
-  `Fil.Adapter.Local` returns it with `reason: :source_changed` for a move with `if_exists: :error` whose source a write
-  replaced while it was moved. S3 returns it with `reason: "NoSuchUpload"` for an upload in parts that something else
-  aborted while it ran, such as a lifecycle rule. Retrying can help, as with `Fil.UnavailableError`, because the next
-  attempt reads the file as it is then, or starts a new upload.
+  `Fil.Adapter.Local` and `Fil.Adapter.Memory` return it with `reason: :source_changed` for a move with
+  `if_exists: :error` whose source a write replaced while it was moved (`Fil.Adapter.S3` can't check that). S3 returns
+  it with `reason: "NoSuchUpload"` for an upload in parts that something else aborted while it ran, such as a lifecycle
+  rule. Retrying can help, as with `Fil.UnavailableError`, because the next attempt reads the file as it is then, or
+  starts a new upload.
   """
 
   defexception [:op, :path, :disk, :reason]
