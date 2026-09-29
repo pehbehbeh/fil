@@ -32,16 +32,11 @@ defmodule Fil.Adapter.Local do
     * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read.
     * `Fil.write/4`: the content, in memory or a stream, goes to a temporary file named `.fil-` and a unique suffix in
       the destination directory, which `File.rename/2` then moves into place, so readers never see a partial file. A
-      failed write leaves nothing behind, and removes the directories it created. When the writer is killed before it's
-      done (a request process that the server stops when the client disconnects, for example), `Fil`'s application
-      removes its `.fil-` file and those directories once the process is gone. That's best effort: a filesystem that
-      takes more than a second to create the file or a directory after the kill (a slow network share) can leave it
-      behind, and so can a crash of the whole node (`kill -9`, a power loss). Local writes also work without the `:fil`
-      application running, but then nothing is removed after a kill. Stopping the application removes the temporary
-      files of the writes in progress, which then fail with a `Fil.NotFoundError`. `if_exists: :error` hard-links the
-      temporary file to the destination instead, which fails if it exists (on a filesystem without hard links, it
-      creates the destination with `O_EXCL` first). `checksum:` is ignored. Writing over a directory, or to
-      `report.txt/x` when `report.txt` is a file, is a `Fil.InvalidRequestError`.
+      failed write leaves nothing behind, and removes the directories it created. So does a writer that's killed, within
+      the limits below this list. `if_exists: :error` hard-links the temporary file to the destination instead, which
+      fails if it exists (on a filesystem without hard links, it creates the destination with `O_EXCL` first).
+      `checksum:` is ignored. Writing over a directory, or to `report.txt/x` when `report.txt` is a file, is a
+      `Fil.InvalidRequestError`.
     * `Fil.rm/3`: `File.rm/1`, with a missing file mapped to success. Removing a directory is a
       `Fil.InvalidRequestError`.
     * `Fil.stat/3`: `File.stat/2`. `:etag` is a weak `"size-mtime"` tag: good enough to notice a change, but it can't
@@ -65,6 +60,14 @@ defmodule Fil.Adapter.Local do
       too, but not counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
       `Fil.Plug` serves them.
+
+  When a writer is killed before it's done (a request process that the server stops when the client disconnects, for
+  example), `Fil`'s application removes its `.fil-` file and the directories it created once the process is gone. The
+  same goes for a copy with `if_exists: :error`. That's best effort: a filesystem that takes more than a second to
+  create the file or a directory after the kill (a slow network share) can leave it behind, and so can a crash of the
+  whole node (`kill -9`, a power loss). Local writes also work without the `:fil` application running, but then nothing
+  is removed after a kill. Stopping the application removes the temporary files of the writes in progress, so those
+  writes fail with a `Fil.NotFoundError`.
 
   ## Errors
 
