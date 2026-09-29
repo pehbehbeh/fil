@@ -145,7 +145,8 @@ defmodule Fil.Tmp do
 
   For processes that run long after they're done with their temporary files. It never fails: a directory that can't
   be removed completely is left as it is. It leaves the temporary files of `Fil.Adapter.Local` writes in progress
-  alone, so a write of `pid` still works.
+  alone, so a write of `pid` still works. Cleaning up another process races with its `give_away/2`: a directory it hands
+  away meanwhile is removed, and `path/1` then points to nothing.
 
   Don't use the refs afterwards. A write to one creates an ordinary directory in its place, with the default mode,
   which `Fil` doesn't remove.
