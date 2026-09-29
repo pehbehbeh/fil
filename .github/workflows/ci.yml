@@ -50,7 +50,8 @@ jobs:
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
-      # Every supported Elixir minor version (`elixir:` in mix.exs), each with the newest OTP it supports.
+      # Every supported Elixir minor version (`elixir:` in mix.exs), each with the newest OTP it supports. Together they
+      # cover the last three OTP releases, which is what Fil supports (see "CI" in AGENTS.md).
       matrix:
         include:
           - elixir: "1.18"
