@@ -412,26 +412,46 @@ defmodule Fil.Adapter.Local do
 
   defp at_dest(result, _dest), do: result
 
-  # The destination's missing parents are created first, and removed again when the copy or move fails, like a write's.
-  # A destination under a file fails on the destination side, so the error has that path.
   defp transfer(fun, state, src, dest) do
     with {:ok, from} <- full_path(state, src),
          {:ok, to} <- full_path(state, dest) do
-      missing = missing_parents(to)
+      transfer_to(fun, {from, to, dest}, [], :retry)
+    end
+  end
 
-      case make_dirs(missing, []) do
-        {:ok, created} ->
-          result = fun.(from, to)
+  # The destination's missing parents are created first, and removed again when the copy or move fails, like a write's.
+  # A destination under a file fails on the destination side, so the error has that path.
+  #
+  # A write that created a parent this copy or move found removes it again when it fails or is killed. If that happens
+  # before the copy or move, which then fails with `:enoent` and no parent, the parents are created once more.
+  defp transfer_to(fun, {from, to, dest} = paths, created, retry) do
+    missing = missing_parents(to)
+    # On the retry, `created` may hold directories that are missing again, so they're listed once.
+    created = created -- missing
 
+    case make_dirs(missing, created) do
+      {:ok, created} ->
+        result = fun.(from, to)
+
+        if retry == :retry and parent_removed?(result, to) do
+          transfer_to(fun, paths, created, :no_retry)
+        else
           result
           |> missing()
           |> undo_parents(created)
+        end
 
-        {:error, reason, created} ->
-          undo_parents({:error, %{to_struct(reason) | path: dest}}, created)
-      end
+      {:error, reason, created} ->
+        undo_parents({:error, %{to_struct(reason) | path: dest}}, created)
     end
   end
+
+  defp parent_removed?({:error, :enoent}, to) do
+    parent = Path.dirname(to)
+    not File.dir?(parent)
+  end
+
+  defp parent_removed?(_result, _to), do: false
 
   defp undo_parents(:ok, _created), do: :ok
 
