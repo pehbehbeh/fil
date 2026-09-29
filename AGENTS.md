@@ -48,7 +48,9 @@ The Hex package is `fil`.
   Integrations in the docs). `Fil.Kino` is the Livebook integration, compiled only when the optional Kino dependency is
   there, with its `@moduledoc false` modules under `Fil.Kino.*`. Their JS and CSS share `lib/fil/kino/assets/`, with
   an entrypoint per module (`use Kino.JS, entrypoint: "browser.js"`) and Livebook's palette and fonts in `theme.css`,
-  which every widget imports first. Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
+  which every widget imports first. Integrations take their disk as a `disk:` option typed and documented by
+  `Fil.Support.DiskOption` (a disk, a 0-arity function or an MFA) and turn it into a disk with `Fil.Disk.resolve/1`
+  each time they use it. Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
 - **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
   `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
   the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never
