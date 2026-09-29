@@ -960,8 +960,27 @@ defmodule Fil.AdapterCase do
 
         assert put_url =~ "trackingInfo=7"
 
-        for name <- ["expires", "Signature", "disposition", "X-Amz-Date", "response-content-type"] do
+        for name <- ~w(expires Signature disposition content_type size if_exists X-Amz-Date response-content-type) do
           assert_raise ArgumentError, ~r/can't set/, fn -> Fil.signed_url(disk, "index.html", query: [{name, "x"}]) end
+        end
+      end
+
+      test "signs an upload's content type, size and if_exists into upload URLs", %{disk: disk} do
+        opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error]
+
+        assert {:ok, plain} = Fil.signed_url(disk, "a.png", method: :put)
+        assert {:ok, bound} = Fil.signed_url(disk, "a.png", opts)
+        assert {:ok, other} = Fil.signed_url(disk, "a.png", Keyword.put(opts, :content_type, "text/html"))
+
+        assert [plain, bound, other]
+               |> Enum.map(&URI.parse(&1).query)
+               |> Enum.uniq()
+               |> length() == 3
+
+        for {name, value} <- [content_type: "image/png", size: 3, if_exists: :error] do
+          assert_raise ArgumentError, ~r/only applies to uploads/, fn ->
+            Fil.signed_url(disk, "a.png", [{name, value}])
+          end
         end
       end
 

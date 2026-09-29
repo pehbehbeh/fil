@@ -1552,6 +1552,33 @@ defmodule Fil.Adapter.S3Test do
       refute signature(plain) == signature(tracked)
     end
 
+    test "signs an upload's content type, size and if_exists as headers" do
+      opts = [method: :put, content_type: "image/png", size: 48_213, if_exists: :error]
+
+      assert {:ok, url} = Fil.signed_url(disk(), "avatars/7f3a.png", opts)
+      assert {:ok, plain} = Fil.signed_url(disk(), "avatars/7f3a.png", method: :put)
+
+      query = query(url)
+      assert query["X-Amz-SignedHeaders"] == "content-length;content-type;host;if-none-match"
+      assert query(plain)["X-Amz-SignedHeaders"] == "host"
+
+      # Signing again at the same time with the headers the client sends gives the same URL, and with another content
+      # type or length another signature, so S3 refuses those.
+      headers = [{"content-type", "image/png"}, {"content-length", "48213"}, {"if-none-match", "*"}]
+      assert presign_again(url, headers) == url
+      refute presign_again(url, List.keyreplace(headers, "content-type", 0, {"content-type", "text/html"})) == url
+      refute presign_again(url, List.keyreplace(headers, "content-length", 0, {"content-length", "1"})) == url
+      assert requests() == []
+    end
+
+    test "signs only the upload options it gets" do
+      assert {:ok, url} = Fil.signed_url(disk(), "a.png", method: :put, content_type: "image/png")
+      assert query(url)["X-Amz-SignedHeaders"] == "content-type;host"
+
+      assert {:ok, url} = Fil.signed_url(disk(), "a.png", method: :put, if_exists: :overwrite)
+      assert query(url)["X-Amz-SignedHeaders"] == "host"
+    end
+
     test "encodes a filename that isn't ASCII" do
       assert {:ok, url} = Fil.signed_url(disk(), "7f3a.pdf", disposition: {:attachment, ~s(Rechnung "März".pdf)})
 
@@ -1940,6 +1967,26 @@ defmodule Fil.Adapter.S3Test do
     |> URI.parse()
     |> Map.fetch!(:query)
     |> URI.decode_query()
+  end
+
+  # Presigns the URL's PUT again, at the time it was signed, with `headers`.
+  defp presign_again(url, headers) do
+    uri = URI.parse(url)
+    {:ok, datetime, 0} = DateTime.from_iso8601(query(url)["X-Amz-Date"], :basic)
+
+    [
+      access_key_id: @access_key_id,
+      secret_access_key: @secret_access_key,
+      region: "eu-central-1",
+      service: :s3,
+      datetime: datetime,
+      method: :put,
+      url: URI.to_string(%{uri | query: nil}),
+      expires: 900,
+      headers: headers
+    ]
+    |> Req.Utils.aws_sigv4_url()
+    |> URI.to_string()
   end
 
   defp signature(url) do

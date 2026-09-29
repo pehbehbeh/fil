@@ -66,6 +66,54 @@ defmodule Fil.PlugTest do
         assert Fil.read(disk, "inbox/new.bin") == {:ok, "uploaded"}
       end
 
+      test "PUT with a URL bound to the upload writes it once", %{disk: disk} do
+        opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error]
+        {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
+        headers = [{"content-type", "image/png"}, {"content-length", "3"}, {"if-none-match", "*"}]
+
+        conn =
+          url
+          |> put("png", headers)
+          |> call(disk)
+
+        assert conn.status == 200
+        assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
+
+        # The plug writes with `if_exists: :error` because the URL says so, with or without the header.
+        for headers <- [headers, List.keydelete(headers, "if-none-match", 0)] do
+          conn =
+            url
+            |> put("new", headers)
+            |> call(disk)
+
+          assert conn.status == 409
+        end
+
+        assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
+      end
+
+      test "an upload that doesn't match its URL is a 403 and writes nothing", %{disk: disk} do
+        {:ok, url} = Fil.signed_url(disk, "a.png", method: :put, content_type: "image/png", size: 3)
+        headers = [{"content-type", "image/png"}, {"content-length", "3"}]
+
+        for {headers, body} <- [
+              {List.keyreplace(headers, "content-type", 0, {"content-type", "text/html"}), "png"},
+              {List.keyreplace(headers, "content-length", 0, {"content-length", "4"}), "pngs"},
+              {List.keydelete(headers, "content-type", 0), "png"},
+              {List.keydelete(headers, "content-length", 0), "png"}
+            ] do
+          conn =
+            url
+            |> put(body, headers)
+            |> call(disk)
+
+          assert conn.status == 403
+          assert conn.resp_body == "the upload doesn't match its signed URL"
+        end
+
+        refute Fil.exists?(disk, "a.png")
+      end
+
       test "a URL signed for GET can't upload", %{disk: disk} do
         {:ok, url} = Fil.signed_url(disk, "a.txt")
 

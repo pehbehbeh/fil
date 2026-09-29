@@ -13,6 +13,7 @@ defmodule Fil.Adapter.S3IntegrationTest do
 
   alias Fil.Adapter.S3
   alias Fil.Emulator
+  alias Phoenix.LiveView.UploadEntry
 
   use Fil.AdapterCase, async: false, tags: [:integration]
 
@@ -122,6 +123,48 @@ defmodule Fil.Adapter.S3IntegrationTest do
       assert status in [200, 201]
       assert Fil.read(disk, "uploaded.txt") == {:ok, "Uploaded"}
     end
+
+    test "presigns an upload bound to its content type, size and if_exists", %{disk: disk} do
+      opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
+      assert {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
+      headers = [{"content-type", "image/png"}, {"if-none-match", "*"}]
+
+      # The signature covers the headers, so another content type or length, or a missing header, is refused.
+      assert {:ok, %{status: 403}} =
+               put(url, "png", List.keyreplace(headers, "content-type", 0, {"content-type", "a/b"}))
+
+      assert {:ok, %{status: 403}} = put(url, "pngs", headers)
+      assert {:ok, %{status: 403}} = put(url, "png", List.keydelete(headers, "if-none-match", 0))
+      refute Fil.exists?(disk, "avatars/a.png")
+
+      assert {:ok, %{status: 200}} = put(url, "png", headers)
+      assert {:ok, %Fil.Stat{size: 3, content_type: "image/png"}} = Fil.stat(disk, "avatars/a.png")
+
+      # With `if-none-match: *`, the URL writes the file once.
+      assert {:ok, %{status: 412}} = put(url, "new", headers)
+      assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
+    end
+
+    test "Fil.LiveView uploads a file directly and consumes it", %{disk: disk} do
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "Me.PNG", client_size: 3, upload_config: :avatar}
+      socket = Phoenix.LiveView.allow_upload(%Phoenix.LiveView.Socket{}, :avatar, accept: ~w(.png))
+
+      assert {:ok, meta, _socket} = Fil.LiveView.external(disk, path: &"avatars/#{&1.uuid}.png").(entry, socket)
+      assert {:ok, %{status: 200}} = put(meta.url, "png", Map.to_list(meta.headers))
+
+      assert {:ok, avatar} = Fil.LiveView.store_entry(disk, meta, entry, max_file_size: 3)
+      assert avatar.path == "avatars/0b2e8b8e.png"
+      assert Fil.read(avatar) == {:ok, "png"}
+
+      # A file from before its URL isn't the upload's: a URL signed a minute after the object was written refuses it
+      # and leaves it there.
+      later = %{meta | signed_at: meta.signed_at + 60}
+
+      assert {:error, %Fil.AlreadyExistsError{reason: :before_upload}} =
+               Fil.LiveView.store_entry(disk, later, entry, max_file_size: 3)
+
+      assert Fil.read(avatar) == {:ok, "png"}
+    end
   end
 
   describe "uploads in parts" do
@@ -208,7 +251,7 @@ defmodule Fil.Adapter.S3IntegrationTest do
 
   defp get(url), do: Req.request(method: :get, url: url, retry: false, raw: true)
 
-  defp put(url, body) do
-    Req.request(method: :put, url: url, body: body, retry: false, raw: true)
+  defp put(url, body, headers \\ []) do
+    Req.request(method: :put, url: url, body: body, headers: headers, retry: false, raw: true)
   end
 end

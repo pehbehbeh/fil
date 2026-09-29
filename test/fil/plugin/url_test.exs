@@ -73,6 +73,39 @@ defmodule Fil.Plugin.URLTest do
                |> Enum.to_list()
     end
 
+    test "signs an upload's content type, size and if_exists as query parameters", %{disk: disk} do
+      opts = [method: :put, content_type: "image/png", size: 48_213, if_exists: :error, query: [{"v", "2"}]]
+      assert {:ok, url} = Fil.signed_url(disk, "a.png", opts)
+      %URI{path: path, query: query} = URI.parse(url)
+
+      assert [
+               {"expires", _},
+               {"content_type", "image/png"},
+               {"size", "48213"},
+               {"if_exists", "error"},
+               {"v", "2"},
+               {"signature", _}
+             ] =
+               query
+               |> URI.query_decoder()
+               |> Enum.to_list()
+
+      assert URL.verify("secret", :put, path, query) == :ok
+
+      for {name, changed} <- [{"content_type=image%2Fpng", "content_type=text%2Fhtml"}, {"size=48213", "size=1"}] do
+        assert URL.verify("secret", :put, path, String.replace(query, name, changed)) == {:error, :invalid_signature}
+      end
+
+      assert URL.verify("secret", :put, path, String.replace(query, "&if_exists=error", "")) ==
+               {:error, :invalid_signature}
+    end
+
+    test "leaves if_exists out of the URL unless it's :error", %{disk: disk} do
+      assert {:ok, url} = Fil.signed_url(disk, "a.png", method: :put, if_exists: :overwrite)
+
+      refute url =~ "if_exists"
+    end
+
     test "keeps verifying URLs signed by 0.1" do
       # 0.1 signed the method, the URL path and the expiry, and nothing else.
       expires = System.os_time(:second) + 60

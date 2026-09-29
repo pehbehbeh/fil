@@ -49,7 +49,11 @@ The Hex package is `fil`.
   there, with its `@moduledoc false` modules under `Fil.Kino.*`. Their JS and CSS share `lib/fil/kino/assets/`, with
   an entrypoint per module (`use Kino.JS, entrypoint: "browser.js"`) and Livebook's palette and fonts in `theme.css`,
   which every widget imports first. `Fil.LiveView` is the LiveView integration, compiled only when the optional
-  `phoenix_live_view` dependency is there. `Fil.Ecto.Ref` is the Ecto type, compiled only when the optional Ecto
+  `phoenix_live_view` dependency is there. Its JS for apps (the uploader of direct uploads) is colocated JS in a
+  `@moduledoc false` component that's never rendered (`Fil.LiveView.Uploader`), exported under a `key:`, so apps import
+  it from `"phoenix-colocated/fil"`. The 120 columns apply to it too. LiveView's compiler writes only the manifest of
+  the project it runs in, so `compilers:` in `mix.exs` adds it when LiveView is loaded, which is the case when an app
+  compiles Fil (not in Fil's own checkout). `Fil.Ecto.Ref` is the Ecto type, compiled only when the optional Ecto
   dependency is there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an MFA and turn it into a disk
   with `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented by `Fil.Support.DiskOption`
   (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}` for a directory (`Fil.LiveView`).

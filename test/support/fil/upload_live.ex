@@ -25,6 +25,9 @@ defmodule Fil.LiveViewTest.UploadLive do
     ~H"""
     <form id="form" phx-change="validate" phx-submit="save">
       <.live_file_input upload={@uploads[@name]} />
+      <p :for={entry <- @uploads[@name].entries} id={"errors-#{entry.ref}"}>
+        {inspect(upload_errors(@uploads[@name], entry))}
+      </p>
     </form>
     """
   end
