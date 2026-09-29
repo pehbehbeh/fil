@@ -42,11 +42,19 @@ defmodule Fil.Support.TmpServerTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
   end
 
-  # Returns once the server has started a cleanup, which then waits out its grace period.
-  defp wait_for_cleanup do
-    if :sys.get_state(Tmp).cleanups == %{} do
-      Process.sleep(1)
-      wait_for_cleanup()
+  # Returns once the server has started a cleanup, which then waits out its grace period. Polls every millisecond for up
+  # to a second, so a cleanup that never starts fails here instead of at ExUnit's timeout.
+  defp wait_for_cleanup(attempts \\ 1_000) do
+    cond do
+      :sys.get_state(Tmp).cleanups != %{} ->
+        :ok
+
+      attempts > 1 ->
+        Process.sleep(1)
+        wait_for_cleanup(attempts - 1)
+
+      true ->
+        flunk("Fil.Tmp started no cleanup within a second")
     end
   end
 
