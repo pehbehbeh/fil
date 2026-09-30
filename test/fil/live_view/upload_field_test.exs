@@ -377,6 +377,23 @@ defmodule Fil.LiveView.UploadFieldTest do
     |> LazyHTML.from_fragment()
   end
 
+  # Renders the view every 10 ms until `fun` holds for its HTML, for up to a second, and returns the last HTML.
+  defp await_html(view, fun, attempts \\ 100) do
+    html = view_html(view)
+
+    cond do
+      fun.(html) ->
+        html
+
+      attempts > 1 ->
+        Process.sleep(10)
+        await_html(view, fun, attempts - 1)
+
+      true ->
+        html
+    end
+  end
+
   defp png(name, content \\ String.duplicate("p", 100)), do: %{name: name, content: content, type: "image/png"}
 
   describe "upload_field/1 in a LiveView" do
@@ -553,8 +570,10 @@ defmodule Fil.LiveView.UploadFieldTest do
       |> element("button", "Cancel")
       |> render_click()
 
+      # The entry's upload channel is still open, so LiveView only marks the entry as cancelled and drops it once the
+      # channel has exited.
       assert view
-             |> view_html()
+             |> await_html(&(count(&1, "li") == 0))
              |> count("li") == 0
     end
   end

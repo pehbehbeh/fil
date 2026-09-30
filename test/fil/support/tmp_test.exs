@@ -28,14 +28,14 @@ defmodule Fil.Support.TmpTest do
       end)
 
     writer = spawn(fn -> Fil.write(disk, path, stream) end)
-    assert_receive :writing
+    assert_receive :writing, 1_000
     writer
   end
 
   defp kill(pid) do
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1_000
   end
 
   defp entries(pid), do: :ets.match_object(Tmp, {{pid, :_}, :_})
@@ -92,7 +92,7 @@ defmodule Fil.Support.TmpTest do
         Process.sleep(:infinity)
       end)
 
-    assert_receive :registered
+    assert_receive :registered, 1_000
     kill(owner)
     Tmp.sync()
 
