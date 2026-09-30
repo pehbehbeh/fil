@@ -31,6 +31,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.Plugin.ReadOnly` lets reads, listings and URLs pass and refuses every other operation (writes, deletes, copies
   and moves within the disk, signed uploads) with `Fil.AccessDeniedError` and `reason: :read_only`. A copy to another
   disk works. ([#45](https://github.com/pehbehbeh/fil/pull/45))
+- `Fil.Backpex.Upload` is a [Backpex](https://backpex.live) upload field for `Fil.Ecto.Ref` and
+  `{:array, Fil.Ecto.Ref}` fields. The schema gives it the disk, so a LiveResource needs no upload callbacks. It writes
+  the new files after the save, deletes the files the save drops, and refuses a file whose path has an extension
+  `accept:` doesn't allow before the record is saved. `direct: true` needs a Backpex release after 0.21.0. Backpex is a
+  new optional dependency.
 
 ### Changed
 
