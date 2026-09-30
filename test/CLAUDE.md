@@ -47,3 +47,9 @@
   (`name: nil`, `database: ":memory:"`, `pool_size: 1`), point `Repo.put_dynamic_repo/1` at it and run the SQLite
   migration from the docs with `Ecto.Migrator.up/4`, which uses the dynamic repo. So they stay async without a sandbox.
   Postgres and MySQL aren't in CI: the type does nothing per database, and they were checked by hand when it was added.
+- `Fil.Backpex.Upload` tests drive the LiveResource `Fil.BackpexTest.ProductLive` (test/support) with `live/2` through
+  `Fil.BackpexTest.Endpoint`, which `test_helper.exs` configures and starts. The repo is defined in the test file (a
+  repo in test/support would get Ecto's doctests from `Fil.DoctestTest`), the test puts the pid of its in-memory repo
+  into the session, and an `on_mount` hook points the LiveView at it. `Fil.BackpexTest.DirectUpload` allows
+  `direct: true` on Backpex releases that crash on errors of direct uploads, and sends the test each signed upload to
+  PUT.

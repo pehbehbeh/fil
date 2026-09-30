@@ -1,10 +1,10 @@
 # Phoenix
 
 This guide stores files from a Phoenix app on a disk: uploads from a LiveView form with `Fil.LiveView`, direct uploads
-from the browser, uploads to a controller, and links to the stored files. The examples store them on `disk`, a disk with
-`Fil.Plugin.ContentType` attached, such as the uploads disk from the [installation guide](installation.md). Options that
-are compiled, such as an Ecto field's or a plug's `disk:`, take a capture of the function that builds it instead
-(`&MyApp.Storage.uploads/0`), see `Fil.Disk.resolve/1`.
+from the browser, upload fields in Backpex, uploads to a controller, and links to the stored files. The examples store
+them on `disk`, a disk with `Fil.Plugin.ContentType` attached, such as the uploads disk from the
+[installation guide](installation.md). Options that are compiled, such as an Ecto field's or a plug's `disk:`, take a
+capture of the function that builds it instead (`&MyApp.Storage.uploads/0`), see `Fil.Disk.resolve/1`.
 
 `Fil.LiveView` needs Phoenix LiveView 1.2 and Phoenix 1.8. Both are optional dependencies of `Fil`, so an app with
 them needs nothing else.
@@ -608,6 +608,24 @@ and don't run it against a prefix that other code writes to.
 On S3, a lifecycle rule that expires objects under a prefix does the same without a job, but it deletes every file
 under the prefix, consumed or not. It fits when the uploads are temporary anyway, or when the app moves each consumed
 file out of the prefix with `Fil.rename/3` (on S3 a copy on the server).
+
+## Backpex
+
+In a [Backpex](https://backpex.live) admin, `Fil.Backpex.Upload` is the upload field for a `Fil.Ecto.Ref` or
+`{:array, Fil.Ecto.Ref}` field. The schema gives it the disk, so the LiveResource needs no callbacks:
+
+```elixir
+@impl Backpex.LiveResource
+def fields do
+  [
+    avatar: %{module: Fil.Backpex.Upload, label: "Avatar", accept: ~w(.jpg .png)},
+    photos: %{module: Fil.Backpex.Upload, label: "Photos", accept: ~w(.jpg .png), max_entries: 5}
+  ]
+end
+```
+
+The field stores the new files after the save and deletes the ones the save drops. `Fil.Backpex.Upload` has the
+details: paths, direct uploads, deleting a record's files, and what Backpex's save order means for a failed write.
 
 ## Showing stored files
 
