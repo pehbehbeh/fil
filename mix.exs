@@ -66,6 +66,12 @@ defmodule Fil.MixProject do
       {:phoenix, "~> 1.8", optional: true},
       # Optional: Fil.Ecto.Ref stores refs in Ecto schemas.
       {:ecto, "~> 3.12", optional: true},
+      # Optional: Fil.Backpex.Upload is a Backpex upload field.
+      {:backpex, "~> 0.20", optional: true},
+      # A dependency of Backpex, listed only so that `mix compile --no-optional-deps` in CI leaves it out too: Mix keeps
+      # the dependencies of an optional dependency, and this one doesn't compile without Plug. Any version, so it never
+      # restricts an app.
+      {:phoenix_ecto, ">= 0.0.0", optional: true},
 
       # Test
       {:lazy_html, ">= 0.1.0", only: :test},
@@ -110,7 +116,7 @@ defmodule Fil.MixProject do
       groups_for_modules: [
         Adapters: ~r/^Fil\.Adapter(\.\w+)?$/,
         Plugins: ~r/^Fil\.Plugin\./,
-        Integrations: [Fil.Plug, Fil.Kino, Fil.LiveView, Fil.Ecto.Ref],
+        Integrations: [Fil.Plug, Fil.Kino, Fil.LiveView, Fil.Ecto.Ref, Fil.Backpex.Upload],
         Errors: ~r/^Fil\.\w+Error$/
       ]
     ]

@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Fil.Backpex.Upload` is a [Backpex](https://backpex.live) upload field for `Fil.Ecto.Ref` and
+  `{:array, Fil.Ecto.Ref}` fields. The schema gives it the disk, so a LiveResource needs no upload callbacks. It writes
+  the new files after the save, deletes the files the save drops, and refuses a file whose path has an extension
+  `accept:` doesn't allow before the record is saved. `direct: true` needs a Backpex release after 0.21.0. Backpex is a
+  new optional dependency.
 - `Fil.LiveView.external/2` lets the browser upload files straight to a disk, on every adapter: S3 with a presigned PUT,
   local and memory disks through `Fil.Plug`. The consume functions then check each file instead of writing it, and
   refuse one that's older than its upload URL or larger than `max_file_size`. The browser side is one import in
