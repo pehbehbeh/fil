@@ -132,7 +132,8 @@ defmodule Fil.Adapter.S3 do
     * `Fil.cp/4`: CopyObject. `if_exists: :error` sends `If-None-Match: *`, which AWS checks on copies since October
       2025 (RustFS 1.0.0 does too). Copying a directory is a `Fil.NotFoundError`. S3 refuses to copy an object onto
       itself, so that's a `Fil.InvalidRequestError`, `reason: "InvalidRequest"`, with or without `if_exists: :error`.
-      The other adapters copy the file onto itself, or return a `Fil.AlreadyExistsError` with `if_exists: :error`.
+      The other adapters copy the file onto itself, or return a `Fil.AlreadyExistsError` with `if_exists: :error`. A
+      copy of a file uploaded in parts gets a new checksum, of the whole file, so it doesn't keep the one of the parts.
     * `Fil.rename/4`: CopyObject, then DeleteObject. A copy that fails, with `if_exists: :error` too, fails before the
       source is deleted. Renaming an object onto itself fails like the copy. The DeleteObject removes whatever is at the
       source by then, so a write that replaces the source between the two requests is lost. The other adapters keep

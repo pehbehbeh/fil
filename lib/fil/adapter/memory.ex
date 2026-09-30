@@ -63,10 +63,12 @@ defmodule Fil.Adapter.Memory do
       used the same algorithm, and `nil` otherwise. A stat on a directory returns `%Fil.Stat{type: :directory}` with
       every other field `nil`.
     * `Fil.cp/4`: the copy keeps the content type and the checksum. `if_exists: :error` uses `:ets.insert_new/2`, like
-      a write. Copying a directory is a `Fil.NotFoundError`.
+      a write. Copying a directory is a `Fil.NotFoundError`. A copy onto itself leaves the file as it is, and with
+      `if_exists: :error` returns a `Fil.AlreadyExistsError`.
     * `Fil.rename/4`: a copy, then removing the source, only while it's still the file that was copied (checked and
       removed in one step with `:ets.select_delete/2`). A write that replaced the source meanwhile stays. With
-      `if_exists: :error`, it fails the move with a `Fil.ConflictError`, and the destination is left as it was.
+      `if_exists: :error`, it fails the move with a `Fil.ConflictError`, and the destination is left as it was. A move
+      onto itself leaves the file as it is, and with `if_exists: :error` returns a `Fil.AlreadyExistsError`.
     * `Fil.url/3` and `Fil.signed_url/3`: a memory store has no URLs. Attach `Fil.Plugin.URL` to build them, and
       `Fil.Plug` serves them, in a test through `Phoenix.ConnTest` too.
     * `Fil.Disk.same_storage?/2`: compares the normalized `:root`.

@@ -185,20 +185,17 @@ list).
   there, not a copy per adapter. A new test in it needs its sentence in `Fil.Adapter` (the moduledoc or the callback's
   doc), because third-party adapters will be held to the suite once it's public. A result that differs between adapters
   on purpose (S3 refuses what Local allows) is asserted as the set of allowed results, and the exact result stays in the
-  adapter's own test. Tests of signed URLs send their requests with the case's `fil_request/4`: through `Fil.Plug` by
-  default (disks with `Fil.Plugin.URL`), with Req to RustFS in `Fil.Adapter.S3IntegrationTest`. They assert a refusal as
-  a status in the 4xx range, because S3 and `Fil.Plug` answer with different ones. `plug_test.exs` and
-  `s3_integration_test.exs` keep the exact statuses: `Fil.Plug`'s 403 for a changed path, method, expiry, signature or
-  query value, and 409 (`Fil.Plug`) or 412 (S3) for a second PUT.
+  adapter's own test. Signed URL tests send their requests with `fil_request/4` (see `Fil.AdapterCase`) and assert
+  refusals as a 4xx status; the exact statuses stay in `plug_test.exs` and `s3_integration_test.exs`.
 - Feature tests whose subject is the storage path (`Fil.Plug`, `Fil.LiveView`) run on Local and Memory with
   `use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()`, `@moduletag :tmp_dir` and
   `Fil.DiskHelper.disk/1` in `setup` (never `setup_all`: a memory store belongs to the test process). Tests that need
   one kind of disk (stored content types, S3 stubs, filesystem checks, option errors) go into a second module in the
   same file, such as `Fil.PlugTest.OneDisk`, with shared helpers in `test/support` (`Fil.PlugHelper`). Code above the
-  adapter (plugins, telemetry, Kino, thumbnails, Ecto, doctests) stays on one adapter: a second run covers nothing new.
-  Parameters aren't tags, so `--only` can't select one and a tag applies to every parameter. `file:line` runs a test on
-  both adapters, a failure prints `Parameters: %{adapter: ...}` under the test, and `--slowest` lists the test twice
-  without saying which run is which.
+  adapter (plugins, telemetry, Kino, thumbnails, Ecto, the upload field, doctests) stays on one adapter: a second run
+  covers nothing new. Parameters aren't tags, so `--only` can't select one and a tag applies to every parameter.
+  `file:line` runs a test on both adapters, a failure prints `Parameters: %{adapter: ...}` under the test, and
+  `--slowest` lists the test twice without saying which run is which.
 - Cloud unit tests stub the storage with `Req.Test` (`Req.Test.stub(__MODULE__, &s3(&1, test))` or `Req.Test.expect/3`,
   and `req_options: [plug: {Req.Test, __MODULE__}]`), so `mix test` makes no network requests. The stubs are plugs, so
   the tests need Plug, which stays optional for users. Req runs the stub after its own request steps (signing included),

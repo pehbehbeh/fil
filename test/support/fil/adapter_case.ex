@@ -25,7 +25,9 @@ defmodule Fil.AdapterCase do
         use Fil.AdapterCase, async: true
 
         def fil_disk(%{tmp_dir: tmp_dir}) do
-          Fil.disk(adapter: Fil.Adapter.Local, root: Path.join(tmp_dir, "primary"))
+          [adapter: Fil.Adapter.Local, root: Path.join(tmp_dir, "primary")]
+          |> Fil.disk()
+          |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
         end
       end
 
@@ -39,9 +41,6 @@ defmodule Fil.AdapterCase do
 
   The suite is internal to `Fil` for now. Once it's public, third-party adapters can run it to show that they follow the
   contract.
-
-  TODO before it's public: `plug_request/4` depends on `Plug.Test`, `Fil.Plug` and the internal
-  `Fil.Plugin.URL.base_url/1`.
 
   ## Options
 
@@ -98,11 +97,8 @@ defmodule Fil.AdapterCase do
   end
 
   @doc """
-  Sends a request to a URL of the disk, the way an HTTP client does, for the tests of signed URLs. Returns the status,
-  the response headers as lowercase `{name, value}` pairs, and the body.
-
-  The default, `plug_request/4`, serves the URLs of `Fil.Plugin.URL` with `Fil.Plug`. An adapter whose storage signs
-  URLs itself overrides it and sends the request to the storage.
+  Serves the URLs of `Fil.Plugin.URL` with `Fil.Plug`, the default `fil_request/4`. Sends the request the way an HTTP
+  client does and returns the status, the response headers as lowercase `{name, value}` pairs, and the body.
   """
   @spec plug_request(Fil.Disk.t(), atom(), String.t(), keyword()) ::
           {pos_integer(), [{String.t(), String.t()}], binary()}
@@ -153,7 +149,8 @@ defmodule Fil.AdapterCase do
 
   @doc """
   Sends a request to a URL the disk built, and returns `{status, headers, body}`. `opts` has the request's `:body` (a
-  binary, or `nil`) and `:headers`. Defaults to `plug_request/4`.
+  binary, or `nil`) and `:headers`. Defaults to `plug_request/4`. An adapter whose storage signs URLs itself overrides
+  it and sends the request to the storage.
   """
   @callback fil_request(Fil.Disk.t(), atom(), String.t(), keyword()) ::
               {pos_integer(), [{String.t(), String.t()}], binary()}
@@ -739,7 +736,7 @@ defmodule Fil.AdapterCase do
         assert {:ok, %Fil.Stat{type: :directory, checksum: nil}} = Fil.stat(disk, "statdir", checksum: :crc32)
       end
 
-      test "the etag changes with the content", %{disk: disk} do
+      test "the etag changes when the size changes", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "etag.txt", "small")
         assert {:ok, first} = Fil.stat(disk, "etag.txt")
 
@@ -861,8 +858,12 @@ defmodule Fil.AdapterCase do
         for opts <- [[], [if_exists: :error]], copy_or_move <- [&Fil.cp/4, &Fil.rename/4] do
           result = copy_or_move.(disk, "a.txt", "a.txt", opts)
 
-          assert match?({:ok, _}, result) or match?({:error, %Fil.AlreadyExistsError{}}, result) or
-                   match?({:error, %Fil.InvalidRequestError{}}, result)
+          case {opts, result} do
+            {[], {:ok, _}} -> :ok
+            {[if_exists: :error], {:error, %Fil.AlreadyExistsError{}}} -> :ok
+            {_opts, {:error, %Fil.InvalidRequestError{}}} -> :ok
+            _unexpected -> flunk("unexpected result with #{inspect(opts)}: #{inspect(result)}")
+          end
 
           assert Fil.read(disk, "a.txt") == {:ok, "a"}
         end
@@ -1126,8 +1127,9 @@ defmodule Fil.AdapterCase do
         assert {:ok, url} = Fil.signed_url(disk, "report.txt")
 
         other_path = String.replace(url, "report.txt", "resume.txt")
-        assert {status, _headers, _body} = fil_request(disk, :get, other_path, [])
+        assert {status, _headers, body} = fil_request(disk, :get, other_path, [])
         assert status in 400..499
+        refute body == "resume"
 
         assert {status, _headers, _body} = fil_request(disk, :put, url, body: "replaced")
         assert status in 400..499

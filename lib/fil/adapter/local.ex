@@ -47,7 +47,8 @@ defmodule Fil.Adapter.Local do
       skipped as well. A path that isn't a directory lists nothing, the same as a missing one.
     * `Fil.cp/4`: `File.cp/2`. `if_exists: :error` copies to a `.fil-` temporary file instead and hard-links it to the
       destination, like a write. A copy or a move that fails removes the directories it created, like a write. Copying
-      a directory is a `Fil.InvalidRequestError`.
+      a directory is a `Fil.InvalidRequestError`. A copy onto itself leaves the file as it is, and with
+      `if_exists: :error` returns a `Fil.AlreadyExistsError`.
     * `Fil.rename/4`: `File.rename/2`, which moves directories too. `if_exists: :error` hard-links the file to the
       destination and then removes the source. Where the link fails with `:eperm` or `:enotsup` (a filesystem without
       hard links, or on Linux a file of another user with `fs.protected_hardlinks` on), it creates the destination with
@@ -55,7 +56,8 @@ defmodule Fil.Adapter.Local do
       is the link and not its target. A write that replaces the source after the link fails the move with a
       `Fil.ConflictError` and leaves the destination as it was. A write in the short moment between that check and the
       removal of the source is lost. A directory is still moved with `File.rename/2`, which replaces an empty
-      directory. A file or a directory with files in it is a `Fil.AlreadyExistsError`.
+      directory. A file or a directory with files in it is a `Fil.AlreadyExistsError`. A move onto itself leaves the
+      file as it is, and with `if_exists: :error` returns a `Fil.AlreadyExistsError`.
     * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Files whose name starts with `.fil-` are removed
       too, but not counted.
     * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and

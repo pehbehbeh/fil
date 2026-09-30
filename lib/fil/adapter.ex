@@ -57,8 +57,7 @@ defmodule Fil.Adapter do
     * `checksum:` on `c:write/4` sends a checksum of the content where the storage keeps one, and storage that finds
       the content doesn't match fails with `Fil.ChecksumMismatchError`. Storage without checksums ignores the option
     * `checksum:` on `c:stat/3` fills in `Fil.Stat`'s `:checksum`, from the storage or computed from the content. A
-      directory has no checksum, and a copy keeps the checksum of a file written in one part (S3 computes a new one
-      when it copies a file uploaded in parts)
+      directory has no checksum, and a copy keeps the checksum of a file written in one part
     * `verify_checksum: true` on `c:read/3` fails with `Fil.ChecksumMismatchError` when the content doesn't match a
       stored checksum
 
