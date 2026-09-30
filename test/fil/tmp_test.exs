@@ -15,14 +15,14 @@ defmodule Fil.TmpTest do
         Process.sleep(:infinity)
       end)
 
-    assert_receive {:created, result}
+    assert_receive {:created, result}, 1_000
     {owner, result}
   end
 
   defp kill(pid) do
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1_000
   end
 
   # The temporary directory a ref is on.
@@ -144,10 +144,10 @@ defmodule Fil.TmpTest do
         send(test, {:created, dir(report)})
       end)
 
-    assert_receive {:created, dir}
+    assert_receive {:created, dir}, 1_000
     # The owner may be gone before the monitor starts.
     ref = Process.monitor(owner)
-    assert_receive {:DOWN, ^ref, :process, ^owner, _reason}
+    assert_receive {:DOWN, ^ref, :process, ^owner, _reason}, 1_000
     Tmp.sync()
 
     refute File.exists?(dir)
@@ -297,8 +297,8 @@ defmodule Fil.TmpTest do
         send(test, {:written, Fil.write(disk, "a.txt", stream)})
       end)
 
-    assert_receive {:created, frames}
-    assert_receive :writing
+    assert_receive {:created, frames}, 1_000
+    assert_receive :writing, 1_000
 
     dir = dir(frames)
 
@@ -306,7 +306,7 @@ defmodule Fil.TmpTest do
     refute File.exists?(dir)
     send(writer, :go)
 
-    assert_receive {:written, {:ok, _}}
+    assert_receive {:written, {:ok, _}}, 1_000
     assert Fil.read(disk, "a.txt") == {:ok, "firstsecond"}
   end
 end

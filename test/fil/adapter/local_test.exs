@@ -160,19 +160,32 @@ defmodule Fil.Adapter.LocalTest do
              |> File.ls!() == ["file.txt"]
     end
 
-    test "are atomic: readers never see a partial file", %{disk: disk} do
-      assert {:ok, _} = Fil.write(disk, "atomic.txt", "first content")
-      assert {:ok, _} = Fil.write(disk, "atomic.txt", "second")
-      assert Fil.read(disk, "atomic.txt") == {:ok, "second"}
-    end
+    test "are atomic: readers see the old file until the new one is complete", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "atomic.txt", "old")
+      test = self()
 
-    test "if_exists: :error does not truncate the existing file", %{disk: disk} do
-      assert {:ok, _} = Fil.write(disk, "once.txt", "original")
+      stream =
+        Stream.map([:first, :second], fn
+          :first ->
+            "new "
 
-      assert {:error, %Fil.AlreadyExistsError{reason: :eexist}} =
-               Fil.write(disk, "once.txt", "clobber", if_exists: :error)
+          :second ->
+            send(test, {:writing, self()})
 
-      assert Fil.read(disk, "once.txt") == {:ok, "original"}
+            receive do
+              :go -> "content"
+            end
+        end)
+
+      task = Task.async(fn -> Fil.write(disk, "atomic.txt", stream) end)
+      assert_receive {:writing, writer}, 1_000
+
+      assert Fil.read(disk, "atomic.txt") == {:ok, "old"}
+      assert {:ok, %Fil.Stat{size: 3}} = Fil.stat(disk, "atomic.txt")
+
+      send(writer, :go)
+      assert {:ok, _} = Task.await(task)
+      assert Fil.read(disk, "atomic.txt") == {:ok, "new content"}
     end
   end
 
@@ -305,37 +318,28 @@ defmodule Fil.Adapter.LocalTest do
   end
 
   describe "stat/1" do
-    test "derives a weak etag that changes with the content", %{disk: disk} do
-      assert {:ok, _} = Fil.write(disk, "etag.txt", "small")
-      assert {:ok, first} = Fil.stat(disk, "etag.txt")
-
-      assert {:ok, _} = Fil.write(disk, "etag.txt", "considerably larger content")
-      assert {:ok, second} = Fil.stat(disk, "etag.txt")
-
-      assert first.etag != second.etag
-      assert first.content_type == nil
+    test "stores no content type", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "a.txt", "hello", content_type: "text/plain")
+      assert {:ok, %Fil.Stat{content_type: nil}} = Fil.stat(disk, "a.txt")
     end
 
-    test "computes a checksum from the file and ignores the option on writes and reads", %{disk: disk} do
+    test "computes any checksum from the file, not only the one it was written with", %{disk: disk} do
       content = :crypto.strong_rand_bytes(200_000)
-
-      checksum =
-        :sha256
-        |> :crypto.hash(content)
-        |> Base.encode64()
+      checksum = Base.encode64(<<:erlang.crc32(content)::32>>)
 
       assert {:ok, _} = Fil.write(disk, "big.bin", content, checksum: :sha256)
-      assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}}} = Fil.stat(disk, "big.bin", checksum: :sha256)
-      assert Fil.read(disk, "big.bin", verify_checksum: true) == {:ok, content}
-    end
-
-    test "a directory has no checksum", %{disk: disk} do
-      assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
-      assert {:ok, %Fil.Stat{type: :directory, checksum: nil}} = Fil.stat(disk, "dir", checksum: :crc32)
+      assert {:ok, %Fil.Stat{checksum: {:crc32, ^checksum}}} = Fil.stat(disk, "big.bin", checksum: :crc32)
     end
   end
 
   describe "errors" do
+    test "an existing file is :eexist on an exclusive write", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "once.txt", "original")
+
+      assert {:error, %Fil.AlreadyExistsError{reason: :eexist}} =
+               Fil.write(disk, "once.txt", "clobber", if_exists: :error)
+    end
+
     test "a directory is :eisdir", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
 
@@ -365,15 +369,6 @@ defmodule Fil.Adapter.LocalTest do
       assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
       assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} = Fil.rm(disk, "dir")
       assert Fil.read(disk, "dir/file.txt") == {:ok, "content"}
-    end
-  end
-
-  describe "url/2 and signed_url/2" do
-    test "needs Fil.Plugin.URL", %{tmp_dir: tmp_dir} do
-      disk = Fil.disk(adapter: Local, root: tmp_dir)
-
-      assert {:error, %Fil.UnsupportedError{op: :url, reason: :no_callback}} = Fil.url(disk, "a.txt")
-      assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :no_callback}} = Fil.signed_url(disk, "a.txt")
     end
   end
 end

@@ -25,13 +25,19 @@ defmodule Fil.AdapterCase do
         use Fil.AdapterCase, async: true
 
         def fil_disk(%{tmp_dir: tmp_dir}) do
-          Fil.disk(adapter: Fil.Adapter.Local, root: Path.join(tmp_dir, "primary"))
+          [adapter: Fil.Adapter.Local, root: Path.join(tmp_dir, "primary")]
+          |> Fil.disk()
+          |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
         end
       end
 
   `fil_other_disk/1` builds the second disk for the cross-disk tests. It defaults to a local disk in the test's
   temporary directory and can be overridden. Every case gets `@moduletag :tmp_dir`, so ExUnit gives each test its own
   directory.
+
+  `fil_request/4` sends the requests of the signed URL tests. It defaults to `plug_request/4`, which serves the disk
+  with `Fil.Plug`, for disks that sign with `Fil.Plugin.URL`. Override it when the storage signs its own URLs, and send
+  the request to the storage, as `Fil.Adapter.S3IntegrationTest` does.
 
   The suite is internal to `Fil` for now. Once it's public, third-party adapters can run it to show that they follow the
   contract.
@@ -90,11 +96,64 @@ defmodule Fil.AdapterCase do
     )
   end
 
+  @doc """
+  Serves the URLs of `Fil.Plugin.URL` with `Fil.Plug`, the default `fil_request/4`. Sends the request the way an HTTP
+  client does and returns the status, the response headers as lowercase `{name, value}` pairs, and the body.
+  """
+  @spec plug_request(Fil.Disk.t(), atom(), String.t(), keyword()) ::
+          {pos_integer(), [{String.t(), String.t()}], binary()}
+  def plug_request(disk, method, url, opts) do
+    base_url =
+      Fil.Plugin.URL.base_url(disk) ||
+        raise ArgumentError, "the disk has no Fil.Plugin.URL to serve its URLs with Fil.Plug, override fil_request/4"
+
+    %URI{path: path, query: query} = URI.parse(url)
+    at = URI.parse(base_url).path || "/"
+    body = Keyword.get(opts, :body)
+
+    headers =
+      opts
+      |> Keyword.get(:headers, [])
+      |> put_content_length(body)
+
+    conn =
+      method
+      |> Plug.Test.conn(path <> "?" <> (query || ""), body)
+      |> put_req_headers(headers)
+      |> Fil.Plug.call(Fil.Plug.init(at: at, disk: disk))
+
+    {conn.status, conn.resp_headers, conn.resp_body}
+  end
+
+  # Like an HTTP client, the request says how long its body is.
+  defp put_content_length(headers, nil), do: headers
+
+  defp put_content_length(headers, body) do
+    length =
+      body
+      |> byte_size()
+      |> Integer.to_string()
+
+    [{"content-length", length} | headers]
+  end
+
+  defp put_req_headers(conn, headers) do
+    Enum.reduce(headers, conn, fn {name, value}, conn -> Plug.Conn.put_req_header(conn, name, value) end)
+  end
+
   @doc "Builds the disk under test."
   @callback fil_disk(map()) :: Fil.Disk.t()
 
   @doc "Builds the second disk, used by the cross-disk tests."
   @callback fil_other_disk(map()) :: Fil.Disk.t()
+
+  @doc """
+  Sends a request to a URL the disk built, and returns `{status, headers, body}`. `opts` has the request's `:body` (a
+  binary, or `nil`) and `:headers`. Defaults to `plug_request/4`. An adapter whose storage signs URLs itself overrides
+  it and sends the request to the storage.
+  """
+  @callback fil_request(Fil.Disk.t(), atom(), String.t(), keyword()) ::
+              {pos_integer(), [{String.t(), String.t()}], binary()}
 
   defmacro __using__(opts) do
     opts = NimbleOptions.validate!(opts, @schema)
@@ -121,7 +180,9 @@ defmodule Fil.AdapterCase do
         Fil.disk(adapter: Local, root: Path.join(tmp_dir, "other"))
       end
 
-      defoverridable fil_other_disk: 1
+      def fil_request(disk, method, url, opts), do: Fil.AdapterCase.plug_request(disk, method, url, opts)
+
+      defoverridable fil_other_disk: 1, fil_request: 4
 
       setup context do
         {:ok, disk: fil_disk(context), other_disk: fil_other_disk(context)}
@@ -616,11 +677,15 @@ defmodule Fil.AdapterCase do
         assert {:ok, _} = Fil.write(disk, "keep.txt", "keep")
         assert {:ok, _} = Fil.write(disk, "trash/a.txt", "a")
         assert {:ok, _} = Fil.write(disk, "trash/nested/b.txt", "b")
+        assert {:ok, _} = Fil.write(disk, "trash.txt", "sibling file")
+        assert {:ok, _} = Fil.write(disk, "trashcan/c.txt", "sibling directory")
 
         assert {:ok, 2} = Fil.rm_rf(disk, "trash")
         assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "trash/a.txt")
         assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "trash/nested/b.txt")
         assert Fil.read(disk, "keep.txt") == {:ok, "keep"}
+        assert Fil.read(disk, "trash.txt") == {:ok, "sibling file"}
+        assert Fil.read(disk, "trashcan/c.txt") == {:ok, "sibling directory"}
       end
 
       test "deleting a missing prefix removes nothing", %{disk: disk} do
@@ -667,6 +732,18 @@ defmodule Fil.AdapterCase do
         assert {:ok, _} = Fil.write(disk, "statdir/file.txt", "x")
         assert {:ok, stat} = Fil.stat(disk, "statdir")
         assert stat.type == :directory
+
+        assert {:ok, %Fil.Stat{type: :directory, checksum: nil}} = Fil.stat(disk, "statdir", checksum: :crc32)
+      end
+
+      test "the etag changes when the size changes", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "etag.txt", "small")
+        assert {:ok, first} = Fil.stat(disk, "etag.txt")
+
+        assert {:ok, _} = Fil.write(disk, "etag.txt", "considerably larger content")
+        assert {:ok, second} = Fil.stat(disk, "etag.txt")
+
+        assert first.etag != second.etag
       end
 
       ## ----------------------------------------------------------------
@@ -757,6 +834,41 @@ defmodule Fil.AdapterCase do
         assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "draft.txt")
       end
 
+      test "a copy keeps the checksum and the content type", %{disk: disk} do
+        checksum =
+          :sha256
+          |> :crypto.hash("hello")
+          |> Base.encode64()
+
+        assert {:ok, _} = Fil.write(disk, "a.txt", "hello", checksum: :sha256, content_type: "text/plain")
+        assert {:ok, _} = Fil.cp(disk, "a.txt", "b.txt")
+
+        assert {:ok, source} = Fil.stat(disk, "a.txt")
+        assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}} = copy} = Fil.stat(disk, "b.txt", checksum: :sha256)
+
+        # `nil` on both where the storage keeps no content type.
+        assert copy.content_type == source.content_type
+        assert Fil.read(disk, "b.txt", verify_checksum: true) == {:ok, "hello"}
+      end
+
+      test "a copy or a move onto itself never loses the file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "a.txt", "a")
+
+        # Local and Memory keep the file where it is or find it there, S3 refuses to copy an object onto itself.
+        for opts <- [[], [if_exists: :error]], copy_or_move <- [&Fil.cp/4, &Fil.rename/4] do
+          result = copy_or_move.(disk, "a.txt", "a.txt", opts)
+
+          case {opts, result} do
+            {[], {:ok, _}} -> :ok
+            {[if_exists: :error], {:error, %Fil.AlreadyExistsError{}}} -> :ok
+            {_opts, {:error, %Fil.InvalidRequestError{}}} -> :ok
+            _unexpected -> flunk("unexpected result with #{inspect(opts)}: #{inspect(result)}")
+          end
+
+          assert Fil.read(disk, "a.txt") == {:ok, "a"}
+        end
+      end
+
       test "an error across disks names the call", %{disk: disk, other_disk: other_disk} do
         assert {:error, %Fil.NotFoundError{op: :cp, path: "nope.txt"}} =
                  Fil.cp(disk, "nope.txt", Fil.ref(other_disk, "target.txt"))
@@ -789,11 +901,13 @@ defmodule Fil.AdapterCase do
 
       test "if_exists: :error never replaces a file", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "once.txt", "first", if_exists: :error)
+        assert {:ok, _} = Fil.write(disk, "existing.txt", "original")
 
-        assert {:error, %Fil.AlreadyExistsError{}} =
-                 Fil.write(disk, "once.txt", "second", if_exists: :error)
+        assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "once.txt", "second", if_exists: :error)
+        assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "existing.txt", "clobber", if_exists: :error)
 
         assert Fil.read(disk, "once.txt") == {:ok, "first"}
+        assert Fil.read(disk, "existing.txt") == {:ok, "original"}
       end
 
       test "if_exists: :error never replaces a file on a copy or a move", %{disk: disk, other_disk: other_disk} do
@@ -990,6 +1104,87 @@ defmodule Fil.AdapterCase do
         assert_raise ArgumentError, ~r/expires_in/, fn ->
           Fil.signed_url(disk, "a.txt", expires_in: 7 * 24 * 60 * 60 + 1)
         end
+      end
+
+      test "a signed URL downloads the file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "signed/a file.txt", "content")
+        assert {:ok, url} = Fil.signed_url(disk, "signed/a file.txt", expires_in: 60)
+
+        assert {200, _headers, "content"} = fil_request(disk, :get, url, [])
+      end
+
+      test "a signed URL uploads a file", %{disk: disk} do
+        assert {:ok, url} = Fil.signed_url(disk, "inbox/new.txt", method: :put, expires_in: 60)
+
+        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "uploaded")
+        assert status in 200..299
+        assert Fil.read(disk, "inbox/new.txt") == {:ok, "uploaded"}
+      end
+
+      test "a signed URL works only for its path and its method", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "report.txt", "report")
+        assert {:ok, _} = Fil.write(disk, "resume.txt", "resume")
+        assert {:ok, url} = Fil.signed_url(disk, "report.txt")
+
+        other_path = String.replace(url, "report.txt", "resume.txt")
+        assert {status, _headers, body} = fil_request(disk, :get, other_path, [])
+        assert status in 400..499
+        refute body == "resume"
+
+        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "replaced")
+        assert status in 400..499
+        assert Fil.read(disk, "report.txt") == {:ok, "report"}
+      end
+
+      test "a signed URL downloads with the signed disposition", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "7f3a.pdf", "PDF")
+        assert {:ok, plain} = Fil.signed_url(disk, "7f3a.pdf")
+        assert {:ok, url} = Fil.signed_url(disk, "7f3a.pdf", disposition: {:attachment, "Rechnung März.pdf"})
+
+        assert {200, headers, "PDF"} = fil_request(disk, :get, url, [])
+
+        assert for({"content-disposition", value} <- headers, do: value) == [
+                 ~s(attachment; filename="Rechnung M_rz.pdf"; filename*=UTF-8''Rechnung%20M%C3%A4rz.pdf)
+               ]
+
+        assert {200, headers, "PDF"} = fil_request(disk, :get, plain, [])
+        refute List.keymember?(headers, "content-disposition", 0)
+      end
+
+      test "a signed URL with query parameters works only with their signed values", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "index.html", "<html>")
+        assert {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}])
+
+        assert {200, _headers, "<html>"} = fil_request(disk, :get, url, [])
+
+        changed = String.replace(url, "trackingInfo=7", "trackingInfo=8")
+        assert {status, _headers, _body} = fil_request(disk, :get, changed, [])
+        assert status in 400..499
+      end
+
+      test "an upload URL bound to its content type, size and if_exists writes the file once", %{disk: disk} do
+        opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
+        assert {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
+        headers = [{"content-type", "image/png"}, {"if-none-match", "*"}]
+        other_type = List.keyreplace(headers, "content-type", 0, {"content-type", "text/html"})
+
+        # Another content type or size is refused.
+        for {headers, body} <- [{other_type, "png"}, {headers, "pngs"}] do
+          assert {status, _headers, _body} = fil_request(disk, :put, url, body: body, headers: headers)
+          assert status in 400..499
+        end
+
+        refute Fil.exists?(disk, "avatars/a.png")
+
+        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "png", headers: headers)
+        assert status in 200..299
+        assert {:ok, %Fil.Stat{size: 3, content_type: content_type}} = Fil.stat(disk, "avatars/a.png")
+        assert content_type in ["image/png", nil]
+
+        # S3 answers 412, Fil.Plug 409.
+        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "new", headers: headers)
+        assert status in 400..499
+        assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
       end
 
       ## ----------------------------------------------------------------

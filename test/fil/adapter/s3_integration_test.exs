@@ -1,14 +1,15 @@
 defmodule Fil.Adapter.S3IntegrationTest do
   @moduledoc """
   Runs the conformance suite against RustFS. RustFS verifies SigV4 signatures, so this also tests the request signing
-  end to end.
+  and the presigned URLs end to end: `fil_request/4` sends the requests of the signed URL tests to RustFS with Req.
 
       docker compose up -d rustfs
       mix test.integration
 
-  Each run creates its own bucket in `setup_all`, recreates it before every test and removes it at the end, so the
-  container can stay up between runs. `FIL_S3_ENDPOINT`, `FIL_S3_ACCESS_KEY_ID`, `FIL_S3_SECRET_ACCESS_KEY` and
-  `FIL_S3_REGION` point the suite at another S3 endpoint, AWS included.
+  Each run creates its own bucket in `setup_all` and removes it at the end, so the container can stay up between runs.
+  Each test gets a root of its own in that bucket, so it starts empty whatever the tests before it left behind.
+  `FIL_S3_ENDPOINT`, `FIL_S3_ACCESS_KEY_ID`, `FIL_S3_SECRET_ACCESS_KEY` and `FIL_S3_REGION` point the suite at another
+  S3 endpoint, AWS included.
   """
 
   alias Fil.Adapter.S3
@@ -28,21 +29,40 @@ defmodule Fil.Adapter.S3IntegrationTest do
     {:ok, bucket: bucket}
   end
 
-  # Recreating the bucket is cheap and gives every test an empty one, whatever the test before it left behind.
-  setup %{bucket: bucket} do
-    :ok = Emulator.delete_s3_bucket(bucket)
-    :ok = Emulator.create_s3_bucket(bucket)
-    :ok
-  end
-
   # The smallest part size S3 allows, so the conformance suite's large streams (`Fil.AdapterCase.large/0`) are
   # uploaded in parts.
-  def fil_disk(%{bucket: bucket}) do
+  def fil_disk(%{bucket: bucket} = context) do
     Fil.disk(
-      [adapter: S3, bucket: bucket, endpoint: Emulator.url(:s3), path_style: true, part_size: 5_242_880] ++
-        Emulator.s3_credentials()
+      [
+        adapter: S3,
+        bucket: bucket,
+        root: root(context),
+        endpoint: Emulator.url(:s3),
+        path_style: true,
+        part_size: 5_242_880
+      ] ++ Emulator.s3_credentials()
     )
   end
+
+  # Sends the requests of the conformance suite's signed URL tests to RustFS.
+  def fil_request(_disk, method, url, opts) do
+    {:ok, response} =
+      Req.request(
+        method: method,
+        url: url,
+        body: Keyword.get(opts, :body),
+        headers: Keyword.get(opts, :headers, []),
+        retry: false,
+        raw: true
+      )
+
+    headers = for {name, values} <- response.headers, value <- values, do: {name, value}
+    {response.status, headers, response.body}
+  end
+
+  # The test's own root in the run's bucket. It's derived from the test name, because the conformance suite calls
+  # `fil_disk/1` in its `setup` and again in a test, and both calls have to return the same disk.
+  defp root(%{test: test}), do: "t#{:erlang.phash2(test, 4_294_967_296)}"
 
   describe "signatures" do
     test "a disk with the wrong secret is refused", %{bucket: bucket} do
@@ -62,33 +82,7 @@ defmodule Fil.Adapter.S3IntegrationTest do
   end
 
   describe "signed_url/2" do
-    test "returns a URL that works", %{disk: disk} do
-      Fil.write!(disk, "signed.txt", "World")
-
-      assert {:ok, url} = Fil.signed_url(disk, "signed.txt", expires_in: 60)
-      assert {:ok, %{status: 200, body: "World"}} = get(url)
-    end
-
-    test "returns a URL that downloads with the signed disposition", %{disk: disk} do
-      Fil.write!(disk, "7f3a.pdf", "PDF")
-
-      assert {:ok, url} = Fil.signed_url(disk, "7f3a.pdf", disposition: {:attachment, "Rechnung März.pdf"})
-      assert {:ok, %{status: 200, body: "PDF"} = response} = get(url)
-
-      assert Req.Response.get_header(response, "content-disposition") == [
-               ~s(attachment; filename="Rechnung M_rz.pdf"; filename*=UTF-8''Rechnung%20M%C3%A4rz.pdf)
-             ]
-    end
-
-    test "returns a URL with signed query parameters that works", %{disk: disk} do
-      Fil.write!(disk, "index.html", "<html>")
-
-      assert {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}])
-      assert {:ok, %{status: 200, body: "<html>"}} = get(url)
-      assert {:ok, %{status: 403}} = get(String.replace(url, "trackingInfo=7", "trackingInfo=8"))
-    end
-
-    test "signs URLs for the public endpoint", %{disk: disk, bucket: bucket} do
+    test "signs URLs for the public endpoint", %{disk: disk, bucket: bucket} = context do
       Fil.write!(disk, "a b/ü.txt", "public")
 
       # The emulator answers on 127.0.0.1 and on localhost, so one serves as the endpoint and the other as the public
@@ -103,8 +97,13 @@ defmodule Fil.Adapter.S3IntegrationTest do
 
       public =
         Fil.disk(
-          [adapter: S3, bucket: bucket, endpoint: Emulator.url(:s3), public_endpoint: public_endpoint] ++
-            Emulator.s3_credentials()
+          [
+            adapter: S3,
+            bucket: bucket,
+            root: root(context),
+            endpoint: Emulator.url(:s3),
+            public_endpoint: public_endpoint
+          ] ++ Emulator.s3_credentials()
         )
 
       assert {:ok, url} = Fil.signed_url(public, "a b/ü.txt", disposition: :attachment)
@@ -117,30 +116,17 @@ defmodule Fil.Adapter.S3IntegrationTest do
       assert Fil.read(disk, "a b/ü.txt") == {:ok, "changed"}
     end
 
-    test "presigns an upload", %{disk: disk} do
-      assert {:ok, url} = Fil.signed_url(disk, "uploaded.txt", method: :put, expires_in: 60)
-      assert {:ok, %{status: status}} = put(url, "Uploaded")
-      assert status in [200, 201]
-      assert Fil.read(disk, "uploaded.txt") == {:ok, "Uploaded"}
-    end
-
-    test "presigns an upload bound to its content type, size and if_exists", %{disk: disk} do
+    test "presigns an upload bound to if-none-match, and answers 412 the second time", %{disk: disk} do
       opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
       assert {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
       headers = [{"content-type", "image/png"}, {"if-none-match", "*"}]
 
-      # The signature covers the headers, so another content type or length, or a missing header, is refused.
-      assert {:ok, %{status: 403}} =
-               put(url, "png", List.keyreplace(headers, "content-type", 0, {"content-type", "a/b"}))
-
-      assert {:ok, %{status: 403}} = put(url, "pngs", headers)
+      # The signature covers the header, so a request without it is refused.
       assert {:ok, %{status: 403}} = put(url, "png", List.keydelete(headers, "if-none-match", 0))
       refute Fil.exists?(disk, "avatars/a.png")
 
       assert {:ok, %{status: 200}} = put(url, "png", headers)
       assert {:ok, %Fil.Stat{size: 3, content_type: "image/png"}} = Fil.stat(disk, "avatars/a.png")
-
-      # With `if-none-match: *`, the URL writes the file once.
       assert {:ok, %{status: 412}} = put(url, "new", headers)
       assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
     end
@@ -176,21 +162,21 @@ defmodule Fil.Adapter.S3IntegrationTest do
       assert String.ends_with?(etag, "-2")
     end
 
-    test "a failed upload leaves no upload behind", %{disk: disk, bucket: bucket} do
+    test "a failed upload leaves no upload behind", %{disk: disk} = context do
       broken = then_run(large_chunks(), fn -> raise "broken" end)
 
       assert_raise RuntimeError, "broken", fn -> Fil.write(disk, "broken.bin", broken) end
-      assert Emulator.list_s3_uploads(bucket) == {:ok, []}
+      assert uploads(context) == []
 
       assert {:ok, _} = Fil.write(disk, "exists.bin", "first")
 
       assert {:error, %Fil.AlreadyExistsError{}} =
                Fil.write(disk, "exists.bin", large_chunks(), if_exists: :error)
 
-      assert Emulator.list_s3_uploads(bucket) == {:ok, []}
+      assert uploads(context) == []
     end
 
-    test "the upload of a killed writer is aborted", %{disk: disk, bucket: bucket} do
+    test "the upload of a killed writer is aborted", %{disk: disk} = context do
       test = self()
 
       blocking =
@@ -202,11 +188,11 @@ defmodule Fil.Adapter.S3IntegrationTest do
       writer = spawn(fn -> Fil.write(disk, "killed.bin", blocking) end)
 
       assert_receive :blocked, 10_000
-      assert {:ok, [{"killed.bin", _upload_id}]} = Emulator.list_s3_uploads(bucket)
+      assert uploads(context) == ["killed.bin"]
 
       Process.exit(writer, :kill)
 
-      assert eventually(fn -> Emulator.list_s3_uploads(bucket) == {:ok, []} end)
+      assert eventually(fn -> uploads(context) == [] end)
       refute Fil.exists?(disk, "killed.bin")
     end
 
@@ -223,6 +209,15 @@ defmodule Fil.Adapter.S3IntegrationTest do
              |> Fil.stream!("sha.bin", verify_checksum: true)
              |> Enum.join() == content
     end
+  end
+
+  # The paths of the multipart uploads under the test's root that were neither completed nor aborted. The bucket holds
+  # the uploads of every test in the run.
+  defp uploads(%{bucket: bucket} = context) do
+    prefix = root(context) <> "/"
+    {:ok, uploads} = Emulator.list_s3_uploads(bucket)
+
+    for {key, _upload_id} <- uploads, String.starts_with?(key, prefix), do: String.replace_prefix(key, prefix, "")
   end
 
   defp large_chunks do

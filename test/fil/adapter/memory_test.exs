@@ -150,9 +150,6 @@ defmodule Fil.Adapter.MemoryTest do
       assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}}} = Fil.stat(disk, "a.txt", checksum: :sha256)
       assert {:ok, %Fil.Stat{checksum: nil}} = Fil.stat(disk, "a.txt", checksum: :crc32)
       assert Fil.read(disk, "a.txt", verify_checksum: true) == {:ok, "hello"}
-
-      assert {:ok, _} = Fil.cp(disk, "a.txt", "b.txt")
-      assert {:ok, %Fil.Stat{checksum: {:sha256, ^checksum}}} = Fil.stat(disk, "b.txt", checksum: :sha256)
     end
 
     test "a file written without a checksum has none", %{disk: disk} do
@@ -175,15 +172,6 @@ defmodule Fil.Adapter.MemoryTest do
                Fil.rename(disk, "a.txt", "a.txt", if_exists: :error)
 
       assert Fil.read(disk, "a.txt") == {:ok, "a"}
-    end
-  end
-
-  describe "url/2 and signed_url/2" do
-    test "needs Fil.Plugin.URL" do
-      disk = Fil.disk(adapter: Memory)
-
-      assert {:error, %Fil.UnsupportedError{op: :url, reason: :no_callback}} = Fil.url(disk, "a.txt")
-      assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :no_callback}} = Fil.signed_url(disk, "a.txt")
     end
   end
 end

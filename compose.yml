@@ -4,8 +4,8 @@
 #     mix test.integration          # run the suite against it
 #     docker compose down -v        # stop it and delete the data
 #
-# The suite creates its own bucket per run and recreates it between tests, so the container can keep running between
-# runs.
+# The suite creates its own bucket per run, gives each test a root of its own in it and removes the bucket at the end,
+# so the container can keep running between runs.
 
 services:
   rustfs:

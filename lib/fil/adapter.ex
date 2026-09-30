@@ -39,6 +39,14 @@ defmodule Fil.Adapter do
   or move is `c:cp/4` or `c:rename/4` with `if_exists: :error`. It fails with the destination's path and leaves both
   files as they were.
 
+  A copy or a move onto its own path never loses the file. The adapter leaves it where it is, fails with
+  `Fil.AlreadyExistsError` when the call is exclusive, or refuses the call with `Fil.InvalidRequestError`. A copy keeps
+  the content type, where the storage keeps one.
+
+  The `:etag` that `c:stat/3` returns changes when a write changes the size of the file. A weak etag may miss other
+  changes. Which result an adapter gives for a copy onto itself, and what its etag covers, is under Operations on the
+  adapter's page.
+
   Where an adapter returns `:ok`, the `Fil` function returns `{:ok, %Fil.Ref{}}`, and `Fil.ls/2` turns the pairs
   into refs.
 
@@ -48,7 +56,8 @@ defmodule Fil.Adapter do
       needs the size before the content uses it, and uploads a stream without one in parts
     * `checksum:` on `c:write/4` sends a checksum of the content where the storage keeps one, and storage that finds
       the content doesn't match fails with `Fil.ChecksumMismatchError`. Storage without checksums ignores the option
-    * `checksum:` on `c:stat/3` fills in `Fil.Stat`'s `:checksum`, from the storage or computed from the content
+    * `checksum:` on `c:stat/3` fills in `Fil.Stat`'s `:checksum`, from the storage or computed from the content. A
+      directory has no checksum, and a copy keeps the checksum of a file written in one part
     * `verify_checksum: true` on `c:read/3` fails with `Fil.ChecksumMismatchError` when the content doesn't match a
       stored checksum
 
@@ -188,7 +197,9 @@ defmodule Fil.Adapter do
 
   `opts` has `:method`, `:expires_in` and `:query` as `Fil.signed_url/3` validated them, and for a download with
   `disposition:`, `:disposition` as the finished `content-disposition` header value. The storage has to send that header
-  with the download, and the URL's signature has to cover it and the `:query` parameters.
+  with the download, and the URL's signature has to cover it and the `:query` parameters. A request with another path,
+  method or parameter than the URL was signed for gets a status in the 4xx range, and an upload through it writes
+  nothing.
 
   An upload URL may get `:content_type`, `:size` and `:if_exists`. The signature has to cover them, so the storage
   refuses an upload with another `content-type` or `content-length`, and with `if_exists: :error` one that finds a file

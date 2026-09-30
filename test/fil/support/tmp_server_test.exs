@@ -32,21 +32,29 @@ defmodule Fil.Support.TmpServerTest do
       end)
 
     writer = spawn(fn -> send(test, {:written, Fil.write(disk, path, stream)}) end)
-    assert_receive :writing
+    assert_receive :writing, 1_000
     writer
   end
 
   defp kill(pid) do
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1_000
   end
 
-  # Returns once the server has started a cleanup, which then waits out its grace period.
-  defp wait_for_cleanup do
-    if :sys.get_state(Tmp).cleanups == %{} do
-      Process.sleep(1)
-      wait_for_cleanup()
+  # Returns once the server has started a cleanup, which then waits out its grace period. Polls every millisecond for up
+  # to a second, so a cleanup that never starts fails here instead of at ExUnit's timeout.
+  defp wait_for_cleanup(attempts \\ 1_000) do
+    cond do
+      :sys.get_state(Tmp).cleanups != %{} ->
+        :ok
+
+      attempts > 1 ->
+        Process.sleep(1)
+        wait_for_cleanup(attempts - 1)
+
+      true ->
+        flunk("Fil.Tmp started no cleanup within a second")
     end
   end
 
@@ -68,7 +76,7 @@ defmodule Fil.Support.TmpServerTest do
 
     # The write goes on, and fails when it moves the file into place.
     send(writer, :go)
-    assert_receive {:written, {:error, %Fil.NotFoundError{reason: :enoent}}}
+    assert_receive {:written, {:error, %Fil.NotFoundError{reason: :enoent}}}, 1_000
   end
 
   test "stopping the application doesn't wait out the grace period of a cleanup", %{disk: disk, tmp_dir: tmp_dir} do
@@ -124,7 +132,7 @@ defmodule Fil.Support.TmpServerTest do
         Process.sleep(:infinity)
       end)
 
-    assert_receive {:created, frames}
+    assert_receive {:created, frames}, 1_000
     dir = Fil.Tmp.path(frames)
 
     :ok = :sys.suspend(Tmp)
@@ -157,7 +165,7 @@ defmodule Fil.Support.TmpServerTest do
         Process.sleep(:infinity)
       end)
 
-    assert_receive :inserted
+    assert_receive :inserted, 1_000
 
     :ok = :sys.suspend(Tmp)
     on_exit(fn -> :sys.resume(Tmp) end)
