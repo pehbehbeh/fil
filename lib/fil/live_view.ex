@@ -244,9 +244,6 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     # How much of the temporary file is read at a time.
     @chunk_size 65_536
 
-    # The `accept:` filters that stand for a kind of file, not one type.
-    @wildcards ~w(audio/* image/* video/*)
-
     @typedoc "Where the files go: a ref for a directory, or a disk as `Fil.Disk.resolve/1` takes it."
     @type target :: Fil.Ref.t() | Fil.Disk.source()
 
@@ -343,7 +340,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       fn %UploadEntry{} = entry, %Socket{} = socket ->
         conf = Map.fetch!(socket.assigns.uploads, entry.upload_config)
 
-        case sign(target, entry, Keyword.put_new(opts, :extensions, accepted_extensions(conf))) do
+        case sign(target, entry, Keyword.put_new(opts, :extensions, Fil.Support.Accept.extensions(conf.accept))) do
           {:ok, meta} -> {:ok, meta, socket}
           {:error, error} -> {:error, error_meta(error), socket}
         end
@@ -741,7 +738,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     # The consume functions check the upload's extensions and size limit, unless the caller passed their own.
     defp upload_opts(opts, conf) do
       opts
-      |> Keyword.put_new(:extensions, accepted_extensions(conf))
+      |> Keyword.put_new(:extensions, Fil.Support.Accept.extensions(conf.accept))
       |> Keyword.put_new(:max_file_size, conf.max_file_size)
     end
 
@@ -773,7 +770,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       ref = build_ref(target, entry, opts[:path])
 
       # `Fil.write/4` finds the size of the temporary file, so S3 sends it in one request.
-      with :ok <- check_extension(ref, opts[:extensions], :write) do
+      with :ok <- Fil.Support.Accept.check(ref, opts[:extensions], :write) do
         content = File.stream!(tmp_path, @chunk_size)
         Fil.write(ref, content, if_exists: opts[:if_exists], content_type: MIME.from_path(ref.path))
       end
@@ -819,7 +816,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       signed_at = System.os_time(:second)
 
       signed =
-        with :ok <- check_extension(ref, opts[:extensions], :signed_url) do
+        with :ok <- Fil.Support.Accept.check(ref, opts[:extensions], :signed_url) do
           Fil.signed_url(ref,
             method: :put,
             expires_in: opts[:expires_in],
@@ -872,45 +869,6 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         {:ok, normalized} -> Fil.ref(disk, Path.join(dir, normalized))
         {:error, :ebadpath} -> Fil.ref(disk, path)
       end
-    end
-
-    defp check_extension(_ref, nil, _op), do: :ok
-
-    defp check_extension(ref, extensions, op) do
-      extension =
-        ref.path
-        |> Path.extname()
-        |> String.downcase()
-
-      if extension != "" and extension in Enum.map(extensions, &String.downcase/1) do
-        :ok
-      else
-        {:error, %Fil.InvalidRequestError{reason: :extension, op: op, path: ref.path, disk: ref.disk}}
-      end
-    end
-
-    # The extensions `accept:` allows: the ones it lists, and those of its exact types. LiveView keeps the list as the
-    # `accept` attribute of the file input. Wildcards allow none, and nil means no check: for `accept: :any`, or a list
-    # of wildcards only.
-    defp accepted_extensions(%{accept: :any}), do: nil
-
-    defp accepted_extensions(%{accept: accept}) do
-      extensions =
-        accept
-        |> String.split(",")
-        |> Enum.flat_map(&filter_extensions/1)
-        |> Enum.uniq()
-
-      if extensions != [], do: extensions
-    end
-
-    defp filter_extensions("." <> _name = extension), do: [extension]
-    defp filter_extensions(wildcard) when wildcard in @wildcards, do: []
-
-    defp filter_extensions(type) do
-      type
-      |> MIME.extensions()
-      |> Enum.map(&("." <> &1))
     end
   end
 end
