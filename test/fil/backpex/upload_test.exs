@@ -126,11 +126,46 @@ defmodule Fil.Backpex.UploadTest do
       end
     end
 
-    test "refuses direct: true on a Backpex release that crashes on errors of direct uploads" do
-      version = Application.spec(:backpex, :vsn)
+    test "allows direct: true only when Backpex takes upload_error:" do
+      options = %{module: Fil.Backpex.Upload, label: "Docs", accept: ~w(.pdf), max_entries: 2, direct: true}
 
-      assert_raise ArgumentError, ~r/can't use direct: true on Backpex #{version}/, fn ->
-        field(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true})
+      config = Fil.Backpex.Upload.__validate_config__({:docs, options}, ProductLive, true)
+      assert is_function(config[:external], 2)
+      assert config[:upload_error] == (&Fil.LiveView.upload_error/2)
+
+      assert_raise ArgumentError, ~r/can't use direct: true, because this Backpex version has no upload_error:/, fn ->
+        Fil.Backpex.Upload.__validate_config__({:docs, options}, ProductLive, false)
+      end
+
+      indirect = Fil.Backpex.Upload.__validate_config__({:docs, %{options | direct: false}}, ProductLive, false)
+      refute Keyword.has_key?(indirect, :upload_error)
+    end
+
+    test "detects upload_error: in the installed Backpex" do
+      options = %{accept: ~w(.pdf), max_entries: 2, direct: true}
+
+      if Keyword.has_key?(Backpex.Fields.Upload.config_schema(), :upload_error) do
+        assert field(:docs, options)[:upload_error] == (&Fil.LiveView.upload_error/2)
+      else
+        assert_raise ArgumentError, ~r/has no upload_error: option/, fn -> field(:docs, options) end
+      end
+    end
+
+    test "refuses direct: true with if_exists: :overwrite" do
+      options = %{module: Fil.Backpex.Upload, label: "Docs", accept: ~w(.pdf), max_entries: 2, direct: true}
+
+      assert_raise ArgumentError, ~r/can't use direct: true with if_exists: :overwrite/, fn ->
+        Fil.Backpex.Upload.__validate_config__({:docs, Map.put(options, :if_exists, :overwrite)}, ProductLive, true)
+      end
+    end
+
+    test "raises ArgumentError for invalid options of its own" do
+      assert_raise ArgumentError, ~r/:avatar in Fil.BackpexTest.ProductLive has an invalid option/, fn ->
+        field(:avatar, %{accept: ~w(.png), if_exists: :replace})
+      end
+
+      assert_raise ArgumentError, ~r/needs at least one extension/, fn ->
+        field(:avatar, %{accept: ~w(.png), extensions: []})
       end
     end
 
@@ -282,19 +317,70 @@ defmodule Fil.Backpex.UploadTest do
       assert Fil.read!(context.avatar) == "old avatar"
     end
 
-    test "ignores a remove button for a file the record doesn't have", %{conn: conn} = context do
+    test "ignores a removed path the record doesn't have", context do
       other = Fil.write!(context.disk, "other/x.png", "someone else's")
-      {:ok, view, _html} = live(conn, "/admin/products/#{context.product.id}/edit")
+      product = context.product
+      config = field(:photos, %{accept: ~w(.png), max_entries: 3})
 
-      view
-      |> element(~s{button[phx-click="cancel-existing-entry"][phx-value-ref="old/a.png"]})
-      |> render_click(%{"ref" => "other/x.png"})
+      socket =
+        %Phoenix.LiveView.Socket{}
+        |> Phoenix.LiveView.allow_upload(:photos, accept: ~w(.png), max_entries: 3)
+        |> Phoenix.Component.assign(:item, product)
 
-      assert {:error, {:live_redirect, _to}} = save(view, %{name: "Chair"})
+      params = config[:put_upload_change].(socket, %{}, product, {[], []}, ["other/x.png"], :insert)
+      assert Enum.map(params["photos"], & &1.path) == ["old/a.png", "old/b.png"]
 
+      config[:remove_uploads].(socket, product, ["other/x.png"])
       assert Fil.exists?(other)
       assert Fil.exists?(context.a)
+      assert Fil.exists?(context.b)
+    end
+
+    test "refuses the save with a file that isn't uploaded yet", %{conn: conn} = context do
+      {:ok, view, _html} = live(conn, "/admin/products/#{context.product.id}/edit")
+
+      # LiveViewTest sends a file in chunks of 64 KB, so it needs a larger one to stop at 50 %.
+      big = String.duplicate("D", 200_000)
+      input = file_input(view, "#resource-form", :photos, [png("c.png", "C"), png("d.png", big)])
+      render_upload(input, "c.png")
+      render_upload(input, "d.png", 50)
+      html = save(view, %{name: "Chair"})
+
+      assert html =~ "The file couldn&#39;t be uploaded"
       assert [%Fil.Ref{path: "old/a.png"}, %Fil.Ref{path: "old/b.png"}] = Repo.get!(Product, context.product.id).photos
+      assert {:ok, []} = Fil.ls(context.disk, "products")
+    end
+
+    test "refuses new files that get the same path in an array field", context do
+      config = field(:photos, %{accept: ~w(.png), max_entries: 3, path: &"old/#{&1.client_name}"})
+      field = {:photos, Map.new(config)}
+      changeset = Ecto.Changeset.change(context.product)
+
+      assigns = fn names, removed ->
+        entries = for {name, i} <- Enum.with_index(names), do: entry(name, i)
+        upload = struct!(Phoenix.LiveView.UploadConfig, name: :photos, max_entries: 3, entries: entries)
+        %{uploads: %{photos: upload}, item: context.product, removed_uploads: [photos: removed]}
+      end
+
+      error = {"A file with this name already exists", [validation: :unique_path]}
+      check = &Fil.Backpex.Upload.before_changeset(changeset, %{}, [], nil, field, &1)
+
+      # Twice the same path, and the path of a kept file.
+      for names <- [~w(c.png c.png), ~w(a.png)] do
+        refused =
+          names
+          |> assigns.([])
+          |> check.()
+
+        assert error in Keyword.get_values(refused.errors, :photos)
+      end
+
+      different = assigns.(~w(c.png d.png), [])
+      assert check.(different).valid?
+
+      # A kept file that's removed frees its path.
+      removed = assigns.(~w(a.png), ["old/a.png"])
+      assert check.(removed).valid?
     end
 
     test "replaces a file at a stable path with if_exists: :overwrite", %{conn: conn} = context do
@@ -372,6 +458,19 @@ defmodule Fil.Backpex.UploadTest do
   end
 
   defp png(name, content), do: %{name: name, content: content, type: "image/png"}
+
+  defp entry(name, index) do
+    %Phoenix.LiveView.UploadEntry{
+      ref: Integer.to_string(index),
+      upload_config: :photos,
+      uuid: "uuid-#{index}",
+      client_name: name,
+      client_type: "image/png",
+      valid?: true,
+      done?: true,
+      progress: 100
+    }
+  end
 
   defp upload(view, name, files) do
     input = file_input(view, "#resource-form", name, files)
