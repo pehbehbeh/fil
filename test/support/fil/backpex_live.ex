@@ -84,9 +84,9 @@ end
 defmodule Fil.BackpexTest.DirectUpload do
   @moduledoc false
 
-  # `Fil.Backpex.Upload` with a Backpex version that allows `direct: true`, so the tests can run direct uploads before
-  # a Backpex release renders their errors. It sends the test the result of each signed upload, so the test can PUT
-  # the file as the browser would. The LiveView process has the test in `$callers`.
+  # `Fil.Backpex.Upload` as if Backpex had `upload_error:` in `Backpex.Fields.Upload`, which `direct: true` needs, so
+  # the tests can run direct uploads before a Backpex release has it. It sends the test the result of each signed
+  # upload, so the test can PUT the file as the browser would. The LiveView process has the test in `$callers`.
 
   use Backpex.Field, config_schema: Fil.Backpex.Upload.config_schema()
 
@@ -95,7 +95,7 @@ defmodule Fil.BackpexTest.DirectUpload do
   @doc false
   def validate_config!(field, live_resource) do
     field
-    |> Fil.Backpex.Upload.__validate_config__(live_resource, &super(&1, live_resource), "99.0.0")
+    |> Fil.Backpex.Upload.__validate_config__(live_resource, true)
     |> Keyword.update!(:external, &report/1)
   end
 
