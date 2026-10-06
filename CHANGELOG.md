@@ -12,11 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.read/3` and `Fil.stream/3` take `offset:` and `length:` to read part of a file, on every adapter: S3 sends a
   `Range` header, the local disk reads from the offset, and the memory disk returns a sub-binary. Plugins that
   transform reads get the whole file and `Fil` cuts the part from their result, so offsets count bytes of the content
-  as you get it.
+  as you get it. ([#35](https://github.com/pehbehbeh/fil/pull/35))
 - `Fil.Plug` sends `etag`, `last-modified` and `accept-ranges: bytes`, answers `if-none-match` and `if-modified-since`
   with a `304`, and a `GET` with one byte range with a `206` (`416` for a range outside the file, `if-range`
   honoured). Several ranges get the whole file. Signed URLs work with ranges too, so browsers can seek in videos
-  served from a local disk.
+  served from a local disk. ([#35](https://github.com/pehbehbeh/fil/pull/35))
 - `Fil.LiveView.external/2` lets the browser upload files straight to a disk, on every adapter: S3 with a presigned PUT,
   local and memory disks through `Fil.Plug`. The consume functions then check each file instead of writing it, and
   refuse one that's older than its upload URL or larger than `max_file_size`. The browser side is one import in
