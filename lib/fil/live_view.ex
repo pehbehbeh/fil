@@ -54,7 +54,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         def handle_event("save", _params, socket) do
           user = socket.assigns.current_user
 
-          case Fil.LiveView.consume_uploaded_entries(socket, :avatar, &MyApp.Storage.uploads/0,
+          case Fil.LiveView.consume_uploaded_entries(socket, :avatar, disk,
                  path: &"avatars/\#{user.id}/\#{Fil.LiveView.filename(&1)}"
                ) do
             {:ok, [avatar]} ->
@@ -128,7 +128,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         allow_upload(socket, :avatar,
           accept: ~w(.jpg .png),
           max_file_size: 20_000_000,
-          external: Fil.LiveView.external(&MyApp.Storage.uploads/0)
+          external: Fil.LiveView.external(disk)
         )
 
     It works on every disk that signs upload URLs: S3 with a presigned PUT, and a disk with `Fil.Plugin.URL` and a
@@ -193,7 +193,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     stores each entry with `store_entry/4`:
 
         Phoenix.LiveView.consume_uploaded_entries(socket, :avatar, fn meta, entry ->
-          case Fil.LiveView.store_entry(&MyApp.Storage.uploads/0, meta, entry) do
+          case Fil.LiveView.store_entry(disk, meta, entry) do
             {:ok, avatar} -> {:ok, avatar}
             {:error, error} -> {:postpone, error}
           end
@@ -273,7 +273,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     For uploads with `auto_upload: true` and a `progress:` callback, which consume each entry when it's done:
 
         defp handle_progress(:avatar, entry, socket) when entry.done? do
-          case Fil.LiveView.consume_uploaded_entry(socket, entry, &MyApp.Storage.uploads/0) do
+          case Fil.LiveView.consume_uploaded_entry(socket, entry, disk) do
             {:ok, avatar} ->
               {:noreply, assign(socket, :avatar, avatar.path)}
 
@@ -311,7 +311,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         allow_upload(socket, :avatar,
           accept: ~w(.jpg .png),
           max_file_size: 20_000_000,
-          external: Fil.LiveView.external(&MyApp.Storage.uploads/0)
+          external: Fil.LiveView.external(disk)
         )
 
     For each file, the function builds its path with `:path`, checks its extension, and signs an upload URL for it

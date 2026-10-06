@@ -1,8 +1,10 @@
 # Phoenix
 
 This guide stores files from a Phoenix app on a disk: uploads from a LiveView form with `Fil.LiveView`, direct uploads
-from the browser, uploads to a controller, and links to the stored files. It uses the `MyApp.Storage.uploads/0` disk
-from the [installation guide](installation.md), with `Fil.Plugin.ContentType` attached.
+from the browser, uploads to a controller, and links to the stored files. The examples store them on `disk`, a disk with
+`Fil.Plugin.ContentType` attached, such as the uploads disk from the [installation guide](installation.md). Options that
+are compiled, such as an Ecto field's or a plug's `disk:`, take a capture of the function that builds it instead
+(`&MyApp.Storage.uploads/0`), see `Fil.Disk.resolve/1`.
 
 `Fil.LiveView` needs Phoenix LiveView 1.2 and Phoenix 1.8. Both are optional dependencies of `Fil`, so an app with
 them needs nothing else.
@@ -104,7 +106,7 @@ end
 defp planned_photos(socket) do
   picked =
     for entry <- socket.assigns.uploads.photos.entries, entry.valid? do
-      Fil.LiveView.entry_ref(&MyApp.Storage.uploads/0, entry)
+      Fil.LiveView.entry_ref(disk, entry)
     end
 
   socket.assigns.photos ++ picked
@@ -138,7 +140,7 @@ def handle_event("save", %{"product" => params}, socket) do
   planned = change_photos(product, params, planned_photos(socket))
 
   with true <- planned.valid?,
-       {:ok, new} <- Fil.LiveView.consume_uploaded_entries(socket, :photos, &MyApp.Storage.uploads/0) do
+       {:ok, new} <- Fil.LiveView.consume_uploaded_entries(socket, :photos, disk) do
     save_product(socket, change_photos(product, params, kept ++ new), new)
   else
     false -> {:noreply, assign(socket, :form, to_form(planned, action: :update))}
@@ -322,7 +324,7 @@ for the avatar form above:
 def handle_event("save", _params, socket) do
   user = socket.assigns.current_user
 
-  case Fil.LiveView.consume_uploaded_entries(socket, :avatar, &MyApp.Storage.uploads/0,
+  case Fil.LiveView.consume_uploaded_entries(socket, :avatar, disk,
          path: &"avatars/#{user.id}/#{Fil.LiveView.filename(&1)}"
        ) do
     {:ok, [avatar]} ->
@@ -422,7 +424,7 @@ def mount(_params, _session, socket) do
 end
 
 defp handle_progress(:avatar, entry, socket) when entry.done? do
-  case Fil.LiveView.consume_uploaded_entry(socket, entry, &MyApp.Storage.uploads/0) do
+  case Fil.LiveView.consume_uploaded_entry(socket, entry, disk) do
     {:ok, avatar} -> {:noreply, assign(socket, :avatar, avatar.path)}
     {:error, error} -> {:noreply, put_flash(socket, :error, avatar_error(error))}
   end
@@ -451,7 +453,7 @@ test "stores the avatar", %{conn: conn, user: user} do
   |> form("#avatar-form")
   |> render_submit()
 
-  assert {:ok, [_avatar]} = Fil.ls(MyApp.Storage.uploads(), "avatars/#{user.id}")
+  assert {:ok, [_avatar]} = Fil.ls(disk, "avatars/#{user.id}")
 end
 ```
 
@@ -469,10 +471,7 @@ def mount(_params, _session, socket) do
    allow_upload(socket, :avatar,
      accept: ~w(.jpg .jpeg .png),
      max_file_size: 20_000_000,
-     external:
-       Fil.LiveView.external(&MyApp.Storage.uploads/0,
-         path: &"avatars/#{user.id}/#{Fil.LiveView.filename(&1)}"
-       )
+     external: Fil.LiveView.external(disk, path: &"avatars/#{user.id}/#{Fil.LiveView.filename(&1)}")
    )}
 end
 ```
@@ -593,7 +592,7 @@ def delete_unused_avatars do
     |> Repo.all()
     |> MapSet.new(& &1.path)
 
-  {:ok, avatars} = Fil.ls(MyApp.Storage.uploads(), "avatars", recursive: true)
+  {:ok, avatars} = Fil.ls(disk, "avatars", recursive: true)
 
   avatars
   |> Enum.filter(&(DateTime.before?(&1.stat.mtime, cutoff) and not MapSet.member?(stored, &1.path)))
@@ -635,7 +634,7 @@ upload:
 def create(conn, %{"document" => %Plug.Upload{} = upload}) do
   id = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
 
-  case Fil.write(MyApp.Storage.uploads(), "documents/#{id}.pdf", {:file, upload.path}, if_exists: :error) do
+  case Fil.write(disk, "documents/#{id}.pdf", {:file, upload.path}, if_exists: :error) do
     {:ok, document} ->
       json(conn, %{path: document.path})
 

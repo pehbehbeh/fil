@@ -3,8 +3,10 @@ defmodule Fil do
 
   @doc_body readme
             |> File.read!()
-            |> String.split("<!-- MDOC -->")
-            |> Enum.fetch!(1)
+            |> String.split(["<!-- MDOC -->", "<!-- /MDOC -->"])
+            |> Enum.drop(1)
+            |> Enum.take_every(2)
+            |> Enum.join()
 
   @moduledoc """
   #{Mix.Project.config()[:description]}

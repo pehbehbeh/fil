@@ -14,6 +14,8 @@
 
 `Fil` is a pluggable file storage abstraction for Elixir.
 
+<!-- MDOC -->
+
 ```elixir
 Mix.install([
   {:fil, "~> 0.2"}
@@ -30,6 +32,8 @@ disk
 With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes to S3.
 
 To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html) in [Livebook](https://livebook.dev).
+
+<!-- /MDOC -->
 
 ## Table of Contents
 
@@ -57,27 +61,30 @@ To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html)
 - **Few dependencies.** Req, NimbleOptions, MIME and Telemetry, plus Plug if you serve files. Cloud adapters use Req
   instead of their own SDKs.
 - **Streaming.** Files can be read and written as streams on every disk, so large files don't have to fit in memory.
-- **URLs on every disk.** Public and signed GET and PUT URLs, from S3 itself or from `Fil.Plugin.URL` and `Fil.Plug`.
-- **Phoenix uploads.** `Fil.LiveView` stores LiveView uploads on any disk, also straight from the browser (see the
-  [Phoenix guide](https://fil.hexdocs.pm/phoenix.html)), and [`Fil.Ecto.Ref`](https://fil.hexdocs.pm/Fil.Ecto.Ref.html)
-  stores the refs in Ecto schemas.
+- **URLs on every disk.** Public and signed GET and PUT URLs, from S3 itself or from
+  [`Fil.Plugin.URL`](https://fil.hexdocs.pm/Fil.Plugin.URL.html) and [`Fil.Plug`](https://fil.hexdocs.pm/Fil.Plug.html).
+- **Phoenix uploads.** [`Fil.LiveView`](https://fil.hexdocs.pm/Fil.LiveView.html) stores LiveView uploads on any disk,
+  also straight from the browser (see the [Phoenix guide](https://fil.hexdocs.pm/phoenix.html)), and
+  [`Fil.Ecto.Ref`](https://fil.hexdocs.pm/Fil.Ecto.Ref.html) stores the refs in Ecto schemas.
 - **Safe by default.** Paths can't climb out of the disk root, `if_exists: :error` never replaces a file, and S3
   verifies checksums.
-- **Errors you can act on.** Each error, such as `Fil.NotFoundError` or `Fil.UnavailableError`, says what to do next
-  and is the same on every adapter.
+- **Errors you can act on.** Each error, such as [`Fil.NotFoundError`](https://fil.hexdocs.pm/Fil.NotFoundError.html) or
+  [`Fil.UnavailableError`](https://fil.hexdocs.pm/Fil.UnavailableError.html), says what to do next and is the same on
+  every adapter.
 - **Telemetry.** Every operation emits [Telemetry](https://hexdocs.pm/telemetry) events with its duration, bytes and
-  error, for metrics, logs and traces (see `Fil.Telemetry`).
+  error, for metrics, logs and traces (see [`Fil.Telemetry`](https://fil.hexdocs.pm/Fil.Telemetry.html)).
 
 ## Concepts
 
-`Fil` uses the function names of Elixir's `File` module (`read`, `write`, `stream`, `stat`, `ls`, `cp`, `rename`, `rm`,
-`rm_rf`), but on every adapter they behave like an object store:
+`Fil` uses the function names of Elixir's [`File`](https://hexdocs.pm/elixir/File.html) module (`read`, `write`,
+`stream`, `stat`, `ls`, `cp`, `rename`, `rm`, `rm_rf`), but on every adapter they behave like an object store:
 
 - `write` creates missing parent directories
 - `rm` on a missing file succeeds
 - `ls` on a missing directory returns an empty list
 - paths are always relative to the disk root, and `.` is the root
-- a path that climbs above the root fails with a `Fil.InvalidRequestError`
+- a path that climbs above the root fails with a
+  [`Fil.InvalidRequestError`](https://fil.hexdocs.pm/Fil.InvalidRequestError.html)
 
 The [contract in `Fil.Adapter`](https://fil.hexdocs.pm/Fil.Adapter.html#module-contract) lists every difference from
 `File`. Every function that can fail returns `{:ok, result}` or `{:error, error}`, with an error from the Errors
@@ -100,8 +107,8 @@ Fil.read(disk, "hello.txt")
 
 ### Refs
 
-A `Fil.Ref` is a single value for a file on a disk, built with `Fil.ref/2`. Every function that takes a disk and a
-path as two arguments also takes a ref as one argument in their place:
+A [`Fil.Ref`](https://fil.hexdocs.pm/Fil.Ref.html) is a single value for a file on a disk, built with `Fil.ref/2`. Every
+function that takes a disk and a path as two arguments also takes a ref as one argument in their place:
 
 ```elixir
 hello = Fil.ref(disk, "hello.txt")
@@ -254,8 +261,8 @@ and stores the checksum with the object, so later reads can check it:
 ```
 
 To create a file only if it doesn't exist yet, pass `if_exists: :error`. If the file is already there, nothing is
-overwritten and the write returns a `Fil.AlreadyExistsError`. That makes a simple lock: whoever creates the file
-first runs the job.
+overwritten and the write returns a [`Fil.AlreadyExistsError`](https://fil.hexdocs.pm/Fil.AlreadyExistsError.html). That
+makes a simple lock: whoever creates the file first runs the job.
 
 ```elixir
 case Fil.write(s3, "jobs/today.lock", "started", if_exists: :error) do

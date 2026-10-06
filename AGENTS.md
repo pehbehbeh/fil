@@ -240,3 +240,8 @@ list).
   dependency, so a notebook needs exactly one such tuple. Write them in an editor: Livebook rewrites the file when
   it saves, which undoes the 120-column wrapping.
 - Examples name refs after the file they hold (`report`, `backup`, `reports`), not `ref` or `refs`.
+- Only `guides/installation.md` calls `MyApp.Storage.uploads()`, because that module is one way to set up disks among
+  many. Other examples take a disk in `disk`. Options that are compiled, such as a plug's or an Ecto field's `disk:`,
+  can't hold a disk and keep the capture `&MyApp.Storage.uploads/0`.
+- The README links every module at its first mention, to its page on HexDocs (`File` to Elixir's docs). The parts
+  between `<!-- MDOC -->` and `<!-- /MDOC -->`, and everything after the last `<!-- MDOC -->`, are the `Fil` moduledoc.

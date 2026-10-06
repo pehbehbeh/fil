@@ -5,7 +5,7 @@ defmodule Fil.Telemetry do
 
   Attach a handler to collect metrics, log or trace:
 
-      :telemetry.attach("my-app-fil", [:fil, :op, :stop], &MyApp.Storage.handle_event/4, nil)
+      :telemetry.attach("my-app-fil", [:fil, :op, :stop], &MyApp.Telemetry.handle_event/4, nil)
 
   The events are always emitted, and add well under a microsecond to an operation when no handler is attached.
   Handlers run synchronously in the process that runs the operation, so keep them short. `:telemetry` detaches a
@@ -123,7 +123,7 @@ defmodule Fil.Telemetry do
       summary("fil.op.stop.duration",
         unit: {:native, :millisecond},
         tags: [:op, :disk],
-        tag_values: &%{&1 | disk: MyApp.Storage.name(&1.disk)}
+        tag_values: &%{&1 | disk: disk_name(&1.disk)}
       )
 
   Never use `:path` as a tag: there are as many values as there are files.

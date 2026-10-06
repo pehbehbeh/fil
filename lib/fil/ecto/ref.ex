@@ -25,7 +25,7 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
     The refs that `Fil.LiveView.consume_uploaded_entries/4` returns go into the changeset with
     `Ecto.Changeset.put_change/3`:
 
-        {:ok, [avatar]} = Fil.LiveView.consume_uploaded_entries(socket, :avatar, &MyApp.Storage.uploads/0)
+        {:ok, [avatar]} = Fil.LiveView.consume_uploaded_entries(socket, :avatar, disk)
 
         user
         |> Ecto.Changeset.change()
@@ -116,7 +116,7 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
 
     A value compared with the field is cast and dumped with its type, so it has to be a ref:
 
-        from u in User, where: u.avatar == ^Fil.ref(MyApp.Storage.uploads(), "avatars/1.png")
+        from u in User, where: u.avatar == ^Fil.ref(disk, "avatars/1.png")
 
     `where: u.avatar == ^"avatars/1.png"` raises `Ecto.Query.CastError`. `type(^path, :string)` compares with a string
     on Postgres and SQLite, but MySQL may refuse it with "Illegal mix of collations". `select: u.avatar` loads refs.
