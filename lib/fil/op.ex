@@ -103,12 +103,13 @@ defmodule Fil.Op do
 
   A plugin that sets the result instead of calling `next` answers the call itself, and the adapter never runs. An error
   is an exception: one of `Fil`'s (see [Errors](Fil.Adapter.html#module-errors)) or the plugin's own. `Fil` fills in
-  the `:op`, `:path` and `:disk` of its own errors where the plugin left them `nil`. Content set on a read with
-  `offset:` or `length:` is taken as the whole file, and `Fil` cuts the part from it (see [Ranges](plugins.md#ranges)).
+  the `:op`, `:path` and `:disk` of its own errors where the plugin left them `nil`. On a read with `offset:` or
+  `length:`, content set instead of calling `next` is taken as the whole file, and `Fil` cuts the part from it. Content
+  set after `next` returned the part (to wrap the stream, say) stays the part (see [Ranges](plugins.md#ranges)).
   """
   @spec put_result(t(), {:ok, term()} | {:error, Exception.t()}) :: t()
   def put_result(%__MODULE__{} = op, {tag, _value} = result) when tag in [:ok, :error] do
-    %{whole(op) | result: result}
+    %{op | result: result}
   end
 
   @doc """
@@ -214,7 +215,7 @@ defmodule Fil.Op do
   defp read_whole(%__MODULE__{private: %{@ranged => read}} = op), do: %{whole(op) | result: read.()}
   defp read_whole(op), do: op
 
-  # The result is the whole file from here on: the plugin transformed it or answered with content of its own.
+  # The result is the whole file from here on, because the plugin transformed it.
   defp whole(%__MODULE__{private: private} = op), do: %{op | private: Map.delete(private, @ranged)}
 
   # A transform that fails with one of `Fil`'s errors (a decryption that finds the content tampered with, say) turns
@@ -396,7 +397,8 @@ defmodule Fil.Op do
   defp run_chain(caller, chain), do: chain.(caller).result
 
   # A ranged read returns the range of the content as the caller gets it. The adapter read only the range, unless a
-  # plugin transformed the content or answered with its own, which is the whole file and gets sliced here.
+  # plugin transformed the content or answered without calling `next`, which is the whole file and gets sliced here. A
+  # result the adapter's range came back in keeps its private key, whatever a plugin set after `next`.
   defp slice_result(%__MODULE__{result: result}, nil), do: result
   defp slice_result(%__MODULE__{private: %{@ranged => _read}, result: result}, _range), do: result
 

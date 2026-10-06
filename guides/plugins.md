@@ -259,11 +259,12 @@ On S3, a stream without a size is uploaded in parts. A plugin that knows the new
     compressed or encrypted bytes can't be decompressed or decrypted on its own. `Fil` reads the file again for it and
     cuts the part from what the plugins return. A stream reads nothing until it's enumerated, so only content in
     memory is read twice
-  * a plugin that answers with `Fil.Op.put_result/2`, such as a cache, answers with the whole file too, and `Fil` cuts
-    the part from it
+  * a plugin that answers with `Fil.Op.put_result/2` instead of calling `next`, such as a cache, answers with the whole
+    file too, and `Fil` cuts the part from it. A result set with `Fil.Op.put_result/2` after `next`, such as the stream
+    wrapped for a measurement, is still the part
 
-So offsets always count bytes of the content as the caller gets it. The options are in `op.options` for plugins that
-want to look at them.
+So offsets always count bytes of the content as the caller gets it. The options are in `op.options`: a plugin that
+keeps what a read returned, such as a cache, checks for `:offset` and `:length` there and keeps only whole files.
 
 ## Paths
 

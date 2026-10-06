@@ -330,6 +330,24 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
+  defp get_into(state, key, check, range, relay) do
+    headers = if check, do: [@checksum_mode | range_headers(range)], else: range_headers(range)
+
+    case request(state, :get, key, headers: headers, into: Relay.into(relay, range)) do
+      {:ok, %{status: status, headers: headers}} when status in [200, 206] -> downloaded(status, range, headers)
+      {:ok, response} -> {:error, error(response)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # S3 answers a range with `206`, even one that covers the whole object. A `200` to a range is a server that ignored
+  # the header, and `Fil.Support.Relay` cuts the range from it. A `206` without a range is an error.
+  defp downloaded(206, nil, _headers), do: {:error, %Fil.UnknownError{reason: {:http_status, 206}}}
+  defp downloaded(_status, _range, headers), do: {:ok, headers}
+
+  defp range_headers(nil), do: []
+  defp range_headers(range), do: [range_header(range)]
+
   defp range_header({offset, nil}), do: {"range", "bytes=#{offset}-"}
   defp range_header({offset, length}), do: {"range", "bytes=#{offset}-#{offset + length - 1}"}
 
@@ -420,8 +438,8 @@ defmodule Fil.Adapter.S3 do
     check = if verify?, do: download_check(state, key, response), else: {:ok, nil}
 
     with {:ok, check} <- check,
-         {headers, size} <- download_range(content_length(response), ByteRange.from_options(opts)) do
-      start = fn -> start_download(state, key, check, headers) end
+         {range, size} <- download_range(content_length(response), ByteRange.from_options(opts)) do
+      start = fn -> start_download(state, key, check, range) end
       {:ok, Stream.resource(start, &next_chunk/1, &stop_download/1), size}
     else
       :empty -> {:ok, [], 0}
@@ -429,14 +447,16 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  # The `Range` header of the download and the size of the stream. A range is clamped to the size the HeadObject found,
-  # so the stream knows its size, and an empty range downloads nothing (S3 would answer it with `416`).
-  defp download_range(size, nil), do: {[], size}
+  # The range of the download and the size of the stream. A range is clamped to the size the HeadObject found, so the
+  # stream knows its size, and an empty range downloads nothing (S3 would answer it with `416`). A HeadObject without a
+  # size leaves the range as it is, and the size unknown.
+  defp download_range(size, nil), do: {nil, size}
+  defp download_range(nil, range), do: {range, nil}
 
   defp download_range(size, range) do
     case ByteRange.clamp(range, size) do
       {_start, 0} -> :empty
-      {start, count} -> {[range_header({start, count})], count}
+      {start, count} -> {{start, count}, count}
     end
   end
 
@@ -479,18 +499,7 @@ defmodule Fil.Adapter.S3 do
         Process.set_label({__MODULE__, :stream, key})
         Process.put(:"$callers", callers)
         relay = %Relay{to: reader, ref: ref, monitor: Process.monitor(reader)}
-        headers = if check, do: [@checksum_mode | range], else: range
-        # S3 answers a range with `206`, even one that covers the whole object.
-        ok = if range == [], do: 200, else: 206
-
-        result =
-          case request(state, :get, key, headers: headers, into: Relay.into(relay, ok)) do
-            {:ok, %{status: ^ok, headers: headers}} -> {:ok, headers}
-            {:ok, response} -> {:error, error(response)}
-            {:error, reason} -> {:error, reason}
-          end
-
-        send(reader, {ref, :done, result})
+        send(reader, {ref, :done, get_into(state, key, check, range, relay)})
       end)
 
     %{pid: pid, monitor: monitor, ref: ref, check: check}

@@ -53,7 +53,8 @@ defmodule Fil.Adapter.Memory do
     * `Fil.read/3`: the content from the store, or the part of it that `offset:` and `length:` ask for. Reading a
       directory is a `Fil.NotFoundError`. `verify_checksum: true` compares the content with the checksum the write
       stored.
-    * `Fil.stream/3`: the content from the store, looked up when the stream is read, in chunks of 64 KiB.
+    * `Fil.stream/3`: the content from the store, or the part `offset:` and `length:` ask for, looked up when the stream
+      is read, in chunks of 64 KiB.
       `verify_checksum: true` compares it before the first chunk.
     * `Fil.write/4`: one `:ets.insert/2`, so writes are atomic. A stream is collected first. `if_exists: :error` uses
       `:ets.insert_new/2`, so its check is atomic too. `checksum:` stores the checksum of the content. Writing to

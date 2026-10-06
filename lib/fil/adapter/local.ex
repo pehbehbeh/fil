@@ -41,9 +41,10 @@ defmodule Fil.Adapter.Local do
       `Fil.InvalidRequestError`.
     * `Fil.rm/3`: `File.rm/1`, with a missing file mapped to success. Removing a directory is a
       `Fil.InvalidRequestError`.
-    * `Fil.stat/3`: `File.stat/2`. `:etag` is a weak `"size-mtime"` tag: good enough to notice a change, but it can't
-      prove there was none. `:content_type` is `nil`, because the filesystem doesn't store one (`Fil.Plug` guesses it
-      from the extension). `checksum:` reads the whole file to compute the checksum.
+    * `Fil.stat/3`: `File.stat/2`. `:etag` is a `"size-mtime"` tag: good enough to notice a change, but it misses a
+      write in the same second that keeps the size. `Fil.Plug` sends it as a strong validator anyway, as nginx does.
+      `:content_type` is `nil`, because the filesystem doesn't store one (`Fil.Plug` guesses it from the extension).
+      `checksum:` reads the whole file to compute the checksum.
     * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too, temporary `.fil-`
       files of writes aren't. The disk reserves that prefix, so a file of your own whose name starts with `.fil-` is
       skipped as well. A path that isn't a directory lists nothing, the same as a missing one.

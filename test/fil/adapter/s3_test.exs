@@ -1170,6 +1170,22 @@ defmodule Fil.Adapter.S3Test do
       assert header(get, "range") == "bytes=7-9"
     end
 
+    test "a stream cuts the range from a 200 of a server that ignores the Range header, and stops the download" do
+      stub([response(200, "", [{"content-length", "10"}]), response(200, ["01", "2345", "6789"])])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", offset: 3, length: 2)
+      assert Enum.join(stream) == "34"
+    end
+
+    test "a stream without a size from the HeadObject sends the range as it is" do
+      stub([response(200), response(206, "789")])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", offset: 7)
+      assert Enum.join(stream) == "789"
+      assert [%{method: "HEAD"}, get] = requests()
+      assert header(get, "range") == "bytes=7-"
+    end
+
     test "a stream of an empty range downloads nothing" do
       stub([response(200, "", [{"content-length", "10"}])])
 

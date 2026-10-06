@@ -256,10 +256,7 @@ if Code.ensure_loaded?(Plug) do
         if not_modified?(conn, stat) do
           send_resp(conn, 304, "")
         else
-          conn
-          |> put_resp_content_type(stat.content_type || MIME.from_path(path), nil)
-          |> merge_resp_headers(headers)
-          |> send_download(disk, path, stat)
+          send_range(conn, {disk, path, stat, headers}, range(conn, stat))
         end
       else
         :directory -> send_error(conn, 404, "not found")
@@ -309,40 +306,48 @@ if Code.ensure_loaded?(Plug) do
     end
 
     # Only a `GET` has a range. A `HEAD` gets the headers of the whole file.
-    defp send_download(conn, disk, path, stat) do
-      range =
-        if conn.method == "GET" do
-          Conditional.range(stat, get_req_header(conn, "range"), get_req_header(conn, "if-range"))
-        else
-          :whole
-        end
-
-      send_range(conn, disk, path, stat, range)
+    defp range(%{method: "GET"} = conn, stat) do
+      Conditional.range(stat, get_req_header(conn, "range"), get_req_header(conn, "if-range"))
     end
 
-    defp send_range(conn, _disk, _path, stat, :unsatisfiable) do
+    defp range(_conn, _stat), do: :whole
+
+    # A `416` is a plain text error, without the file's content type and disposition.
+    defp send_range(conn, {_disk, _path, stat, _headers}, :unsatisfiable) do
       conn
       |> put_resp_header("content-range", "bytes */#{stat.size}")
       |> send_error(416, "the range is outside the file")
     end
 
-    defp send_range(conn, disk, path, _stat, :whole) do
+    defp send_range(conn, {disk, path, _stat, _headers} = file, :whole) do
       case Fil.stream(disk, path) do
-        {:ok, content} -> send_content(conn, 200, content)
-        {:error, error} -> send_fil_error(conn, error)
+        {:ok, content} ->
+          conn
+          |> put_file_headers(file)
+          |> send_content(200, content)
+
+        {:error, error} ->
+          send_fil_error(conn, error)
       end
     end
 
-    defp send_range(conn, disk, path, stat, {:range, offset, length}) do
+    defp send_range(conn, {disk, path, stat, _headers} = file, {:range, offset, length}) do
       case Fil.stream(disk, path, offset: offset, length: length) do
         {:ok, content} ->
           conn
+          |> put_file_headers(file)
           |> put_resp_header("content-range", "bytes #{offset}-#{offset + length - 1}/#{stat.size}")
           |> send_content(206, content)
 
         {:error, error} ->
           send_fil_error(conn, error)
       end
+    end
+
+    defp put_file_headers(conn, {_disk, path, stat, headers}) do
+      conn
+      |> put_resp_content_type(stat.content_type || MIME.from_path(path), nil)
+      |> merge_resp_headers(headers)
     end
 
     defp send_content(%{method: "HEAD"} = conn, status, _content), do: send_resp(conn, status, "")

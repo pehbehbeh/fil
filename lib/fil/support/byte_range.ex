@@ -34,17 +34,30 @@ defmodule Fil.Support.ByteRange do
     binary_part(binary, start, count)
   end
 
-  def slice(stream, {offset, length}) do
-    Stream.transform(stream, fn -> {offset, length} end, &slice_chunk/2, fn _state -> :ok end)
+  def slice(stream, range) do
+    # `:done` after the last part halts the stream right there, so it reads no chunk past the range.
+    stream
+    |> Stream.transform(range, fn chunk, state ->
+      case cut(chunk, state) do
+        {[part], {_skip, 0} = state} -> {[part, :done], state}
+        {[], {_skip, 0} = state} -> {[:done], state}
+        {parts, state} -> {parts, state}
+      end
+    end)
+    |> Stream.take_while(&(&1 != :done))
   end
 
-  # The state is the number of bytes still to skip and to take (`nil` for all). The stream halts once it has the range,
-  # so the rest of the file isn't read.
-  defp slice_chunk(_chunk, {_skip, 0} = state), do: {:halt, state}
+  @doc """
+  The part of `chunk` that belongs to the range, for content that arrives in chunks. The state starts as the range and
+  is the number of bytes still to skip and to take (`nil` for all) after the chunk. A take of 0 means the range is
+  complete.
+  """
+  @spec cut(binary(), t() | {non_neg_integer(), non_neg_integer() | nil}) ::
+          {[binary()], {non_neg_integer(), non_neg_integer() | nil}}
+  def cut(_chunk, {_skip, 0} = state), do: {[], state}
+  def cut(chunk, {skip, take}) when skip >= byte_size(chunk), do: {[], {skip - byte_size(chunk), take}}
 
-  defp slice_chunk(chunk, {skip, take}) when skip >= byte_size(chunk), do: {[], {skip - byte_size(chunk), take}}
-
-  defp slice_chunk(chunk, {skip, take}) do
+  def cut(chunk, {skip, take}) do
     rest = binary_part(chunk, skip, byte_size(chunk) - skip)
 
     case take do

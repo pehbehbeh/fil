@@ -431,6 +431,29 @@ defmodule Fil.AdapterCase do
                |> Enum.join() == "cached"
       end
 
+      test "a plugin that sets the result after next keeps the part", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "digits.txt", "0123456789")
+
+        wrapping =
+          Fil.attach(disk, :wrap, fn
+            %Fil.Op{name: :read} = op, next, _opts ->
+              case next.(op) do
+                %Fil.Op{result: {:ok, content}} = op when is_binary(content) -> Fil.Op.put_result(op, {:ok, content})
+                %Fil.Op{result: {:ok, content}} = op -> Fil.Op.put_result(op, {:ok, Stream.map(content, & &1)})
+                op -> op
+              end
+
+            op, next, _opts ->
+              next.(op)
+          end)
+
+        assert Fil.read(wrapping, "digits.txt", offset: 7) == {:ok, "789"}
+
+        assert wrapping
+               |> Fil.stream!("digits.txt", offset: 2, length: 3)
+               |> Enum.join() == "234"
+      end
+
       test "a stream goes straight into a write", %{disk: disk, other_disk: other_disk} do
         content = :crypto.strong_rand_bytes(200_000)
         assert {:ok, _} = Fil.write(disk, "source.bin", content)

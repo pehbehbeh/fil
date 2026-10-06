@@ -83,7 +83,18 @@ defmodule Fil.Support.Conditional do
   defp if_range?(_stat, []), do: true
   defp if_range?(stat, [~s(") <> _rest = tag]), do: stat.etag != nil and String.trim(tag) == etag(stat)
   defp if_range?(%Stat{mtime: nil}, [_date]), do: false
-  defp if_range?(stat, [date]), do: parse_http_date(date) == {:ok, DateTime.truncate(stat.mtime, :second)}
+
+  defp if_range?(stat, [date]) do
+    case parse_http_date(date) do
+      {:ok, date} ->
+        mtime = DateTime.truncate(stat.mtime, :second)
+        DateTime.compare(mtime, date) == :eq
+
+      :error ->
+        false
+    end
+  end
+
   defp if_range?(_stat, _several), do: false
 
   defp parse_range(value) do

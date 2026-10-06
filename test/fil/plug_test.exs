@@ -455,6 +455,26 @@ defmodule Fil.PlugTest do
       end
     end
 
+    test "a 416 has no disposition, and a 304 comes before the range", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+      {:ok, stat} = Fil.stat(disk, "a.txt")
+      {:ok, url} = Fil.signed_url(disk, "a.txt", disposition: :attachment)
+      uri = URI.parse(url)
+
+      outside =
+        :get
+        |> conn(uri.path <> "?" <> uri.query)
+        |> put_req_header("range", "bytes=20-")
+        |> call(disk)
+
+      assert outside.status == 416
+      assert get_resp_header(outside, "content-disposition") == []
+      assert get_resp_header(outside, "content-type") == ["text/plain; charset=utf-8"]
+
+      headers = [{"range", "bytes=2-4"}, {"if-none-match", ~s("#{stat.etag}")}]
+      assert download(disk, "a.txt", headers).status == 304
+    end
+
     test "HEAD ignores the range", %{disk: disk} do
       {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
 
