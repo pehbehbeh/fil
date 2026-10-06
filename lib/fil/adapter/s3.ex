@@ -128,11 +128,16 @@ defmodule Fil.Adapter.S3 do
       `report.txt` is an object writes a second object and leaves the first alone.
     * `Fil.rm/3`: DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error).
       Removing a directory succeeds and removes nothing.
-    * `Fil.stat/3`: HeadObject, then a prefix probe if there's no object, so `Fil.dir?/1` works. `:etag` and
+    * `Fil.stat/3`: HeadObject, then a prefix probe (ListObjectsV2 with `max-keys=2`) if there's no object.
+      `type: :regular` sends only the HeadObject and `type: :directory` (`Fil.dir?/1`) only the probe, so a key that
+      is an object and a prefix at once is both a file and a directory. A directory marker alone doesn't make a
+      directory for the probe, though a listing of its parent lists it. `:etag` and
       `:content_type` are the ones S3 returns, and the ETag of an upload in parts ends in `-` and the number of parts.
       `checksum:` returns the checksum S3 stored if the write used the same algorithm, and `nil` otherwise, as well as
       for the composite checksum of an upload in parts.
-    * `Fil.ls/3`: ListObjectsV2, with `delimiter=/` unless recursive, paginated internally.
+    * `Fil.ls/3`: ListObjectsV2, with `delimiter=/` unless recursive, paginated internally. A recursive listing finds
+      the directories in the keys, so an empty directory shows up only as a directory marker (an empty object whose key
+      ends in `/`, as consoles create for a new folder), which is listed as the directory.
     * `Fil.cp/4`: CopyObject. `if_exists: :error` sends `If-None-Match: *`, which AWS checks on copies since October
       2025 (RustFS 1.0.0 does too). Copying a directory is a `Fil.NotFoundError`. S3 refuses to copy an object onto
       itself, so that's a `Fil.InvalidRequestError`, `reason: "InvalidRequest"`, with or without `if_exists: :error`.
@@ -597,12 +602,20 @@ defmodule Fil.Adapter.S3 do
   @impl Fil.Adapter
   def stat(_state, ".", _opts), do: {:ok, %Stat{type: :directory}}
 
+  # `type:` skips the request for the other type: a directory needs no `HEAD`, and a missing file no listing.
   def stat(state, path, opts) do
-    algorithm = Keyword.get(opts, :checksum)
+    case Keyword.get(opts, :type) do
+      :directory -> directory_stat(state, path)
+      type -> object_stat(state, path, type, Keyword.get(opts, :checksum))
+    end
+  end
+
+  defp object_stat(state, path, type, algorithm) do
     headers = if algorithm, do: [@checksum_mode], else: []
 
     case request(state, :head, key(state, path), headers: headers) do
       {:ok, %{status: 200} = response} -> {:ok, object_stat(response, algorithm)}
+      {:ok, %{status: 404}} when type == :regular -> {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
       {:ok, %{status: 404}} -> directory_stat(state, path)
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
@@ -614,10 +627,33 @@ defmodule Fil.Adapter.S3 do
     delimiter = if !Keyword.get(opts, :recursive, false), do: "/"
 
     with {:ok, contents, prefixes} <- list_all(state, list_prefix(state, prefix), delimiter) do
-      listed = Enum.map(contents, &object_listing(state, &1)) ++ Enum.map(prefixes, &prefix_listing(state, &1))
+      listed =
+        contents
+        |> Enum.map(&object_listing(state, &1))
+        |> Kernel.++(Enum.map(prefixes, &prefix_listing(state, &1)))
+        |> subtree(prefix, delimiter)
 
       {:ok, Enum.sort_by(listed, &elem(&1, 0))}
     end
+  end
+
+  # Without a delimiter S3 returns only objects, so a subtree's directories are the parents of its keys. A key ending in
+  # `/` is a directory marker (an empty "folder" made in a console), listed as the directory it stands for.
+  defp subtree(listed, _prefix, "/"), do: listed
+
+  defp subtree(listed, prefix, nil) do
+    {markers, files} = Enum.split_with(listed, fn {path, _stat} -> String.ends_with?(path, "/") end)
+    marker_paths = Enum.map(markers, fn {path, _stat} -> String.trim_trailing(path, "/") end)
+
+    file_paths = Enum.map(files, &elem(&1, 0))
+    parents = Fil.Support.Path.parents(file_paths ++ marker_paths, prefix)
+
+    directories =
+      (parents ++ marker_paths)
+      |> Enum.uniq()
+      |> Enum.map(&{&1, %Stat{type: :directory}})
+
+    files ++ directories
   end
 
   @impl Fil.Adapter
@@ -1291,21 +1327,22 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  defp list_page(state, prefix, delimiter, token) do
-    case request(state, :get, "", params: list_params(prefix, delimiter, token)) do
+  defp list_page(state, prefix, delimiter, token, max_keys \\ nil) do
+    case request(state, :get, "", params: list_params(prefix, delimiter, token, max_keys)) do
       {:ok, %{status: 200, body: body}} -> parse_xml(body)
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp list_params(prefix, delimiter, token) do
+  defp list_params(prefix, delimiter, token, max_keys) do
     Enum.reject(
       [
         {"list-type", "2"},
         {"prefix", prefix},
         {"delimiter", delimiter},
-        {"continuation-token", token}
+        {"continuation-token", token},
+        {"max-keys", max_keys && Integer.to_string(max_keys)}
       ],
       fn {_name, value} -> is_nil(value) end
     )
@@ -1365,9 +1402,18 @@ defmodule Fil.Adapter.S3 do
     }
   end
 
+  # One page of two keys is enough: the first key under the prefix may be the directory's own marker, which doesn't
+  # count.
   defp directory_stat(state, path) do
-    with {:ok, contents, prefixes} <- list_all(state, list_prefix(state, path), "/") do
-      if contents == [] and prefixes == [] do
+    prefix = list_prefix(state, path)
+
+    with {:ok, result} <- list_page(state, prefix, "/", nil, 2) do
+      contents =
+        result
+        |> XML.children("Contents")
+        |> Enum.reject(&marker?(&1, prefix))
+
+      if contents == [] and XML.children(result, "CommonPrefixes") == [] do
         {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
       else
         {:ok, %Stat{type: :directory}}

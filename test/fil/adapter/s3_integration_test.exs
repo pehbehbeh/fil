@@ -81,6 +81,25 @@ defmodule Fil.Adapter.S3IntegrationTest do
     end
   end
 
+  describe "directory markers" do
+    test "are directories in recursive listings, but not on their own for dir?", %{disk: disk} = context do
+      assert {:ok, _} = Fil.write(disk, "photos/a.jpg", "a")
+      put_marker(context, "photos/")
+      put_marker(context, "photos/empty/")
+      put_marker(context, "lonely/")
+
+      assert {:ok, refs} = Fil.ls(disk, ".", recursive: true, type: :directory)
+      assert Enum.map(refs, & &1.path) == ["lonely", "photos", "photos/empty"]
+
+      assert {:ok, refs} = Fil.ls(disk, ".", recursive: true)
+      assert Enum.map(refs, & &1.path) == ["photos/a.jpg"]
+
+      assert Fil.dir?(disk, "photos")
+      refute Fil.dir?(disk, "photos/empty")
+      refute Fil.regular?(disk, "photos")
+    end
+  end
+
   describe "signed_url/2" do
     test "signs URLs for the public endpoint", %{disk: disk, bucket: bucket} = context do
       Fil.write!(disk, "a b/ü.txt", "public")
@@ -242,6 +261,14 @@ defmodule Fil.Adapter.S3IntegrationTest do
       true ->
         false
     end
+  end
+
+  # `Fil` normalizes the trailing `/` away, so the marker objects consoles create are written with Req.
+  defp put_marker(%{bucket: bucket} = context, key) do
+    url = Enum.join([Emulator.url(:s3), bucket, root(context), key], "/")
+    aws_sigv4 = Keyword.put(Emulator.s3_credentials(), :service, :s3)
+
+    assert {:ok, %{status: 200}} = Req.request(method: :put, url: url, body: "", aws_sigv4: aws_sigv4, retry: false)
   end
 
   defp get(url), do: Req.request(method: :get, url: url, retry: false, raw: true)

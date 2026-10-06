@@ -251,7 +251,7 @@ defmodule Fil.Adapter.Memory do
     entries = entries_under(store!(), state, prefix)
 
     if Keyword.get(opts, :recursive, false) do
-      {:ok, Enum.map(entries, &{relative(state, elem(&1, 0)), file_stat(&1, nil)})}
+      {:ok, subtree(entries, state, prefix)}
     else
       {:ok, one_level(entries, state, prefix)}
     end
@@ -413,6 +413,19 @@ defmodule Fil.Adapter.Memory do
     end)
     |> Enum.uniq()
     |> Enum.sort_by(&elem(&1, 0))
+  end
+
+  # The store holds files only, so a subtree's directories are the parents of its files.
+  defp subtree(entries, state, prefix) do
+    files = Enum.map(entries, &{relative(state, elem(&1, 0)), file_stat(&1, nil)})
+
+    directories =
+      files
+      |> Enum.map(&elem(&1, 0))
+      |> Fil.Support.Path.parents(prefix)
+      |> Enum.map(&{&1, %Stat{type: :directory}})
+
+    Enum.sort_by(files ++ directories, &elem(&1, 0))
   end
 
   defp directory_stat(store, state, path) do

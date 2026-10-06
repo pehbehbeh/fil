@@ -782,4 +782,14 @@ defmodule Fil.PluginsTest do
       0 -> :ok
     end
   end
+
+  test "a type: on a stat is checked against a plugin's answer", %{disk: disk} do
+    assert {:ok, _} = Fil.write(disk, "top.txt", "x")
+    disk = Fil.attach(disk, :directories, fn op, _next, _opts -> %{op | result: {:ok, %Fil.Stat{type: :directory}}} end)
+
+    refute Fil.regular?(disk, "top.txt")
+
+    assert {:error, %Fil.NotFoundError{op: :stat, path: "top.txt", reason: :eisdir}} =
+             Fil.stat(disk, "/top.txt", type: :regular)
+  end
 end

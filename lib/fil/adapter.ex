@@ -30,7 +30,7 @@ defmodule Fil.Adapter do
   | `c:cp/4` or `c:rename/4` into a missing directory | `{:error, :enoent}` | creates the missing parents |
   | `c:rm/3` on a missing file | `{:error, :enoent}` | `:ok` |
   | `c:ls/3` on a missing directory | `{:error, :enoent}` | `{:ok, []}` |
-  | `c:ls/3` results | names, one level deep | `{path, stat}` pairs, one level deep; only files with `recursive: true` |
+  | `c:ls/3` results | names, one level deep | `{path, stat}` pairs, directories included, also in recursive listings |
   | `c:rm_rf/3` results | `{:ok, removed_paths}`, directories included | `{:ok, count}` of removed files |
   | `c:rm_rf/3` on `"reports"` | the directory `reports` | `reports` and all of `reports/`, not `reports.txt` |
   | paths | relative to the working directory, or absolute | relative to the disk root, never above it |
@@ -150,7 +150,13 @@ defmodule Fil.Adapter do
   @doc "Deletes a file. Idempotent: a missing file is still `:ok`."
   @callback rm(state(), path(), opts()) :: :ok | error()
 
-  @doc "Returns metadata for a file or directory."
+  @doc """
+  Returns metadata for a file or directory.
+
+  With `type: :regular` or `type: :directory`, the adapter may skip looking for the other type and return
+  `Fil.NotFoundError` instead, so a check for a file costs no directory probe. `Fil` checks the type of the result
+  either way, so adapters can ignore the option.
+  """
   @callback stat(state(), path(), opts()) :: {:ok, Stat.t()} | error()
 
   @doc """
@@ -158,6 +164,12 @@ defmodule Fil.Adapter do
 
   Returns `{path, stat}` pairs. Paths are relative to the disk root, and each stat holds what the listing returned.
   `Fil` turns the pairs into `Fil.Ref`s; adapters don't build those themselves.
+
+  A recursive listing includes the directories of the subtree, at least every directory that holds a file, so storage
+  without directories derives them from its keys. `Fil` filters by `type:` and leaves out the directories of a
+  recursive listing unless the caller asked for them, so adapters can ignore that option. The pattern of
+  `Fil.wildcard/3` doesn't reach the adapter either: `Fil` matches it with one listing per directory level, and a
+  recursive one from a `**` on.
   """
   @callback ls(state(), path(), opts()) :: {:ok, [{path(), Stat.t()}]} | error()
 

@@ -944,6 +944,39 @@ defmodule Fil.AdapterCase do
         refute Fil.dir?(disk, "tree/leaf.txt")
         assert Fil.dir?(disk, "tree")
         refute Fil.dir?(disk, "nope")
+        assert Fil.dir?(disk, ".")
+      end
+
+      test "exists? with a type, regular? and dir?", %{disk: disk} do
+        assert {:ok, leaf} = Fil.write(disk, "tree/leaf.txt", "leaf")
+        tree = Fil.ref(disk, "tree")
+
+        assert Fil.exists?(disk, "tree/leaf.txt", type: :regular)
+        refute Fil.exists?(disk, "tree/leaf.txt", type: :directory)
+        assert Fil.exists?(tree, type: :directory)
+        refute Fil.exists?(tree, type: :regular)
+        refute Fil.exists?(disk, "nope", type: :regular)
+        refute Fil.exists?(disk, "nope", type: :directory)
+
+        assert Fil.regular?(leaf)
+        assert Fil.regular?(disk, "tree/leaf.txt")
+        refute Fil.regular?(tree)
+        refute Fil.regular?(disk, "nope")
+        refute Fil.regular?(disk, ".")
+        assert Fil.dir?(tree)
+        refute Fil.dir?(leaf)
+      end
+
+      test "stat with a type is not found for the other type", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "tree/leaf.txt", "leaf")
+
+        assert {:ok, %Fil.Stat{type: :regular, size: 4}} = Fil.stat(disk, "tree/leaf.txt", type: :regular)
+        assert {:ok, %Fil.Stat{type: :directory}} = Fil.stat(disk, "tree", type: :directory)
+
+        assert {:error, %Fil.NotFoundError{op: :stat, path: "tree"}} = Fil.stat(disk, "tree", type: :regular)
+
+        assert {:error, %Fil.NotFoundError{op: :stat, path: "tree/leaf.txt"}} =
+                 Fil.stat(disk, "tree/leaf.txt", type: :directory)
       end
 
       test "stat describes a file", %{disk: disk} do
@@ -1009,6 +1042,69 @@ defmodule Fil.AdapterCase do
 
         assert {:ok, refs} = Fil.ls(disk, "sub", recursive: true)
         assert Enum.map(refs, & &1.path) == ["sub/child.txt", "sub/deeper/grandchild.txt"]
+      end
+
+      test "lists only files or only directories", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "root.txt", "root")
+        assert {:ok, _} = Fil.write(disk, "sub/child.txt", "child")
+
+        assert {:ok, [file]} = Fil.ls(disk, ".", type: :regular)
+        assert file.path == "root.txt"
+
+        assert {:ok, [directory]} = Fil.ls(disk, ".", type: :directory)
+        assert directory.path == "sub"
+        assert directory.stat.type == :directory
+      end
+
+      test "lists the directories of a subtree", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "root.txt", "root")
+        assert {:ok, _} = Fil.write(disk, "sub/child.txt", "child")
+        assert {:ok, _} = Fil.write(disk, "sub/deeper/grandchild.txt", "grandchild")
+        assert {:ok, _} = Fil.write(disk, "other/nested/file.txt", "file")
+
+        assert {:ok, refs} = Fil.ls(disk, ".", recursive: true, type: :directory)
+        assert Enum.map(refs, & &1.path) == ["other", "other/nested", "sub", "sub/deeper"]
+        assert Enum.all?(refs, &(&1.stat.type == :directory))
+
+        assert {:ok, refs} = Fil.ls(disk, "sub", recursive: true, type: :directory)
+        assert Enum.map(refs, & &1.path) == ["sub/deeper"]
+
+        assert {:ok, refs} = Fil.ls(disk, "sub", recursive: true, type: :regular)
+        assert Enum.map(refs, & &1.path) == ["sub/child.txt", "sub/deeper/grandchild.txt"]
+      end
+
+      test "lists the paths that match a pattern", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "media/a/withText/x.mp4", "x")
+        assert {:ok, _} = Fil.write(disk, "media/a/other/y.mp4", "y")
+        assert {:ok, _} = Fil.write(disk, "media/b/withoutText/z.mp4", "z")
+        assert {:ok, _} = Fil.write(disk, "media/b.txt", "b")
+
+        assert {:ok, refs} = Fil.wildcard(disk, "media/*/{withText,withoutText}")
+        assert Enum.map(refs, & &1.path) == ["media/a/withText", "media/b/withoutText"]
+        assert Enum.all?(refs, &(&1.stat.type == :directory))
+
+        assert {:ok, refs} = Fil.wildcard(disk, "media/**/*.mp4")
+
+        assert Enum.map(refs, & &1.path) == [
+                 "media/a/other/y.mp4",
+                 "media/a/withText/x.mp4",
+                 "media/b/withoutText/z.mp4"
+               ]
+
+        assert Enum.all?(refs, &(&1.stat.type == :regular))
+
+        assert {:ok, refs} = Fil.wildcard(disk, "media/b*", type: :regular)
+        assert Enum.map(refs, & &1.path) == ["media/b.txt"]
+
+        assert {:ok, refs} = Fil.wildcard(disk, "media/**", type: :directory)
+
+        assert Enum.map(refs, & &1.path) == [
+                 "media/a",
+                 "media/a/other",
+                 "media/a/withText",
+                 "media/b",
+                 "media/b/withoutText"
+               ]
       end
 
       test "listing fills in a stat snapshot", %{disk: disk} do
