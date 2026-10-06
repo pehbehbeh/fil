@@ -241,9 +241,6 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     # storage can differ a little, and local disks and S3 keep the time in whole seconds.
     @clock_skew 30
 
-    # How much of the temporary file is read at a time.
-    @chunk_size 65_536
-
     # The `accept:` filters that stand for a kind of file, not one type.
     @wildcards ~w(audio/* image/* video/*)
 
@@ -774,8 +771,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
       # `Fil.write/4` finds the size of the temporary file, so S3 sends it in one request.
       with :ok <- check_extension(ref, opts[:extensions], :write) do
-        content = File.stream!(tmp_path, @chunk_size)
-        Fil.write(ref, content, if_exists: opts[:if_exists], content_type: MIME.from_path(ref.path))
+        Fil.write(ref, {:file, tmp_path}, if_exists: opts[:if_exists], content_type: MIME.from_path(ref.path))
       end
     end
 

@@ -6,8 +6,6 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     # the status line below it, and a listener that writes each upload to the disk. Livebook keeps an upload as a file
     # in the runtime, so the write streams from that file, and nothing goes through the widget's websocket.
 
-    @chunk_size 65_536
-
     @doc """
     Builds the field. `dir` is a path, or a function that returns the path at the time of the upload (the browser's
     current directory). `caller` is the process that built the field, whose memory store the writes use.
@@ -60,9 +58,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp write(disk, dir, name, source, if_exists) do
       with :ok <- check_name(name),
            {:ok, %File.Stat{size: size}} <- source_stat(source) do
-        content = File.stream!(source, @chunk_size)
-
-        case Fil.write(disk, Path.join(dir, name), content, size: size, if_exists: if_exists) do
+        case Fil.write(disk, Path.join(dir, name), {:file, source}, if_exists: if_exists) do
           {:ok, ref} -> {:ok, ref, size}
           {:error, error} -> {:error, error}
         end
