@@ -8,7 +8,8 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/pehbehbeh/fil/ci.yml?branch=main&label=CI)](https://github.com/pehbehbeh/fil/actions/workflows/ci.yml?query=branch%3Amain)
 [![License](https://img.shields.io/hexpm/l/fil.svg)](https://github.com/pehbehbeh/fil/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/fil.svg)](https://hex.pm/packages/fil)
-[![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://fil.hexdocs.pm)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-6e4a7e.svg)](https://fil.hexdocs.pm)
+
 [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Ffil.hexdocs.pm%2Ftour.livemd)
 
 `Fil` is a pluggable file storage abstraction for Elixir.
