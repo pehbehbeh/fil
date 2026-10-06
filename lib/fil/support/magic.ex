@@ -16,7 +16,6 @@ defmodule Fil.Support.Magic do
       "application/epub+zip",
       "application/java-archive",
       "application/vnd.android.package-archive",
-      "application/x-zip-compressed",
       {:prefix, "application/vnd.openxmlformats-officedocument."},
       {:prefix, "application/vnd.oasis.opendocument."},
       {:prefix, "application/vnd.ms-excel.sheet."},
@@ -30,8 +29,9 @@ defmodule Fil.Support.Magic do
       "application/vnd.ms-outlook",
       "application/x-msi"
     ],
-    "application/xml" => ["text/xml", {:suffix, "+xml"}],
+    "application/xml" => [{:suffix, "+xml"}],
     "video/mp4" => ["audio/mp4", "audio/x-m4a", "audio/m4a", "video/x-m4v"],
+    "audio/mp4" => ["video/mp4", "audio/x-m4a", "audio/m4a"],
     "video/webm" => ["audio/webm"],
     "video/x-matroska" => ["audio/x-matroska"],
     "audio/ogg" => ["application/ogg", "video/ogg", "audio/opus"]
@@ -40,6 +40,8 @@ defmodule Fil.Support.Magic do
   # Other names for the same type.
   @aliases %{
     "image/jpg" => "image/jpeg",
+    "text/xml" => "application/xml",
+    "application/x-zip-compressed" => "application/zip",
     "image/pjpeg" => "image/jpeg",
     "image/x-icon" => "image/vnd.microsoft.icon",
     "image/x-ms-bmp" => "image/bmp",
@@ -79,6 +81,7 @@ defmodule Fil.Support.Magic do
     "application/x-7z-compressed",
     "application/vnd.rar",
     "video/mp4",
+    "audio/mp4",
     "video/quicktime",
     "video/webm",
     "video/x-matroska",
@@ -171,22 +174,38 @@ defmodule Fil.Support.Magic do
   defp binary(<<"RIFF", _size::binary-size(4), "AVI ", _rest::binary>>), do: "video/x-msvideo"
   defp binary(<<"OggS", 0, _rest::binary>>), do: "audio/ogg"
   defp binary(<<"fLaC", _rest::binary>>), do: "audio/flac"
-  defp binary(<<"ID3", _rest::binary>>), do: "audio/mpeg"
-  # An MPEG audio frame: 11 sync bits, then the version and the layer. Layer `00` is AAC in an ADTS frame.
-  defp binary(<<0xFF, 0b111::3, _version::2, 0::2, _rest::bitstring>>), do: "audio/aac"
-  defp binary(<<0xFF, 0b111::3, _version::2, _layer::2, _rest::bitstring>>), do: "audio/mpeg"
+  defp binary(<<"ID3", major, minor, _rest::binary>>) when major in 2..4 and minor < 0xFF, do: "audio/mpeg"
+  # An MPEG audio frame: 11 sync bits, the version (`01` is reserved), the layer (`00` is AAC in an ADTS frame, `11` is
+  # Layer I, which nobody uses and which the UTF-16 byte order marks `FF FE` and `FF FF` look like), and in the next
+  # byte a bitrate (not `1111`) and a sample rate (not `11`).
+  defp binary(<<0xFF, 0b111::3, version::2, 0b00::2, _protection::1, _rest::bitstring>>) when version != 0b01,
+    do: "audio/aac"
+
+  defp binary(<<0xFF, 0b111::3, version::2, layer::2, _protection::1, bitrate::4, rate::2, _rest::bitstring>>)
+       when version != 0b01 and layer in [0b01, 0b10] and bitrate != 0b1111 and rate != 0b11, do: "audio/mpeg"
 
   # Executables.
-  defp binary(<<"MZ", _rest::binary>>), do: "application/vnd.microsoft.portable-executable"
+  defp binary(<<"MZ", _header::binary-size(58), offset::little-32, _rest::binary>> = prefix),
+    do: portable(prefix, offset)
+
   defp binary(<<0x7F, "ELF", _rest::binary>>), do: "application/x-executable"
   defp binary(<<magic::binary-size(4), _rest::binary>>) when magic in @mach_o, do: "application/x-mach-binary"
 
   defp binary(<<0, "asm", _rest::binary>>), do: "application/wasm"
   defp binary(_prefix), do: nil
 
+  # A Windows executable has `PE\0\0` where its DOS header points, so text that starts with `MZ` isn't one.
+  defp portable(prefix, offset) do
+    case prefix do
+      <<_dos::binary-size(^offset), "PE", 0, 0, _rest::binary>> -> "application/vnd.microsoft.portable-executable"
+      _other -> nil
+    end
+  end
+
   defp ftyp(brand) when brand in ["avif", "avis"], do: "image/avif"
   defp ftyp(brand) when brand in ["heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1"], do: "image/heic"
   defp ftyp("qt  "), do: "video/quicktime"
+  defp ftyp(brand) when brand in ["M4A ", "M4B ", "M4P "], do: "audio/mp4"
   defp ftyp(_brand), do: "video/mp4"
 
   defp matroska(rest) do
@@ -194,7 +213,8 @@ defmodule Fil.Support.Magic do
   end
 
   # Text formats, after leading whitespace and a UTF-8 byte order mark. HTML is recognised by the tags of the WHATWG
-  # MIME Sniffing standard, SVG by an `<svg` tag anywhere in the window (also after an XML declaration or a comment).
+  # MIME Sniffing standard, SVG and XHTML by an `<svg` or `<html` tag anywhere in the window after an XML declaration
+  # or a comment, because browsers render them and run their scripts whatever XML type they're served as.
   defp text(prefix) do
     start =
       prefix
@@ -205,6 +225,7 @@ defmodule Fil.Support.Magic do
 
     cond do
       svg?(lower) -> "image/svg+xml"
+      xhtml?(lower) -> "text/html"
       html?(lower) -> "text/html"
       String.starts_with?(lower, "<?xml") -> "application/xml"
       String.starts_with?(start, "%!PS-Adobe-") -> "application/postscript"
@@ -218,6 +239,10 @@ defmodule Fil.Support.Magic do
 
   defp svg?(lower) do
     String.starts_with?(lower, ["<?xml", "<!--", "<!doctype svg", "<svg"]) and lower =~ ~r/<svg[\s>\/]/
+  end
+
+  defp xhtml?(lower) do
+    String.starts_with?(lower, ["<?xml", "<!--", "<!doctype html"]) and lower =~ ~r/<html[\s>\/]/
   end
 
   # Each is followed by a space or `>`.

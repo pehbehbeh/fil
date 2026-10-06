@@ -25,7 +25,9 @@ defmodule Fil.Support.MagicTest do
           {"ID3" <> <<4, 0>>, "audio/mpeg"},
           {<<0xFF, 0xFB, 0x90, 0x64>>, "audio/mpeg"},
           {<<0xFF, 0xF1, 0x50, 0x80>>, "audio/aac"},
-          {<<"MZ", 0x90, 0>>, "application/vnd.microsoft.portable-executable"},
+          {"MZ" <> :binary.copy(<<0>>, 58) <> <<64::little-32>> <> "PE\0\0",
+           "application/vnd.microsoft.portable-executable"},
+          {<<0, 0, 0, 0x1C, "ftypM4A ", 0, 0>>, "audio/mp4"},
           {<<0xCF, 0xFA, 0xED, 0xFE, 7, 0>>, "application/x-mach-binary"},
           {<<0, "asm", 1, 0, 0, 0>>, "application/wasm"}
         ] do
@@ -41,6 +43,7 @@ defmodule Fil.Support.MagicTest do
           {"<!-- comment --><div>", "text/html"},
           {"<!-- generator --><svg viewBox='0 0 1 1'></svg>", "image/svg+xml"},
           {"<svg>", "image/svg+xml"},
+          {~s(<?xml version="1.0"?>\n<html xmlns="http://www.w3.org/1999/xhtml"><script/></html>), "text/html"},
           {"%!PS-Adobe-3.0", "application/postscript"},
           {"{\\rtf1\\ansi", "application/rtf"}
         ] do
@@ -49,7 +52,19 @@ defmodule Fil.Support.MagicTest do
   end
 
   test "detects nothing in text without a signature" do
-    for prefix <- ["BMW,320d,2019\n", "<pre", "<paragraph>", ~s({"a": 1}), "hello", "<svgfoo>", "MM,1,2"] do
+    for prefix <- [
+          "BMW,320d,2019\n",
+          "MZ,1,2\n" <> :binary.copy("x", 100),
+          "ID3,artist\n",
+          <<0xFF, 0xFE, "i", 0, "d", 0>>,
+          <<0xFF, 0xFF, 0, 0>>,
+          "<pre",
+          "<paragraph>",
+          ~s({"a": 1}),
+          "hello",
+          "<svgfoo>",
+          "MM,1,2"
+        ] do
       assert Magic.detect(prefix) == nil, "expected #{inspect(prefix)} to have no type"
     end
   end
@@ -64,6 +79,10 @@ defmodule Fil.Support.MagicTest do
     assert Magic.matches?("application/msword", "application/x-cfb")
     assert Magic.matches?("application/rss+xml", "application/xml")
     assert Magic.matches?("audio/x-wav", "audio/wav")
+    assert Magic.matches?("text/xml", "application/xml")
+    assert Magic.matches?("application/x-zip-compressed", "application/zip")
+    assert Magic.matches?("video/mp4", "audio/mp4")
+    assert Magic.normalize("text/xml") == "application/xml"
     refute Magic.matches?("application/zip", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     refute Magic.matches?("text/plain", "text/html")
   end
