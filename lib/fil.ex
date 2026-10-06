@@ -586,6 +586,8 @@ defmodule Fil do
   with `type: :directory`: at least every directory that holds a file, because object stores have directories only
   implicitly. Whether empty directories show up too is on the adapter's page.
 
+  To list by a pattern, at any depth, use `wildcard/2`.
+
   ## Options
 
   #{NimbleOptions.docs(@ls_schema)}
@@ -649,7 +651,8 @@ defmodule Fil do
 
   The syntax is `Path.wildcard/2`'s: `*` matches any characters within a name, `?` a single one, `[a-z]` one of a
   class, `{pdf,csv}` one of the alternatives, and a `**` segment any number of directories. `\\` makes the next
-  character literal. The pattern is relative to the disk root, and a leading `/` is dropped, as for paths. Names that
+  character literal. The pattern is relative to the disk root, so a leading `/` changes nothing, and neither do `//` or
+  a trailing `/`. Names that
   start with a dot are matched only by the literal start of a pattern (`.cache/*`), unless you pass `match_dot: true`.
   The result holds files and directories, sorted by path, unless `type:` picks one:
 
@@ -690,10 +693,7 @@ defmodule Fil do
   def wildcard(%Disk{} = disk, pattern, opts) when is_binary(pattern) and is_list(opts) do
     opts = validate!(opts, @wildcard_schema)
 
-    compiled =
-      pattern
-      |> String.trim_leading("/")
-      |> Fil.Support.Wildcard.compile!()
+    compiled = Fil.Support.Wildcard.compile!(pattern)
 
     # Each listing is an operation of its own, which plugins and telemetry see like any other listing.
     with {:ok, matched} <- Fil.Support.Wildcard.walk(disk, compiled, opts[:match_dot], &run(&1, :ls, recursive: &2)) do

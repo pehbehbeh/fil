@@ -61,6 +61,8 @@ defmodule Fil.Support.WildcardTest do
     assert wildcard(disk, "media/**/withText/*") == ~w(media/a/withText/x.mp4 media/b/withText/q.mp4)
     assert wildcard(disk, "**/c.txt") == ["media/c.txt"]
     assert wildcard(disk, "media/b/**") == ~w(media/b/withText media/b/withText/q.mp4)
+    assert wildcard(disk, "media/**/withText/**") == ~w(media/a/withText/x.mp4 media/b/withText/q.mp4)
+    assert wildcard(disk, "**/{a,b}/**") == wildcard(disk, "media/{a,b}/**")
   end
 
   # The same results as `Path.wildcard/2` on the same tree.
@@ -94,6 +96,8 @@ defmodule Fil.Support.WildcardTest do
   test "the pattern is relative to the disk root", %{disk: disk} do
     assert wildcard(disk, "/media/c.txt") == ["media/c.txt"]
     assert wildcard(disk, "//media/?.txt") == ["media/c.txt"]
+    assert wildcard(disk, "media/") == ["media"]
+    assert wildcard(disk, "./media//a/./withText/") == ["media/a/withText"]
     assert wildcard(disk, "nothing/here/*") == []
   end
 
@@ -139,7 +143,7 @@ defmodule Fil.Support.WildcardTest do
   end
 
   test "an invalid pattern raises", %{disk: disk} do
-    for pattern <- ["", "/", "a//b", "./a", "a/..", "../*", "{a,b", "[ab", "a[]b", "{a/b}"] do
+    for pattern <- ["", "/", "./", "a/..", "../*", "{a,b", "[ab", "a[]b", "{a/b}"] do
       assert_raise ArgumentError, ~r/invalid pattern/, fn -> Fil.wildcard(disk, pattern) end
     end
   end

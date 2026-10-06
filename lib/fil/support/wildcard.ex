@@ -19,19 +19,30 @@ defmodule Fil.Support.Wildcard do
       [:literal, :match]
       iex> Fil.Support.Wildcard.compile!("**/q?.{pdf,csv}") |> hd()
       :globstar
-      iex> Fil.Support.Wildcard.compile!("reports//q3.pdf")
-      ** (ArgumentError) invalid pattern "reports//q3.pdf": empty, "." and ".." segments aren't allowed
+      iex> Fil.Support.Wildcard.compile!("/reports//./q3.pdf/")
+      [literal: "reports", literal: "q3.pdf"]
+      iex> Fil.Support.Wildcard.compile!("reports/../q3.pdf")
+      ** (ArgumentError) invalid pattern "reports/../q3.pdf": ".." segments aren't allowed
 
   """
   @spec compile!(String.t()) :: t()
+  # Empty and `.` segments are left out, as `Path.wildcard/2` does, so a leading, trailing or repeated `/` changes
+  # nothing.
   def compile!(pattern) do
     pattern
     |> String.split("/")
-    |> Enum.map(&segment!(&1, pattern))
+    |> Enum.reject(&(&1 in ["", "."]))
+    |> segments!(pattern)
   end
 
-  defp segment!(segment, pattern) when segment in ["", ".", ".."] do
-    raise ArgumentError, ~s(invalid pattern #{inspect(pattern)}: empty, "." and ".." segments aren't allowed)
+  defp segments!([], pattern) do
+    raise ArgumentError, "invalid pattern #{inspect(pattern)}: it names no path below the disk root"
+  end
+
+  defp segments!(segments, pattern), do: Enum.map(segments, &segment!(&1, pattern))
+
+  defp segment!("..", pattern) do
+    raise ArgumentError, ~s(invalid pattern #{inspect(pattern)}: ".." segments aren't allowed)
   end
 
   defp segment!("**", _pattern), do: :globstar
@@ -164,8 +175,10 @@ defmodule Fil.Support.Wildcard do
   defp subtree_match?(pattern, names, true), do: not Enum.any?(names, &dot?/1) and matches?(pattern, names)
   defp subtree_match?(pattern, names, false), do: matches?(pattern, names)
 
-  # A `**` matches any number of names, none included.
+  # A `**` matches any number of names, none included, except at the end: there it stands for the subtree of what's in
+  # front of it, which has to be a directory with something in it, as in `Path.wildcard/2`.
   defp matches?([], []), do: true
+  defp matches?([:globstar], names), do: names != []
   defp matches?([:globstar | rest] = pattern, names), do: matches?(rest, names) or matches_deeper?(pattern, names)
   defp matches?([segment | rest], [name | names]), do: name?(segment, name) and matches?(rest, names)
   defp matches?(_pattern, _names), do: false
