@@ -826,6 +826,9 @@ defmodule Fil do
 
   ## Options
 
+  A disk can set defaults for `:expires_in`, `:disposition` and `:if_exists` with the `:signed_url` option of
+  `Fil.disk/1`. The options of a call replace them.
+
   #{NimbleOptions.docs(@signed_url_schema)}
 
   ## Examples
@@ -885,7 +888,12 @@ defmodule Fil do
   def signed_url(%Disk{} = disk, path) when is_binary(path), do: signed_url(Ref.new(disk, path), [])
 
   def signed_url(ref, opts) when is_list(opts) do
-    opts = validate!(opts, @signed_url_schema)
+    opts =
+      ref
+      |> signed_url_defaults(opts[:method])
+      |> Keyword.merge(opts)
+      |> validate!(@signed_url_schema)
+
     check_disposition!(opts)
     check_upload_options!(opts)
     check_query!(opts[:query])
@@ -1189,6 +1197,11 @@ defmodule Fil do
 
     :ok
   end
+
+  # The disk's `:signed_url` defaults that fit the method. A call's own options aren't filtered, so they still raise.
+  defp signed_url_defaults(%Ref{disk: %Disk{signed_url: defaults}}, :put), do: Keyword.delete(defaults, :disposition)
+  defp signed_url_defaults(%Ref{disk: %Disk{signed_url: defaults}}, _get), do: Keyword.delete(defaults, :if_exists)
+  defp signed_url_defaults(_not_a_ref, _method), do: []
 
   defp check_disposition!(opts) do
     case {opts[:disposition], opts[:method]} do

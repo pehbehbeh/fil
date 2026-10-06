@@ -4,8 +4,8 @@ defmodule Fil.Disk do
               type: :atom,
               required: true,
               doc: """
-              The adapter module. Every option other than `:adapter` and `:plugins` is passed to the adapter, which
-              validates it against its own schema.
+              The adapter module. Every option other than `:adapter`, `:plugins` and `:signed_url` is passed to the
+              adapter, which validates it against its own schema.
               """
             ],
             plugins: [
@@ -16,6 +16,32 @@ defmodule Fil.Disk do
               `{module, function, opts}`, attached under the name `module` (see `Fil.attach/4`). They're plain data, so
               the plugins can come from config along with the adapter options:
               `plugins: [{Fil.Plugin.ContentType, :call, default: "text/plain"}]`.
+              """
+            ],
+            signed_url: [
+              type: :keyword_list,
+              default: [],
+              keys: [
+                expires_in: [
+                  type: {:in, 1..(7 * 24 * 60 * 60)},
+                  doc: "How long the URL stays valid, in seconds. At most 7 days (`604800`), the cap of S3."
+                ],
+                disposition: [
+                  type: {:in, [:inline, :attachment]},
+                  doc: "The `content-disposition` of downloads. Uploads (`method: :put`) leave it out."
+                ],
+                if_exists: [
+                  type: {:in, [:error, :overwrite]},
+                  doc: "What an upload does if a file is already at the path. Downloads leave it out."
+                ]
+              ],
+              doc: """
+              Default options of `Fil.signed_url/3` on this disk. The options of a call replace them one by one, so
+              `signed_url: [expires_in: 86_400, disposition: :attachment]` gives every signed URL a day and every
+              download the `:attachment` disposition, and `Fil.signed_url(disk, path, disposition: :inline)` still
+              shows a file inline. A default that doesn't fit the method is left out instead of raising, so a default
+              `:disposition` doesn't break `method: :put`. `Fil.LiveView.external/2` passes its own `:expires_in` and
+              `:if_exists`, so these defaults don't apply to its upload URLs.
               """
             ]
           )
@@ -41,11 +67,12 @@ defmodule Fil.Disk do
   """
 
   @enforce_keys [:adapter]
-  defstruct [:adapter, plugins: []]
+  defstruct [:adapter, plugins: [], signed_url: []]
 
   @type t :: %__MODULE__{
           adapter: {module(), term()},
-          plugins: [{atom(), Fil.plugin_callback(), keyword()}]
+          plugins: [{atom(), Fil.plugin_callback(), keyword()}],
+          signed_url: keyword()
         }
 
   @typedoc """
@@ -68,12 +95,13 @@ defmodule Fil.Disk do
   """
   @spec new(keyword()) :: t()
   def new(opts) when is_list(opts) do
-    # Only `:adapter` and `:plugins` are validated here. The adapter validates the rest in its init/1.
-    {own_opts, adapter_opts} = Keyword.split(opts, [:adapter, :plugins])
+    # Only the options of the schema are validated here. The adapter validates the rest in its init/1.
+    {own_opts, adapter_opts} = Keyword.split(opts, [:adapter, :plugins, :signed_url])
     validated = validate!(own_opts)
     module = adapter_module!(validated[:adapter])
+    disk = %__MODULE__{adapter: {module, init!(module, adapter_opts)}, signed_url: validated[:signed_url]}
 
-    Enum.reduce(validated[:plugins], %__MODULE__{adapter: {module, init!(module, adapter_opts)}}, fn
+    Enum.reduce(validated[:plugins], disk, fn
       {plugin, function, plugin_opts}, disk -> Fil.attach(disk, plugin, {plugin, function}, plugin_opts)
     end)
   end
