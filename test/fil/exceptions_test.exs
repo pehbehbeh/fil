@@ -21,6 +21,7 @@ defmodule Fil.ExceptionsTest do
                ~s|misconfigured ({:wrong_region, "us-west-2"})|
 
       assert message(Fil.InvalidRequestError, :ebadpath) =~ "invalid request (:ebadpath)"
+      assert message(Fil.InvalidContentError, {:too_large, 10}) =~ "the content was rejected ({:too_large, 10})"
 
       assert message(Fil.ConflictError, :size_changed) ==
                ~s|could not read "a.txt": the file changed meanwhile (:size_changed)|

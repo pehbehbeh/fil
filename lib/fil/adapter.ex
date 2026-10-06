@@ -141,8 +141,9 @@ defmodule Fil.Adapter do
   Writes `content`, creating parent directories as needed.
 
   `content` is iodata, or a stream of non-empty binaries. `Fil` checks a stream against the `:size` option while the
-  adapter reads it, when the caller gave one or `Fil.write/4` found one. If the stream raises, the adapter lets the
-  error propagate and writes nothing: the destination keeps what it had before.
+  adapter reads it, when the caller gave one or `Fil.write/4` found one. If the stream raises, at any point and also
+  after its last chunk, the adapter lets the error propagate and writes nothing: the destination keeps what it had
+  before. That's how a plugin refuses content while it's written (`Fil.Op.scan_content/4`).
   """
   @callback write(state(), path(), iodata() | Enumerable.t(), opts()) :: :ok | error()
 

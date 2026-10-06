@@ -366,6 +366,23 @@ defmodule Fil.Adapter.S3Test do
       assert header(request, "authorization") =~ "x-amz-content-sha256"
     end
 
+    test "a stream a plugin scans is still sent as it's read, with its size" do
+      stub([response(200)])
+
+      scanning =
+        Fil.attach(disk(), :scan, fn op, next, _opts ->
+          op
+          |> Fil.Op.scan_content(0, fn chunk, size -> size + byte_size(chunk) end)
+          |> next.()
+        end)
+
+      assert {:ok, _} = Fil.write(scanning, "a.txt", Stream.map(["Hello", ", ", "World"], & &1), size: 12)
+
+      request = request!()
+      assert {request.assigns.body, header(request, "content-length")} == {"Hello, World", "12"}
+      assert header(request, "x-amz-content-sha256") == "UNSIGNED-PAYLOAD"
+    end
+
     test "a stream without a size is collected and sent as one binary" do
       stub([response(200)])
 

@@ -119,12 +119,13 @@ defmodule Fil.Adapter.S3 do
       `offset:` and `length:` are clamped to the size from the HeadObject and sent as a `Range` header, and an empty
       range downloads nothing.
     * `Fil.write/4`: PutObject for content in memory, and for a stream of known size (`size:`, a `File.Stream`, a stream
-      from `Fil.stream/3`), which is sent as it's read. A stream without a size (or with `size: :unknown`) or with
-      `checksum:`, and anything over 5 GiB, goes up in parts instead (see [Uploads in parts](#module-uploads-in-parts)).
-      `if_exists: :error` sends `If-None-Match: *`. `checksum:` (`:sha256`, `:sha1` or `:crc32`) sends the checksum of
-      the content in `x-amz-checksum-*`, S3 rejects the upload if what it received doesn't match, and stores the
-      checksum with the object. Writing to `report.txt/x` when `report.txt` is an object writes a second object and
-      leaves the first alone.
+      from `Fil.stream/3`), which is sent as it's read. Its last chunk goes out only once the stream has ended, so a
+      stream that raises after its last chunk leaves no object. A stream without a size (or with `size: :unknown`) or
+      with `checksum:`, and anything over 5 GiB, goes up in parts instead (see
+      [Uploads in parts](#module-uploads-in-parts)). `if_exists: :error` sends `If-None-Match: *`. `checksum:`
+      (`:sha256`, `:sha1` or `:crc32`) sends the checksum of the content in `x-amz-checksum-*`, S3 rejects the upload if
+      what it received doesn't match, and stores the checksum with the object. Writing to `report.txt/x` when
+      `report.txt` is an object writes a second object and leaves the first alone.
     * `Fil.rm/3`: DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error).
       Removing a directory succeeds and removes nothing.
     * `Fil.stat/3`: HeadObject, then a prefix probe if there's no object, so `Fil.dir?/1` works. `:etag` and

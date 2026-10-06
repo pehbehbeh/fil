@@ -566,4 +566,220 @@ defmodule Fil.PluginsTest do
       assert_raise ArgumentError, ~r/at least one of/, fn -> Op.update_result(op, []) end
     end
   end
+
+  describe "Fil.Op scans" do
+    # Collects the chunks it sees and sends them to the test when the content ends.
+    defp collecting(test) do
+      {fn chunk, seen -> [chunk | seen] end, fn seen -> send(test, {:scanned, Enum.reverse(seen)}) end}
+    end
+
+    test "scan_content reads content in memory right away and leaves it as it is", %{disk: disk} do
+      {fun, done} = collecting(self())
+      op = %Op{disk: disk, name: :write, path: "a.txt", content: ["ab", ["cd"]], options: [size: 4]}
+
+      assert Op.scan_content(op, [], fun, done) == op
+      assert_received {:scanned, ["abcd"]}
+
+      # Empty content never reaches the function, but always the end.
+      assert Op.scan_content(%{op | content: [], options: []}, [], fun, done).content == []
+      assert_received {:scanned, []}
+    end
+
+    test "scan_content reads a stream lazily, chunk by chunk, and keeps its size", %{disk: disk} do
+      test = self()
+      {_fun, done} = collecting(test)
+
+      stream =
+        Stream.map(["ab", "", "cd"], fn chunk ->
+          send(test, {:pulled, chunk})
+          chunk
+        end)
+
+      op = %Op{disk: disk, name: :write, path: "a.txt", content: stream, options: [size: 4]}
+
+      fun = fn chunk, seen ->
+        send(test, {:seen, chunk})
+        [chunk | seen]
+      end
+
+      scanned = Op.scan_content(op, [], fun, done)
+      refute_received {:pulled, _chunk}
+      assert scanned.options == [size: 4]
+
+      # Each chunk is seen before it's passed on, and each reading starts again from the start.
+      for _pass <- 1..2 do
+        assert Enum.to_list(scanned.content) == ["ab", "cd"]
+        assert {:messages, messages} = Process.info(self(), :messages)
+        seen = for {:seen, chunk} <- messages, do: chunk
+        assert seen == ["ab", "cd"]
+        assert_received {:scanned, ["ab", "cd"]}
+        flush()
+      end
+    end
+
+    test "scan_content keeps the size Fil found for a stream", %{disk: disk, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "a.txt")
+      File.write!(path, "content")
+      test = self()
+
+      scanning =
+        disk
+        |> Fil.attach(:scan, fn op, next, _opts ->
+          op
+          |> Op.scan_content(0, fn chunk, size -> size + byte_size(chunk) end, &send(test, {:scanned, &1}))
+          |> next.()
+        end)
+        |> Fil.attach(:spy, fn op, next, _opts ->
+          send(test, {:size, Op.get_option(op, :size)})
+          next.(op)
+        end)
+
+      assert {:ok, _} = Fil.write(scanning, "a.txt", File.stream!(path, 2))
+      assert_received {:size, 7}
+      assert_received {:scanned, 7}
+      assert Fil.read(disk, "a.txt") == {:ok, "content"}
+    end
+
+    test "a Fil error raised from scan_content is the write's result", %{disk: disk} do
+      reject = fn _chunk, _acc -> raise %Fil.InvalidContentError{reason: :rejected} end
+      reject_at_end = fn _acc -> raise %Fil.InvalidContentError{reason: :at_end} end
+
+      for {fun, done, reason} <- [
+            {reject, &Function.identity/1, :rejected},
+            {fn _c, acc -> acc end, reject_at_end, :at_end}
+          ],
+          content <- ["content", Stream.map(["con", "tent"], & &1)] do
+        rejecting =
+          Fil.attach(disk, :reject, fn op, next, _opts ->
+            op
+            |> Op.scan_content(nil, fun, done)
+            |> next.()
+          end)
+
+        assert {:error, %Fil.InvalidContentError{op: :write, path: "a.txt", reason: ^reason} = error} =
+                 Fil.write(rejecting, "a.txt", content)
+
+        assert error.disk == rejecting
+      end
+
+      refute Fil.exists?(disk, "a.txt")
+
+      # Anything else is a bug and propagates.
+      failing =
+        Fil.attach(disk, :fail, fn op, next, _opts ->
+          op
+          |> Op.scan_content(nil, fn _c, _a -> raise "a bug" end)
+          |> next.()
+        end)
+
+      assert_raise RuntimeError, "a bug", fn -> Fil.write(failing, "a.txt", "content") end
+    end
+
+    test "scan_result reads a read's content, and a Fil error it raises is the read's", %{disk: disk} do
+      test = self()
+      {fun, done} = collecting(test)
+
+      scanning =
+        Fil.attach(disk, :scan, fn
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.scan_result([], fun, done)
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      {:ok, _} = Fil.write(disk, "a.txt", "content")
+
+      assert Fil.read(scanning, "a.txt") == {:ok, "content"}
+      assert_received {:scanned, ["content"]}
+
+      assert {:ok, stream} = Fil.stream(scanning, "a.txt")
+      refute_received {:scanned, _seen}
+      assert Enum.join(stream) == "content"
+      assert_received {:scanned, ["content"]}
+
+      # A missing file stays an error.
+      assert {:error, %Fil.NotFoundError{}} = Fil.read(scanning, "nope.txt")
+
+      rejecting =
+        Fil.attach(disk, :reject, fn
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.scan_result(nil, fn _chunk, _acc -> raise %Fil.InvalidContentError{reason: :pii} end)
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      assert {:error, %Fil.InvalidContentError{op: :read, path: "a.txt", reason: :pii}} = Fil.read(rejecting, "a.txt")
+
+      assert {:ok, stream} = Fil.stream(rejecting, "a.txt")
+      error = assert_raise Fil.InvalidContentError, fn -> Enum.to_list(stream) end
+      assert {error.op, error.path, error.disk} == {:read, "a.txt", rejecting}
+    end
+
+    test "scan_result on a ranged read scans the part the caller gets", %{disk: disk} do
+      {fun, done} = collecting(self())
+
+      scanning =
+        Fil.attach(disk, :scan, fn
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.scan_result([], fun, done)
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      {:ok, _} = Fil.write(disk, "a.txt", "hello world")
+
+      assert Fil.read(scanning, "a.txt", offset: 6, length: 5) == {:ok, "world"}
+      assert_received {:scanned, ["world"]}
+
+      assert {:ok, stream} = Fil.stream(scanning, "a.txt", offset: 6)
+      assert Enum.join(stream) == "world"
+      assert_received {:scanned, ["world"]}
+    end
+
+    test "scan_result's end runs only when the stream is read to the end", %{disk: disk} do
+      {fun, done} = collecting(self())
+
+      scanning =
+        Fil.attach(disk, :scan, fn
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.scan_result([], fun, done)
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      {:ok, _} = Fil.write(disk, "a.txt", :binary.copy("a", 200_000))
+      assert {:ok, stream} = Fil.stream(scanning, "a.txt")
+
+      assert [_first] = Enum.take(stream, 1)
+      refute_received {:scanned, _seen}
+    end
+
+    test "other operations are left alone", %{disk: disk} do
+      fun = fn _chunk, _acc -> raise "never called" end
+      op = %Op{disk: disk, name: :stat, path: "a.txt", result: {:ok, %Fil.Stat{type: :regular}}}
+
+      assert Op.scan_content(op, nil, fun) == op
+      assert Op.scan_result(op, nil, fun) == op
+    end
+  end
+
+  defp flush do
+    receive do
+      _message -> flush()
+    after
+      0 -> :ok
+    end
+  end
 end

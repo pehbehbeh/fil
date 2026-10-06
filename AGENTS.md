@@ -21,9 +21,10 @@ The Hex package is `fil`.
   `{module, function, opts}` entries and attaches each under the module's name, so disks built from config need no
   functions. Plugin modules have a public `call/3` (`@doc false`) that validates its own options, because entries from
   config skip `attach/2`.
-- Options come only from `attach`; there are no registered or global options. Callbacks
-  match on `op.name` and change content only through the `Fil.Op` helpers (`update_content/2`, `update_result/2`),
-  so they work on iodata and streams alike. `Fil.stream/3` runs as a `:read` with `op.streaming: true`, so a
+- Options come only from `attach`; there are no registered or global options. Callbacks match on `op.name`, change
+  content only through the `Fil.Op` helpers (`update_content/2`, `update_result/2`), inspect it with `scan_content/4`
+  and `scan_result/4` (which keep the chunks and the `:size`), and refuse it by raising `Fil.InvalidContentError` from a
+  scan, so they work on iodata and streams alike. `Fil.stream/3` runs as a `:read` with `op.streaming: true`, so a
   plugin that transforms reads covers it without knowing. Every operation goes through `Fil.Op.run/1`. Plugin docs
   live in `guides/plugins.md` only, not in the README. A new plugin goes into the list of shipped plugins at the top of
   that guide, by hand.
