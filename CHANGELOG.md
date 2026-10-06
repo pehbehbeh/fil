@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   without changing it. A stream keeps its chunks and its `:size`, so S3 still sends it in one request. A plugin refuses
   content by raising the new `Fil.InvalidContentError` from a scan: the write returns the error and writes nothing, on
   every adapter, also when the scan raises after the last chunk. `Fil.Plug` answers an upload refused this way with a
-  `413` (too large), a `415` (content type or extension) or a `422`.
+  `413` (too large), a `415` (content type or extension) or a `422`. ([#33](https://github.com/pehbehbeh/fil/pull/33))
 - `Fil.read/3` and `Fil.stream/3` take `offset:` and `length:` to read part of a file, on every adapter: S3 sends a
   `Range` header, the local disk reads from the offset, and the memory disk returns a sub-binary. Plugins that
   transform reads get the whole file and `Fil` cuts the part from their result, so offsets count bytes of the content
