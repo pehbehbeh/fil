@@ -534,6 +534,127 @@ defmodule Fil.AdapterCase do
         assert kept.path == "kept.txt"
       end
 
+      test "a stream that raises after its last chunk writes nothing", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "kept.txt", "original")
+
+        # All of the content has come out when the stream raises, so storage that knows the size has all of it.
+        failing =
+          Stream.transform(
+            1..5,
+            fn -> :ok end,
+            fn _n, :ok -> {[String.duplicate("x", 10_000)], :ok} end,
+            fn :ok -> raise "the trailer is wrong" end,
+            fn :ok -> :ok end
+          )
+
+        large =
+          <<0>>
+          |> :binary.copy(65_536)
+          |> List.duplicate(div(large(), 65_536))
+          |> Stream.transform(fn -> :ok end, &{[&1], &2}, fn :ok -> raise "the trailer is wrong" end, & &1)
+
+        cases = [
+          {failing, []},
+          {failing, [size: 50_000]},
+          {failing, [if_exists: :error]},
+          {failing, [if_exists: :error, size: 50_000]},
+          {large, []},
+          {large, [if_exists: :error]}
+        ]
+
+        for {stream, opts} <- cases do
+          assert_raise RuntimeError, "the trailer is wrong", fn -> Fil.write(disk, "kept.txt", stream, opts) end
+          assert_raise RuntimeError, "the trailer is wrong", fn -> Fil.write(disk, "new.txt", stream, opts) end
+        end
+
+        assert Fil.read(disk, "kept.txt") == {:ok, "original"}
+        refute Fil.exists?(disk, "new.txt")
+        assert {:ok, [kept]} = Fil.ls(disk)
+        assert kept.path == "kept.txt"
+      end
+
+      test "a plugin that rejects a stream returns the error and writes nothing", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "kept.txt", "original")
+
+        at_third_chunk = fn _chunk, count ->
+          if count == 2, do: raise(%Fil.InvalidContentError{reason: :third}), else: count + 1
+        end
+
+        at_end = fn _count -> raise %Fil.InvalidContentError{reason: :at_end} end
+
+        plugins = [
+          third: &Fil.Op.scan_content(&1, 0, at_third_chunk),
+          at_end: &Fil.Op.scan_content(&1, 0, fn _chunk, count -> count + 1 end, at_end)
+        ]
+
+        content = :binary.copy("x", 50_000)
+        large = :binary.copy("l", large())
+
+        for {reason, scan} <- plugins,
+            {stream, opts} <- [
+              {chunked(content, 10_000), []},
+              {chunked(content, 10_000), [size: 50_000]},
+              {chunked(content, 10_000), [if_exists: :error, size: 50_000]},
+              {chunked(large, 65_536), []}
+            ],
+            path <- ["kept.txt", "new.txt"] do
+          rejecting =
+            Fil.attach(disk, :reject, fn op, next, _opts ->
+              op
+              |> scan.()
+              |> next.()
+            end)
+
+          assert {:error, %Fil.InvalidContentError{op: :write, path: ^path, reason: ^reason} = error} =
+                   Fil.write(rejecting, path, stream, opts)
+
+          assert error.disk == rejecting
+        end
+
+        assert Fil.read(disk, "kept.txt") == {:ok, "original"}
+        refute Fil.exists?(disk, "new.txt")
+        assert {:ok, [kept]} = Fil.ls(disk)
+        assert kept.path == "kept.txt"
+      end
+
+      test "scanning content keeps it, its chunks and its size", %{disk: disk} do
+        test = self()
+        content = :crypto.strong_rand_bytes(50_000)
+
+        scanning =
+          disk
+          |> Fil.attach(:scan, fn op, next, _opts ->
+            op
+            |> Fil.Op.scan_content(0, fn chunk, size -> size + byte_size(chunk) end, &send(test, {:scanned, &1}))
+            |> next.()
+          end)
+          |> Fil.attach(:spy, fn op, next, _opts ->
+            send(test, {:size, Fil.Op.get_option(op, :size)})
+            next.(op)
+          end)
+
+        assert {:ok, _} = Fil.write(scanning, "scanned.bin", chunked(content, 10_000), size: 50_000)
+        assert_received {:size, 50_000}
+        assert_received {:scanned, 50_000}
+        assert Fil.read(disk, "scanned.bin") == {:ok, content}
+
+        assert {:ok, _} = Fil.write(scanning, "whole.bin", content)
+        assert_received {:scanned, 50_000}
+        assert Fil.read(disk, "whole.bin") == {:ok, content}
+      end
+
+      test "a rejected write of content in memory never reaches the adapter", %{disk: disk} do
+        rejecting =
+          Fil.attach(disk, :reject, fn op, next, _opts ->
+            op
+            |> Fil.Op.scan_content(nil, fn _chunk, _acc -> raise %Fil.InvalidContentError{reason: :nope} end)
+            |> next.()
+          end)
+
+        assert {:error, %Fil.InvalidContentError{op: :write, reason: :nope}} = Fil.write(rejecting, "a.txt", "content")
+        refute Fil.exists?(disk, "a.txt")
+      end
+
       test "a stream of another size than :size raises and writes nothing", %{disk: disk, tmp_dir: tmp_dir} do
         path = Path.join(tmp_dir, "hello.txt")
         File.write!(path, "hello")
