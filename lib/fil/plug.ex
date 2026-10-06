@@ -139,6 +139,9 @@ if Code.ensure_loaded?(Plug) do
         isn't an image), `507` if the storage is full and `503` if it's unavailable. Any other error is a `500` with a
         generic body, and its message goes to the `Logger`. So is S3's `InvalidRequest`, on a download too, because S3
         sends it for problems with the request or the bucket's configuration as well
+      * an upload a plugin refuses with a `Fil.InvalidContentError`, before or while the body is read, gets a `413` for
+        content that's too large, a `415` for a content type or an extension the disk doesn't take, and a `422` for
+        anything else. Nothing is written, and the body doesn't say which rule the upload broke
     """
 
     @behaviour Plug
@@ -448,6 +451,18 @@ if Code.ensure_loaded?(Plug) do
     defp body_error(conn, :already_read, _max_body_size) do
       send_error(conn, 400, "the request body was already read, probably by Plug.Parsers")
     end
+
+    # An upload a plugin refuses (`Fil.InvalidContentError`) gets a status for what was wrong with it. The body never
+    # has the reason, which a plugin may have filled with anything.
+    defp send_write_error(conn, %Fil.InvalidContentError{reason: {:too_large, _max}}),
+      do: send_error(conn, 413, "the content is too large")
+
+    defp send_write_error(conn, %Fil.InvalidContentError{reason: reason})
+         when is_tuple(reason) and tuple_size(reason) > 0 and
+                elem(reason, 0) in [:content_type, :content_type_mismatch, :extension],
+         do: send_error(conn, 415, "the content type is not allowed")
+
+    defp send_write_error(conn, %Fil.InvalidContentError{}), do: send_error(conn, 422, "the content was rejected")
 
     # An upload the disk refuses for its content is a 422. One refused for its path is a 404, as on a download.
     defp send_write_error(conn, %Fil.InvalidRequestError{reason: reason})

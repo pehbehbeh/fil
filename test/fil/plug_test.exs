@@ -162,6 +162,12 @@ defmodule Fil.PlugTest do
             {%Fil.InvalidRequestError{reason: {:not_an_image, "not a PNG"}}, 422},
             {%Fil.InvalidRequestError{reason: "EntityTooLarge"}, 422},
             {%Fil.InvalidRequestError{reason: :enotdir}, 404},
+            {%Fil.InvalidContentError{reason: {:too_large, 5}}, 413},
+            {%Fil.InvalidContentError{reason: {:content_type, "image/gif"}}, 415},
+            {%Fil.InvalidContentError{reason: {:content_type_mismatch, "image/png", "image/gif"}}, 415},
+            {%Fil.InvalidContentError{reason: {:extension, "html"}}, 415},
+            {%Fil.InvalidContentError{reason: {:too_small, 1}}, 422},
+            {%Fil.InvalidContentError{reason: :custom}, 422},
             {%Fil.StorageFullError{reason: :enospc}, 507},
             {%Fil.UnavailableError{reason: :timeout}, 503}
           ] do
@@ -170,6 +176,34 @@ defmodule Fil.PlugTest do
 
         assert request(:put, url, failing, "content").status == status
       end
+    end
+
+    test "an upload a plugin rejects while it's read gets the status of its reason", %{disk: disk} do
+      for {reason, status, body} <- [
+            {{:too_large, 4}, 413, "the content is too large"},
+            {{:content_type, nil}, 415, "the content type is not allowed"},
+            {{:secret, "4111 1111 1111 1111"}, 422, "the content was rejected"}
+          ] do
+        rejecting =
+          Fil.attach(disk, :reject, fn op, next, _opts ->
+            op
+            |> Fil.Op.scan_content(nil, fn _chunk, _acc -> raise %Fil.InvalidContentError{reason: reason} end)
+            |> next.()
+          end)
+
+        {:ok, url} = Fil.signed_url(rejecting, "a.txt", method: :put)
+
+        for headers <- [[{"content-length", "7"}], []] do
+          conn =
+            url
+            |> put("content", headers)
+            |> call(rejecting)
+
+          assert {conn.status, conn.resp_body} == {status, body}
+        end
+      end
+
+      refute Fil.exists?(disk, "a.txt")
     end
 
     test "a denied file is a 404, like a missing one", %{disk: disk} do
@@ -693,6 +727,27 @@ defmodule Fil.PlugTest.OneDisk do
 
     # No file, no temporary file, and not the directory the write created either.
     assert conn.status == 413
+    assert File.ls!(tmp_dir) == []
+  end
+
+  test "an upload a plugin rejects at its end leaves nothing on a local disk", %{local: disk, tmp_dir: tmp_dir} do
+    rejecting =
+      Fil.attach(disk, :reject, fn op, next, _opts ->
+        op
+        |> Fil.Op.scan_content(0, fn chunk, size -> size + byte_size(chunk) end, fn _size ->
+          raise %Fil.InvalidContentError{reason: :at_end}
+        end)
+        |> next.()
+      end)
+
+    {:ok, url} = Fil.signed_url(rejecting, "inbox/big.bin", method: :put)
+
+    conn =
+      url
+      |> put(:crypto.strong_rand_bytes(3_000_000), [{"content-length", "3000000"}])
+      |> call(rejecting)
+
+    assert conn.status == 422
     assert File.ls!(tmp_dir) == []
   end
 
