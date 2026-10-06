@@ -211,16 +211,17 @@ Every operation works the same on every disk:
 ```
 
 Large files don't have to fit in memory. `stream` returns a file's content as a stream of chunks, and `write` takes a
-stream as well as a binary, so a file can go from one disk to another, or from a local file to S3, piece by piece:
+stream as well as a binary, so a file can go from one disk to another piece by piece. `{:file, path}` streams a local
+file:
 
 ```elixir
 {:ok, video} = Fil.stream(s3, "videos/intro.mp4")
 {:ok, _} = Fil.write(local, "cache/intro.mp4", video)
 
-{:ok, _} = Fil.write(s3, "backups/db.dump", File.stream!("db.dump", 65_536))
+{:ok, _} = Fil.write(s3, "backups/db.dump", {:file, "db.dump"})
 ```
 
-With a `File.stream!` of bytes, as above, or a stream from `stream`, `Fil` knows the size, and S3 sends the stream as
+With a local file, a `File.stream!` of bytes or a stream from `stream`, `Fil` knows the size, and S3 sends the stream as
 it's read, in one request. For other streams, pass `size:` if you know it, or S3 uploads the stream in parts of 8 MiB
 (the local and memory disks don't need the size).
 

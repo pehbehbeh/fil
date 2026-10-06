@@ -170,7 +170,7 @@ A `Plug.Upload` is a file on the local disk already, so a write streams it to an
 
 ```elixir
 %Plug.Upload{path: path} = params["document"]
-{:ok, document} = Fil.write(MyApp.Storage.uploads(), "documents/#{id}.pdf", File.stream!(path, 65_536))
+{:ok, document} = Fil.write(MyApp.Storage.uploads(), "documents/#{id}.pdf", {:file, path})
 ```
 
 Uploads from a LiveView form are streamed to a disk the same way with `Fil.LiveView`, see the

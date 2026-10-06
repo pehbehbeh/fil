@@ -86,9 +86,12 @@ defmodule FilTest do
       end
     end
 
-    test "content is iodata or an enumerable", %{disk: disk} do
-      assert_raise ArgumentError, ~r/expected the content to be iodata or an enumerable of iodata, got: :nope/, fn ->
-        Fil.write(disk, "a.txt", :nope)
+    test "content is iodata, an enumerable or {:file, path}", %{disk: disk} do
+      for content <- [:nope, {:file, :nope}] do
+        message =
+          "expected the content to be iodata, an enumerable of iodata or {:file, path}, got: #{inspect(content)}"
+
+        assert_raise ArgumentError, message, fn -> Fil.write(disk, "a.txt", content) end
       end
     end
 
@@ -119,6 +122,48 @@ defmodule FilTest do
     test "offset: and length: take a non-negative and a positive integer", %{disk: disk} do
       assert_raise ArgumentError, ~r/invalid value for :offset option/, fn -> Fil.read(disk, "a.txt", offset: -1) end
       assert_raise ArgumentError, ~r/invalid value for :length option/, fn -> Fil.read(disk, "a.txt", length: 0) end
+    end
+  end
+
+  describe "write/3 with {:file, path}" do
+    @describetag :tmp_dir
+
+    setup do
+      Fil.Adapter.Memory.checkout()
+      {:ok, disk: Fil.disk(adapter: Fil.Adapter.Memory)}
+    end
+
+    test "writes the local file with its size", %{disk: disk, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "source.bin")
+      File.write!(path, "Hello, World")
+      test = self()
+
+      sizes =
+        Fil.attach(disk, :size, fn op, next, _opts ->
+          send(test, {:size, op.options[:size]})
+          next.(op)
+        end)
+
+      assert {:ok, _} = Fil.write(sizes, "file.bin", {:file, path})
+      assert_received {:size, 12}
+      assert Fil.read(disk, "file.bin") == {:ok, "Hello, World"}
+    end
+
+    test "a missing file or a directory raises before anything runs", %{disk: disk, tmp_dir: tmp_dir} do
+      test = self()
+
+      watched =
+        Fil.attach(disk, :watch, fn op, next, _opts ->
+          send(test, :ran)
+          next.(op)
+        end)
+
+      for {source, reason} <- [{Path.join(tmp_dir, "missing.bin"), "no such file"}, {tmp_dir, "illegal operation"}] do
+        assert_raise File.Error, ~r/#{reason}/, fn -> Fil.write(watched, "file.bin", {:file, source}) end
+      end
+
+      refute_received :ran
+      refute Fil.exists?(disk, "file.bin")
     end
   end
 

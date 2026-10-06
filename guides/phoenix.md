@@ -634,9 +634,8 @@ upload:
 ```elixir
 def create(conn, %{"document" => %Plug.Upload{} = upload}) do
   id = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
-  content = File.stream!(upload.path, 65_536)
 
-  case Fil.write(MyApp.Storage.uploads(), "documents/#{id}.pdf", content, if_exists: :error) do
+  case Fil.write(MyApp.Storage.uploads(), "documents/#{id}.pdf", {:file, upload.path}, if_exists: :error) do
     {:ok, document} ->
       json(conn, %{path: document.path})
 
@@ -647,6 +646,6 @@ def create(conn, %{"document" => %Plug.Upload{} = upload}) do
 end
 ```
 
-`Fil.write/4` finds the size of the file stream, so S3 sends the file in one request instead of uploading it in parts.
+`Fil.write/4` finds the size of the local file, so S3 sends the file in one request instead of uploading it in parts.
 As with LiveView, `upload.filename` and `upload.content_type` come from the browser, so the path above is one the
 server picked, and the content type comes from its extension through `Fil.Plugin.ContentType`.
