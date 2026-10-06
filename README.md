@@ -16,7 +16,7 @@
 
 ```elixir
 Mix.install([
-  {:fil, "~> 0.1"}
+  {:fil, "~> 0.2"}
 ])
 
 disk = Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")

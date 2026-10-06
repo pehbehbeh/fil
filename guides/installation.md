@@ -16,7 +16,7 @@ Add `fil` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:fil, "~> 0.1"}
+    {:fil, "~> 0.2"}
   ]
 end
 ```
@@ -30,7 +30,7 @@ mix deps.get
 In a script or a Livebook, `Mix.install/1` is enough:
 
 ```elixir
-Mix.install([{:fil, "~> 0.1"}])
+Mix.install([{:fil, "~> 0.2"}])
 
 disk = Fil.disk(adapter: Fil.Adapter.Local, root: "storage")
 ```
