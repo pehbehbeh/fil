@@ -751,6 +751,40 @@ defmodule Fil.PlugTest.OneDisk do
     assert File.ls!(tmp_dir) == []
   end
 
+  describe "with Fil.Plugin.Validation" do
+    setup %{local: disk} do
+      {:ok, validating: Fil.Plugin.Validation.attach(disk, max_size: 1_000, content_types: ["image/png"])}
+    end
+
+    test "an upload over max_size is a 413, by its content-length or while it's read", %{validating: disk} do
+      {:ok, url} = Fil.signed_url(disk, "a.png", method: :put)
+      png = <<0x89, "PNG\r\n", 0x1A, "\n">> <> :binary.copy(<<0>>, 2_000)
+
+      for headers <- [[{"content-length", "2008"}], []] do
+        conn =
+          url
+          |> put(png, headers)
+          |> call(disk)
+
+        assert {conn.status, conn.resp_body} == {413, "the content is too large"}
+      end
+
+      refute Fil.exists?(disk, "a.png")
+    end
+
+    test "a GIF sent as a PNG is a 415 and leaves nothing behind", %{validating: disk, tmp_dir: tmp_dir} do
+      {:ok, url} = Fil.signed_url(disk, "inbox/a.png", method: :put)
+
+      conn =
+        url
+        |> put("GIF89a" <> :binary.copy(<<0>>, 500), [{"content-type", "image/png"}])
+        |> call(disk)
+
+      assert {conn.status, conn.resp_body} == {415, "the content type is not allowed"}
+      assert File.ls!(tmp_dir) == []
+    end
+  end
+
   test "resolves the disk from a capture or an MFA", %{memory: disk} do
     {:ok, _} = Fil.write(disk, "a.txt", "a")
     {:ok, url} = Fil.signed_url(disk, "a.txt")

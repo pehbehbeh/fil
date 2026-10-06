@@ -23,6 +23,7 @@ Fil.read(disk, "hello.txt")
   * `Fil.Plugin.ContentType`: sets the content type of a write from the file extension
   * `Fil.Plugin.URL`: builds URLs for any disk, served by `Fil.Plug` from your application
   * `Fil.Plugin.Thumbnails`: writes resized copies of images next to them, with the optional Vix dependency
+  * `Fil.Plugin.Validation`: refuses writes by size, by content type (from the magic bytes) or by extension
 
 ## The callback
 
@@ -108,6 +109,15 @@ disk
 
 # write: compress, then encrypt, then the adapter
 # read:  the adapter, then decrypt, then decompress
+```
+
+Plugins that check the content, such as `Fil.Plugin.Validation`, go before plugins that change it, so they check what
+the caller wrote and not the compressed or encrypted bytes:
+
+```elixir
+disk
+|> Fil.Plugin.Validation.attach(max_size: 10_000_000, content_types: ["image/*"])
+|> MyApp.Compression.attach()
 ```
 
 Plugins from the `:plugins` option are attached first, in the order they're listed. Attaching a name that's already
