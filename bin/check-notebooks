@@ -1,0 +1,118 @@
+#!/usr/bin/env elixir
+#
+# Runs every notebook in guides/ against the code in this repository, so a notebook that no longer works fails CI like a
+# broken doctest. CI runs it. See "Etiquette" in AGENTS.md.
+#
+#   bin/check-notebooks [NOTEBOOK...]
+#
+# NOTEBOOK defaults to every guides/*.livemd. Each notebook's Elixir cells run in order, as one script in an `elixir`
+# process of its own, like Livebook runs the regular sections of a notebook in one process. The `{:fil, "~> ..."}` of
+# the setup cell becomes `{:fil, path: ...}`, so the notebook installs this checkout instead of the release on Hex. A
+# code block after `<!-- livebook:{"force_markdown":true} -->` is Markdown in Livebook, so it doesn't run here either.
+
+defmodule CheckNotebooks do
+  @root Path.expand("..", __DIR__)
+  @force_markdown ~s(<!-- livebook:{"force_markdown":true} -->)
+  @fil_dep ~r/\{:fil, "~> [^"]+"\}/
+
+  def main([]) do
+    case @root |> Path.join("guides/*.livemd") |> Path.wildcard() do
+      [] ->
+        IO.puts(:stderr, "check-notebooks: no notebooks in guides/")
+        System.halt(1)
+
+      notebooks ->
+        main(notebooks)
+    end
+  end
+
+  def main(notebooks) do
+    failed = Enum.reject(notebooks, &run/1)
+
+    if failed != [] do
+      IO.puts(:stderr, "check-notebooks: #{Enum.join(failed, ", ")} failed")
+      System.halt(1)
+    end
+  end
+
+  defp run(notebook) do
+    name = Path.relative_to(notebook, @root)
+    IO.puts("check-notebooks: running #{name}")
+
+    with {:ok, cells} <- notebook |> File.read!() |> cells() |> install_from_checkout(name) do
+      dir = Path.join(System.tmp_dir!(), "check-notebooks-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      script = Path.join(dir, "notebook.exs")
+      File.write!(script, script(cells, notebook))
+
+      try do
+        {_, status} = System.cmd("elixir", [script], cd: dir, into: IO.stream(), stderr_to_stdout: true)
+        status == 0
+      after
+        File.rm_rf!(dir)
+      end
+    end
+  end
+
+  # A script that evaluates the cells one at a time, as Livebook does, so the setup cell's `Mix.install/2` runs before
+  # the next cell is compiled. Each cell gets the variables, aliases, imports and requires of the ones before it, and
+  # errors point at the notebook.
+  defp script(cells, notebook) do
+    """
+    #{inspect(cells, limit: :infinity, printable_limit: :infinity)}
+    |> Enum.reduce({[], Code.env_for_eval(file: #{inspect(notebook)})}, fn {line, code}, {binding, env} ->
+      try do
+        quoted = Code.string_to_quoted!(code, file: #{inspect(notebook)}, line: line)
+        {_result, binding, env} = Code.eval_quoted_with_env(quoted, binding, env)
+        {binding, env}
+      rescue
+        exception ->
+          IO.puts(:stderr, "check-notebooks: the cell at line \#{line} of #{Path.basename(notebook)} raised")
+          reraise exception, __STACKTRACE__
+      end
+    end)
+    """
+  end
+
+  # The fenced Elixir blocks in the order they appear, each as the line of its first line and its code.
+  defp cells(markdown) do
+    markdown
+    |> String.split("\n")
+    |> Enum.with_index(1)
+    |> Enum.reduce({[], nil, ""}, fn
+      {"```" <> info = fence, number}, {cells, nil, previous} -> open_or_skip(cells, previous, fence, info, number)
+      {"```", _number}, {cells, {before, first, lines}, _previous} -> {[{before, first, lines} | cells], nil, "```"}
+      {line, _number}, {cells, {before, first, lines}, _previous} -> {cells, {before, first, [line | lines]}, line}
+      {"", _number}, {cells, nil, previous} -> {cells, nil, previous}
+      {line, _number}, {cells, nil, _previous} -> {cells, nil, line}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> Enum.reject(fn {before, _first, _lines} -> before == @force_markdown end)
+    |> Enum.map(fn {_before, first, lines} -> {first, lines |> Enum.reverse() |> Enum.join("\n")} end)
+  end
+
+  # Spaces around `elixir` still open a cell, so a fence written in an editor as "``` elixir" isn't skipped without a
+  # word. Fences of other languages are Markdown.
+  defp open_or_skip(cells, previous, fence, info, number) do
+    if String.trim(info) == "elixir" do
+      {cells, {previous, number + 1, []}, fence}
+    else
+      {cells, nil, fence}
+    end
+  end
+
+  defp install_from_checkout(cells, name) do
+    case cells |> Enum.flat_map(fn {_line, code} -> Regex.scan(@fil_dep, code) end) |> length() do
+      1 ->
+        dep = ~s({:fil, path: "#{@root}"})
+        {:ok, Enum.map(cells, fn {line, code} -> {line, Regex.replace(@fil_dep, code, dep)} end)}
+
+      count ->
+        IO.puts(:stderr, ~s(check-notebooks: #{name} needs exactly one {:fil, "~> ..."}, found #{count}))
+        false
+    end
+  end
+end
+
+CheckNotebooks.main(System.argv())

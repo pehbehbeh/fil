@@ -121,12 +121,27 @@ jobs:
         if: failure()
         run: docker compose logs rustfs
 
+  # Runs every guides/*.livemd against this checkout. The notebooks install their dependencies with `Mix.install/2`,
+  # which resolves them from Hex instead of mix.lock, so they don't share a cache with the jobs above.
+  notebooks:
+    name: Notebooks
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+
+      - run: bin/check-notebooks
+
   # The one check the ruleset on `main` requires, so the ruleset doesn't change with the Elixir matrix. `always()`
   # keeps it running when a job it needs fails, because GitHub counts a skipped required check as passed.
   ci:
     name: CI passed
     if: always()
-    needs: [checks, test, integration]
+    needs: [checks, test, integration, notebooks]
     runs-on: ubuntu-26.04
     steps:
       - name: Fail if a job failed, was cancelled or was skipped

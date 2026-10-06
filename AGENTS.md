@@ -112,6 +112,7 @@ mix test.integration        # runs the @tag :integration suites against the comp
 mix format                  # 120 columns, Quokka plugin
 mix credo                   # strict, every check enabled (see .credo.exs)
 bin/check-changelog         # every entry under Unreleased links to its pull request (see Releasing)
+bin/check-notebooks         # runs every guides/*.livemd against this checkout (see Etiquette)
 bin/release 0.2.0           # releases main to Hex (see Releasing)
 ```
 
@@ -121,7 +122,8 @@ bin/release 0.2.0           # releases main to Hex (see Releasing)
 the latest Elixir, and runs `mix test` on every supported Elixir minor version (1.18 and later), each with the newest
 OTP it supports. Fil supports the last three OTP releases, the ones OTP still maintains (27, 28 and 29 now), and the
 matrix covers each of them. The integration suite runs once, on the latest Elixir, against RustFS started from
-`compose.yml`. When `elixir:` in `mix.exs` changes or a new OTP release comes out, update the matrix.
+`compose.yml`. The notebooks job runs `bin/check-notebooks` on the latest Elixir. When `elixir:` in `mix.exs` changes or
+a new OTP release comes out, update the matrix.
 
 The checks job also compiles `fil` without its optional dependencies (`mix compile --no-optional-deps` in its own build
 path), so a module that uses Plug, Vix, Kino or Phoenix LiveView without a compile guard (`if Code.ensure_loaded?(...)`)
@@ -232,4 +234,8 @@ list).
 
 - README and `guides/installation.md` examples have to keep working against the actual API. The guide is listed under
   the Guides tab on HexDocs (`extras` in `mix.exs`).
+- Notebooks in `guides/*.livemd` run in CI against the repo's code, like the README examples they have to match.
+  `bin/check-notebooks` runs their Elixir cells in order and swaps the setup cell's `{:fil, "~> ..."}` for a `path:`
+  dependency, so a notebook needs exactly one such tuple. Write them in an editor: Livebook rewrites the file when
+  it saves, which undoes the 120-column wrapping.
 - Examples name refs after the file they hold (`report`, `backup`, `reports`), not `ref` or `refs`.
