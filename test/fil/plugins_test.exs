@@ -721,6 +721,30 @@ defmodule Fil.PluginsTest do
       assert {error.op, error.path, error.disk} == {:read, "a.txt", rejecting}
     end
 
+    test "scan_result on a ranged read scans the part the caller gets", %{disk: disk} do
+      {fun, done} = collecting(self())
+
+      scanning =
+        Fil.attach(disk, :scan, fn
+          %Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Op.scan_result([], fun, done)
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      {:ok, _} = Fil.write(disk, "a.txt", "hello world")
+
+      assert Fil.read(scanning, "a.txt", offset: 6, length: 5) == {:ok, "world"}
+      assert_received {:scanned, ["world"]}
+
+      assert {:ok, stream} = Fil.stream(scanning, "a.txt", offset: 6)
+      assert Enum.join(stream) == "world"
+      assert_received {:scanned, ["world"]}
+    end
+
     test "scan_result's end runs only when the stream is read to the end", %{disk: disk} do
       {fun, done} = collecting(self())
 

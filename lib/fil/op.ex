@@ -292,7 +292,8 @@ defmodule Fil.Op do
   Takes the same functions as `scan_content/4`. Content in memory is read right away, and one of `Fil`'s errors raised
   from `fun` or `done`, such as `Fil.InvalidContentError`, turns the read into that error. The result of
   `Fil.stream/3` is read when the caller reads it, and the error is raised to the caller then, with the operation, the
-  path and the disk filled in. `done` runs only when the caller reads to the end: `Enum.take/2` stops before it.
+  path and the disk filled in. `done` runs only when the caller reads to the end: `Enum.take/2` stops before it. On a
+  read with `offset:` or `length:`, the scan reads the part the caller gets, not the whole file.
   """
   @spec scan_result(t(), acc, (binary(), acc -> acc), (acc -> term())) :: t() when acc: term()
   def scan_result(op, acc, fun, done \\ &scanned/1)
