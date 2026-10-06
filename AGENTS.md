@@ -57,12 +57,14 @@ The Hex package is `fil`.
   `Fil.LiveView`, so remote calls get their compile-time checks, and renders in `Fil.LiveView.UploadField`
   (`@moduledoc false`): daisyUI classes by default, a class attribute per part that replaces its default, and every text
   of its own through `translate`. `Fil.Ecto.Ref` is the Ecto type, compiled only when the optional Ecto dependency is
-  there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an MFA and turn it into a disk with
-  `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented by `Fil.Support.DiskOption`
-  (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}` for a directory (`Fil.LiveView`).
-  Options that end up in compiled code, such as a plug's or an Ecto field's, take a function only as a capture with its
-  module (`:remote_fun`), because they can't hold an anonymous function. `Fil.Ecto.Ref` takes no `%Fil.Disk{}` either,
-  so no credentials end up in the beam. Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
+  there. `Fil.Backpex.Upload` is a Backpex field, compiled only when the optional `backpex` dependency is there;
+  `Fil.Backpex.*` holds only Backpex integrations. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an
+  MFA and turn it into a disk with `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented
+  by `Fil.Support.DiskOption` (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}` for a
+  directory (`Fil.LiveView`). Options that end up in compiled code, such as a plug's or an Ecto field's, take a function
+  only as a capture with its module (`:remote_fun`), because they can't hold an anonymous function. `Fil.Ecto.Ref` takes
+  no `%Fil.Disk{}` either, so no credentials end up in the beam. Shared internal helpers go in `Fil.Support.*`
+  (`@moduledoc false`).
 - **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
   `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
   the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never
@@ -124,8 +126,9 @@ matrix covers each of them. The integration suite runs once, on the latest Elixi
 `compose.yml`. When `elixir:` in `mix.exs` changes or a new OTP release comes out, update the matrix.
 
 The checks job also compiles `fil` without its optional dependencies (`mix compile --no-optional-deps` in its own build
-path), so a module that uses Plug, Vix, Kino or Phoenix LiveView without a compile guard (`if Code.ensure_loaded?(...)`)
-fails the build.
+path), so a module that uses Plug, Vix, Kino, Phoenix LiveView, Ecto or Backpex without a compile guard
+(`if Code.ensure_loaded?(...)`) fails the build. Mix keeps the dependencies of an optional dependency in that compile,
+so one that needs another optional dependency of Fil is listed as optional itself (`phoenix_ecto`, which needs Plug).
 
 The last job, `CI passed`, fails if any other job failed, was cancelled or was skipped. It's the only check the ruleset
 on `main` requires, so the ruleset stays the same when the matrix changes. A new job goes into its `needs:`.
@@ -223,6 +226,12 @@ list).
   The LiveView's session is signed and refuses functions, so the test passes an agent with the upload options and the
   function the form's submit calls. The LiveView process finds the test's memory store through `$callers`, so the tests
   need no `allow/2` and stay async.
+- `Fil.Backpex.Upload` tests drive the LiveResource `Fil.BackpexTest.ProductLive` (test/support) with `live/2` through
+  `Fil.BackpexTest.Endpoint`, which `test_helper.exs` configures and starts. The repo is defined in the test file (a
+  repo in test/support would get Ecto's doctests from `Fil.DoctestTest`), the test puts the pid of its in-memory repo
+  into the session, and an `on_mount` hook points the LiveView at it. `Fil.BackpexTest.DirectUpload` allows
+  `direct: true` on Backpex releases that crash on errors of direct uploads, and sends the test each signed upload to
+  PUT.
 - `Fil.Ecto.Ref` tests that need a database start an in-memory SQLite repo of their own with `start_supervised!/1`
   (`name: nil`, `database: ":memory:"`, `pool_size: 1`), point `Repo.put_dynamic_repo/1` at it and run the SQLite
   migration from the docs with `Ecto.Migrator.up/4`, which uses the dynamic repo. So they stay async without a sandbox.
