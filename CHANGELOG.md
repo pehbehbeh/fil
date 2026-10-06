@@ -100,7 +100,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `Fil.stream/3` itself, and the new `size:` option gives it for other streams. `size: :unknown` turns finding it off,
   for a file that grows while it's written (a log) or whose stat size may be wrong (`/sys`, network and FUSE file
   systems).
-  ([#10](https://github.com/pehbehbeh/fil/pull/10), [#15](https://github.com/pehbehbeh/fil/pull/15))
+  ([#10](https://github.com/pehbehbeh/fil/pull/10), [#15](https://github.com/pehbehbeh/fil/pull/15),
+  [#38](https://github.com/pehbehbeh/fil/pull/38))
 - `Fil.Op.update_content/2` and `Fil.Op.update_result/2` take a `stream:` function, which transforms a stream lazily,
   chunk by chunk or with state across chunks. `op.streaming` marks a read from `Fil.stream/3`. A read transform that
   raises one of `Fil`'s errors turns the read into that error. The plugins guide describes what a plugin can rely on.
