@@ -4,7 +4,7 @@ defmodule Fil.NotFoundError do
 
   Adapters return it for a missing file, a missing directory and a path that goes through a file (`report.txt/x`),
   which doesn't exist on an object store either. `Fil.LiveView` returns it with `reason: :eisdir` when the path of a
-  direct upload is a directory.
+  direct upload is a directory, and `Fil.Plug.send_file/3` when the path to send is one.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> {:error, error} = Fil.read(disk, "nope.txt")
