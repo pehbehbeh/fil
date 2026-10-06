@@ -156,6 +156,10 @@ raises one turns the read into `{:error, error}`, with the operation, the path a
 error is raised to whoever reads it (see [Streams](#streams)). On a write, one raised while the content is read (by a
 transform, or by a stream from `Fil.stream/3`) is the write's result. Any other exception propagates as it is.
 
+A plugin that refuses content returns or raises `Fil.InvalidContentError`, with a `:reason` it documents. Before the
+content is read, it answers with `Fil.Op.put_result/2`. While the content is read, it raises the error from a scan
+(see [Inspecting content](#inspecting-content)), and the write returns it.
+
 ## Content
 
 Change the content of a write with `Fil.Op.update_content/2` and the content of a read with `Fil.Op.update_result/2`,
@@ -265,6 +269,41 @@ On S3, a stream without a size is uploaded in parts. A plugin that knows the new
 
 So offsets always count bytes of the content as the caller gets it. The options are in `op.options`: a plugin that
 keeps what a read returned, such as a cache, checks for `:offset` and `:length` there and keeps only whole files.
+
+## Inspecting content
+
+A plugin that only looks at the content, to check it, count it or hash it, reads it with `Fil.Op.scan_content/4` on a
+write and `Fil.Op.scan_result/4` on a read. They take an accumulator, a function that gets each chunk with it, and a
+function that gets the last accumulator once the content has ended:
+
+```elixir
+def call(%Fil.Op{name: :write} = op, next, _opts) do
+  op
+  |> Fil.Op.scan_content(:header, &check_header/2)
+  |> next.()
+end
+
+def call(op, next, _opts), do: next.(op)
+
+# The first chunk has to start with the CSV header, the rest isn't looked at.
+defp check_header(chunk, :header) do
+  if String.starts_with?(chunk, "id,email,"), do: :body, else: raise(%Fil.InvalidContentError{reason: :csv_header})
+end
+
+defp check_header(_chunk, :body), do: :body
+```
+
+Unlike `Fil.Op.update_content/2`, a scan leaves the content as it is: the same chunks, and the `:size` option of the
+write stays, so S3 still sends a stream of known size in one request. Content in memory is scanned right away, as one
+chunk. A stream is scanned as the adapter reads it, and each chunk is passed on only after the function has seen it.
+
+A scan refuses the content by raising `Fil.InvalidContentError`, from the function or from the end. The write returns
+the error and writes nothing, on every adapter: the end runs before the storage keeps the last chunk. Anything else
+raised propagates, as a bug in the plugin.
+
+What a scan finds in a stream exists only once the adapter has read it, after `next` returned, and the stream's
+functions can't change the op. A plugin that needs the result on its way back sends it from the end to the process
+that called it.
 
 ## Paths
 

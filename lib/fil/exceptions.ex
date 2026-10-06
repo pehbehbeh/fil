@@ -66,6 +66,41 @@ defmodule Fil.InvalidRequestError do
   def message(error), do: Fil.Support.Error.message(error, "invalid request")
 end
 
+defmodule Fil.InvalidContentError do
+  @moduledoc """
+  A plugin refused the content. Send other content.
+
+  Plugins return or raise it for content that breaks the disk's rules, such as a file that's too large or of a type the
+  disk doesn't take. `:reason` says which rule, in the form the plugin documents. Raised while the content of a write
+  is read (from a function given to `Fil.Op.scan_content/4`, say), it's the write's result, and nothing is written.
+  `Fil.Plug` answers an upload that fails with it with a `413` for `{:too_large, _}`, a `415` for
+  `{:content_type, _}`, `{:content_type_mismatch, _, _}` and `{:extension, _}`, and a `422` for anything else, without
+  the reason.
+
+      iex> disk =
+      ...>   Fil.disk(adapter: Fil.Adapter.Memory)
+      ...>   |> Fil.attach(:no_html, fn op, next, _opts ->
+      ...>     op
+      ...>     |> Fil.Op.scan_content(nil, fn chunk, acc ->
+      ...>       if chunk =~ "<script", do: raise(%Fil.InvalidContentError{reason: :html}), else: acc
+      ...>     end)
+      ...>     |> next.()
+      ...>   end)
+      iex> {:error, error} = Fil.write(disk, "notes.txt", "<script>alert(1)</script>")
+      iex> Exception.message(error)
+      ~s|could not write "notes.txt" on #Fil.Disk<memory>: the content was rejected (:html)|
+      iex> Fil.exists?(disk, "notes.txt")
+      false
+  """
+
+  defexception [:op, :path, :disk, :reason]
+
+  @type t :: %__MODULE__{op: Fil.Op.name() | nil, path: String.t() | nil, disk: Fil.Disk.t() | nil, reason: term()}
+
+  @impl Exception
+  def message(error), do: Fil.Support.Error.message(error, "the content was rejected")
+end
+
 defmodule Fil.AlreadyExistsError do
   @moduledoc """
   A write, a copy or a move with `if_exists: :error` found a file already there. Read that file and decide again.

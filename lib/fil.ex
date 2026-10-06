@@ -29,6 +29,7 @@ defmodule Fil do
           Fil.NotFoundError.t()
           | Fil.AccessDeniedError.t()
           | Fil.InvalidRequestError.t()
+          | Fil.InvalidContentError.t()
           | Fil.AlreadyExistsError.t()
           | Fil.ConflictError.t()
           | Fil.ChecksumMismatchError.t()

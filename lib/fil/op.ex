@@ -12,11 +12,11 @@ defmodule Fil.Op do
     * `:path`: the normalized path, relative to the disk root
     * `:dest`: the destination path of a `:cp` or `:rename` on the same disk, `nil` otherwise
     * `:content`: the content of a `:write`, `nil` otherwise: iodata, or a stream of it. Change it with
-      `update_content/2`
+      `update_content/2`, and read it without changing it with `scan_content/4`
     * `:streaming`: `true` for a `:read` from `Fil.stream/3`, whose result is a stream instead of a binary
     * `:options`: the validated options of the call
     * `:result`: `nil` on the way in, then `{:ok, value}` or `{:error, exception}` with the same value the `Fil`
-      function returns. Change a read result with `update_result/2`
+      function returns. Change a read result with `update_result/2`, and read it with `scan_result/4`
     * `:private`: a map for plugins to pass data along
   """
 
@@ -249,6 +249,102 @@ defmodule Fil.Op do
 
   def materialize(%__MODULE__{} = op), do: op
 
+  @doc """
+  Reads the content of a `:write` as it passes, without changing it. Other operations are returned unchanged.
+
+  `fun` gets each chunk with the accumulator and returns the next one, and `done` gets the last accumulator after the
+  last chunk. Content in memory is one chunk, read right away. A stream is read when the adapter reads it, chunk by
+  chunk, and each chunk is passed on only after `fun` has seen it. Empty content never reaches `fun`, but always
+  `done`.
+
+  The content, its chunks and the `:size` option stay as they are, so S3 still sends a stream of known size in one
+  request. To refuse the content, raise `Fil.InvalidContentError` from `fun` or `done`: the write returns it, and
+  nothing is written, even when `done` raises after the last chunk. Any other exception propagates.
+
+  This one refuses content over 1 MB as it arrives:
+
+      Fil.Op.scan_content(op, 0, fn chunk, size ->
+        size = size + byte_size(chunk)
+        if size > 1_000_000, do: raise(%Fil.InvalidContentError{reason: :too_large}), else: size
+      end)
+
+  See [Inspecting content](plugins.md#inspecting-content).
+  """
+  @spec scan_content(t(), acc, (binary(), acc -> acc), (acc -> term())) :: t() when acc: term()
+  def scan_content(op, acc, fun, done \\ &scanned/1)
+
+  def scan_content(%__MODULE__{name: :write, content: content} = op, acc, fun, done)
+      when is_function(fun, 2) and is_function(done, 1) do
+    if Content.iodata?(content) do
+      reading_content(fn -> scan_iodata(content, acc, fun, done) end)
+      op
+    else
+      %{op | content: scan_stream(content, acc, fun, done)}
+    end
+  end
+
+  def scan_content(%__MODULE__{} = op, _acc, fun, done) when is_function(fun, 2) and is_function(done, 1), do: op
+
+  @doc """
+  Reads the content returned by a successful `:read` as it passes, without changing it. Other operations and errors
+  are returned unchanged.
+
+  Takes the same functions as `scan_content/4`. Content in memory is read right away, and one of `Fil`'s errors raised
+  from `fun` or `done`, such as `Fil.InvalidContentError`, turns the read into that error. The result of
+  `Fil.stream/3` is read when the caller reads it, and the error is raised to the caller then, with the operation, the
+  path and the disk filled in. `done` runs only when the caller reads to the end: `Enum.take/2` stops before it.
+  """
+  @spec scan_result(t(), acc, (binary(), acc -> acc), (acc -> term())) :: t() when acc: term()
+  def scan_result(op, acc, fun, done \\ &scanned/1)
+
+  def scan_result(%__MODULE__{name: :read, result: {:ok, content}} = op, acc, fun, done)
+      when is_function(fun, 2) and is_function(done, 1) do
+    if Content.iodata?(content) do
+      %{op | result: scan_iodata_result(content, acc, fun, done)}
+    else
+      %{op | result: {:ok, scan_stream(content, acc, fun, done)}}
+    end
+  end
+
+  def scan_result(%__MODULE__{} = op, _acc, fun, done) when is_function(fun, 2) and is_function(done, 1), do: op
+
+  defp scanned(_acc), do: :ok
+
+  defp scan_iodata(content, acc, fun, done) do
+    acc =
+      case IO.iodata_to_binary(content) do
+        "" -> acc
+        binary -> fun.(binary, acc)
+      end
+
+    done.(acc)
+  end
+
+  defp scan_iodata_result(content, acc, fun, done) do
+    _ = scan_iodata(content, acc, fun, done)
+    {:ok, content}
+  rescue
+    error -> transform_error(error, __STACKTRACE__)
+  end
+
+  # A stream whose size is known keeps it (`Fil.Support.Sized`), because the bytes don't change.
+  defp scan_stream(%Sized{stream: stream} = sized, acc, fun, done),
+    do: %{sized | stream: scan_stream(stream, acc, fun, done)}
+
+  defp scan_stream(stream, acc, fun, done) do
+    stream
+    |> Content.chunks()
+    |> Stream.transform(
+      fn -> acc end,
+      fn chunk, acc -> {[chunk], fun.(chunk, acc)} end,
+      fn acc ->
+        _ = done.(acc)
+        {[], acc}
+      end,
+      fn _acc -> :ok end
+    )
+  end
+
   defp transform_iodata(content, funs) do
     binary = IO.iodata_to_binary(content)
 
@@ -470,9 +566,10 @@ defmodule Fil.Op do
 
   # `Fil.write/4` found the size of the caller's stream (a `Fil.Support.Sized`) and checks the stream against it
   # itself. A plugin that replaced the stream and left that size as it was doesn't know the size of its own stream, so
-  # the adapter gets none, instead of a check against a size nobody declared.
-  defp found_size(%__MODULE__{name: :write, content: content} = op, %__MODULE__{content: %Sized{size: size} = sized})
-       when content != sized do
+  # the adapter gets none, instead of a check against a size nobody declared. A scan (`scan_content/4`) keeps the
+  # bytes, and the stream stays a `Fil.Support.Sized`.
+  defp found_size(%__MODULE__{name: :write, content: content} = op, %__MODULE__{content: %Sized{size: size}})
+       when not is_struct(content, Sized) do
     if op.options[:size] == size, do: drop_size(op), else: op
   end
 
