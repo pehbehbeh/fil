@@ -653,6 +653,137 @@ defmodule Fil.PlugTest do
     end
   end
 
+  describe "send_file/3" do
+    test "sends the file with its validators and keeps the headers set before", %{disk: disk} do
+      {:ok, report} = Fil.write(disk, "reports/q3.csv", "a,b\n1,2\n")
+      {:ok, stat} = Fil.stat(report)
+
+      assert {:ok, conn} =
+               :get
+               |> conn("/download")
+               |> put_resp_header("cache-control", "private")
+               |> Fil.Plug.send_file(report)
+
+      assert {conn.status, conn.state, conn.resp_body} == {200, :chunked, "a,b\n1,2\n"}
+      assert get_resp_header(conn, "content-type") == ["text/csv"]
+      assert get_resp_header(conn, "etag") == [~s("#{stat.etag}")]
+      assert get_resp_header(conn, "accept-ranges") == ["bytes"]
+      assert get_resp_header(conn, "cache-control") == ["private"]
+      assert get_resp_header(conn, "content-disposition") == []
+    end
+
+    test "takes a disk and a path, and a content type and a disposition", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "exports/7f3a", "a,b\n")
+
+      for {disposition, header} <- [
+            {:inline, "inline"},
+            {:attachment, ~s(attachment; filename="7f3a")},
+            {{:attachment, "Export März.csv"},
+             ~s(attachment; filename="Export M_rz.csv"; filename*=UTF-8''Export%20M%C3%A4rz.csv)}
+          ] do
+        opts = [content_type: "text/csv", disposition: disposition]
+        request = conn(:get, "/")
+        {:ok, conn} = Fil.Plug.send_file(request, disk, "exports/7f3a", opts)
+
+        assert conn.resp_body == "a,b\n"
+        assert get_resp_header(conn, "content-type") == ["text/csv"]
+        assert get_resp_header(conn, "content-disposition") == [header]
+      end
+    end
+
+    test "answers conditional requests, ranges and HEAD", %{disk: disk} do
+      {:ok, file} = Fil.write(disk, "a.txt", "0123456789")
+      {:ok, stat} = Fil.stat(file)
+
+      {:ok, not_modified} = send_with_headers(:get, file, [{"if-none-match", ~s("#{stat.etag}")}])
+      assert {not_modified.status, not_modified.resp_body} == {304, ""}
+
+      {:ok, part} = send_with_headers(:get, file, [{"range", "bytes=2-4"}], disposition: :attachment)
+      assert {part.status, part.resp_body} == {206, "234"}
+      assert get_resp_header(part, "content-range") == ["bytes 2-4/10"]
+      assert get_resp_header(part, "content-disposition") == [~s(attachment; filename="a.txt")]
+
+      {:ok, outside} = send_with_headers(:get, file, [{"range", "bytes=20-"}], disposition: :attachment)
+      assert {outside.status, outside.resp_body} == {416, "the range is outside the file"}
+      assert get_resp_header(outside, "content-disposition") == []
+
+      {:ok, head} = send_with_headers(:head, file, [])
+      assert {head.status, head.resp_body} == {200, ""}
+      assert get_resp_header(head, "content-type") == ["text/plain"]
+    end
+
+    test "returns the error for a missing file or a directory, and sends nothing", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "reports/q3.csv", "a,b\n")
+      conn = conn(:get, "/")
+
+      assert {:error, %Fil.NotFoundError{path: "reports/q4.csv"}} = Fil.Plug.send_file(conn, disk, "reports/q4.csv")
+      assert {:error, %Fil.NotFoundError{reason: :eisdir}} = Fil.Plug.send_file(conn, disk, "reports")
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.Plug.send_file(conn, disk, "../a.csv")
+      assert conn.state == :unset
+    end
+
+    test "returns the error of a read that fails after the stat, and the mounted plug answers it", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "q3.csv", "a,b\n")
+
+      failing =
+        Fil.attach(disk, :failing, fn
+          %Fil.Op{name: :read} = op, _next, _opts -> Fil.Op.put_result(op, {:error, %Fil.UnavailableError{}})
+          op, next, _opts -> next.(op)
+        end)
+
+      conn = conn(:get, "/")
+
+      assert {:error, %Fil.UnavailableError{}} = Fil.Plug.send_file(conn, failing, "q3.csv")
+      assert conn.state == :unset
+      assert download(failing, "q3.csv", []).status == 503
+    end
+
+    test "content_type: wins over the stored content type", %{disk: disk} do
+      {:ok, report} = Fil.write(disk, "q3", "a,b\n", content_type: "application/octet-stream")
+      request = conn(:get, "/")
+
+      {:ok, conn} = Fil.Plug.send_file(request, report, content_type: "text/csv")
+      assert get_resp_header(conn, "content-type") == ["text/csv"]
+    end
+
+    test "a POST gets the whole file, whatever its conditional and range headers", %{disk: disk} do
+      {:ok, file} = Fil.write(disk, "a.txt", "0123456789")
+      {:ok, stat} = Fil.stat(file)
+
+      {:ok, conn} = send_with_headers(:post, file, [{"if-none-match", ~s("#{stat.etag}")}, {"range", "bytes=2-4"}])
+      assert {conn.status, conn.resp_body} == {200, "0123456789"}
+    end
+
+    test "send_file! returns the conn or raises the error", %{disk: disk} do
+      {:ok, report} = Fil.write(disk, "q3.csv", "a,b\n")
+      conn = conn(:get, "/")
+
+      assert Fil.Plug.send_file!(conn, report).resp_body == "a,b\n"
+      assert Fil.Plug.send_file!(conn, disk, "q3.csv", disposition: :inline).resp_body == "a,b\n"
+      assert_raise Fil.NotFoundError, fn -> Fil.Plug.send_file!(conn, disk, "q4.csv") end
+    end
+
+    test "raises for bad options", %{disk: disk} do
+      report = Fil.ref(disk, "q3.csv")
+      conn = conn(:get, "/")
+
+      assert_raise NimbleOptions.ValidationError, fn ->
+        Fil.Plug.send_file(conn, report, disposition: :download)
+      end
+
+      assert_raise ArgumentError, ~r/can't be empty/, fn ->
+        Fil.Plug.send_file(conn, report, disposition: {:attachment, ""})
+      end
+    end
+  end
+
+  defp send_with_headers(method, file, headers, opts \\ []) do
+    method
+    |> conn("/download")
+    |> then(&Enum.reduce(headers, &1, fn {name, value}, conn -> put_req_header(conn, name, value) end))
+    |> Fil.Plug.send_file(file, opts)
+  end
+
   # A GET (or another method) of a signed URL for `path`, with request headers.
   defp download(disk, path, headers, method \\ :get) do
     {:ok, url} = Fil.signed_url(disk, path)
@@ -863,6 +994,74 @@ defmodule Fil.PlugTest.OneDisk do
             |> call(disk)).status == 200
 
     assert_received {:put, "https://bucket.s3.us-east-1.amazonaws.com/inbox/new.bin", "streamed", ["UNSIGNED-PAYLOAD"]}
+  end
+
+  test "send_file/3 streams a range from an S3 disk" do
+    test = self()
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      case conn.method do
+        "HEAD" ->
+          conn
+          |> put_resp_header("content-length", "10")
+          |> put_resp_header("etag", ~s("abc"))
+          |> send_resp(200, "")
+
+        "GET" ->
+          send(test, {:range, get_req_header(conn, "range")})
+          send_resp(conn, 206, "234")
+      end
+    end)
+
+    disk =
+      Fil.disk(
+        adapter: Fil.Adapter.S3,
+        bucket: "bucket",
+        access_key_id: "AKIDEXAMPLE",
+        secret_access_key: "secret",
+        req_options: [plug: {Req.Test, __MODULE__}]
+      )
+
+    {:ok, conn} =
+      :get
+      |> conn("/download")
+      |> put_req_header("range", "bytes=2-4")
+      |> Fil.Plug.send_file(disk, "exports/7f3a.csv", disposition: :attachment)
+
+    assert {conn.status, conn.resp_body} == {206, "234"}
+    assert get_resp_header(conn, "content-range") == ["bytes 2-4/10"]
+    assert get_resp_header(conn, "etag") == [~s("abc")]
+    assert get_resp_header(conn, "content-disposition") == [~s(attachment; filename="7f3a.csv")]
+    assert_received {:range, ["bytes=2-4"]}
+  end
+
+  test "send_file/3 stops reading when the client closes the connection", %{memory: disk} do
+    test = self()
+
+    {:ok, _} = Fil.write(disk, "big.bin", "abc")
+
+    # The stream sends each chunk it reads to the test, and the connection is closed on the first chunk.
+    reading =
+      Fil.attach(disk, :chunks, fn
+        %Fil.Op{name: :read} = op, _next, _opts ->
+          chunks =
+            Stream.map(["a", "b", "c"], fn chunk ->
+              send(test, {:read, chunk})
+              chunk
+            end)
+
+          Fil.Op.put_result(op, {:ok, chunks})
+
+        op, next, _opts ->
+          next.(op)
+      end)
+
+    conn = %{conn(:get, "/download") | adapter: {Fil.PlugHelper.ClosingAdapter, test}}
+
+    assert {:ok, %Plug.Conn{state: :chunked}} = Fil.Plug.send_file(conn, reading, "big.bin")
+    assert_received {:read, "a"}
+    assert_received :closed
+    refute_received {:read, "b"}
   end
 
   test "an upload over :max_body_size into an S3 disk aborts the upload in parts" do

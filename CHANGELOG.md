@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Fil.Plug.send_file/3` sends a file from a disk as the response of a controller, on every adapter, with the same
+  `etag`, `304`, ranges and streaming as the mounted plug, plus `content_type:` and `disposition:`. A missing file
+  returns the error before anything is sent, so an `action_fallback` can answer it.
+  ([#39](https://github.com/pehbehbeh/fil/pull/39))
 - `Fil.disk/1` takes `signed_url:` with default options for `Fil.signed_url/3` on that disk (`expires_in:`,
   `disposition:` and `if_exists:`), so a disk from config can give every signed URL a day and every download the
   `:attachment` disposition. The options of a call replace them, and a default that doesn't fit the method (a

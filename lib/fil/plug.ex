@@ -107,6 +107,20 @@ if Code.ensure_loaded?(Plug) do
 
     <!-- tabs-close -->
 
+    ## Sending a file from a controller
+
+    `send_file/3` sends one file as the response of a controller action, with the same headers, conditional requests and
+    ranges as the mounted plug. The controller decides who gets the file, so no signed URL is involved:
+
+        def download(conn, %{"id" => id}) do
+          with {:ok, report} <- Reports.file(conn.assigns.current_scope, id),
+               {:ok, conn} <- Fil.Plug.send_file(conn, report, disposition: {:attachment, "report-\#{id}.csv"}) do
+            conn
+          end
+        end
+
+    A missing file returns the error, so the controller's `action_fallback` can answer it.
+
     ## Responses
 
       * `GET` and `HEAD` on a URL signed for `:get` return the file, with its stored content type or one guessed from
@@ -148,9 +162,28 @@ if Code.ensure_loaded?(Plug) do
 
     alias Fil.Support.Conditional
 
-    import Plug.Conn
+    # `send_file/3,4` here send a file from a disk.
+    import Plug.Conn, except: [send_file: 3, send_file: 4, send_file: 5]
 
     require Logger
+
+    @send_file_schema NimbleOptions.new!(
+                        content_type: [
+                          type: :string,
+                          doc: """
+                          The `content-type` of the response. Without it, the file's stored content type, or one guessed
+                          from its extension.
+                          """
+                        ],
+                        disposition: [
+                          type: {:or, [{:in, [:inline, :attachment]}, {:tuple, [{:in, [:attachment]}, :string]}]},
+                          doc: """
+                          The `content-disposition` of the response. `:inline` lets the browser show the file,
+                          `:attachment` saves it under the file's name, and `{:attachment, filename}` under another
+                          name, which can be any UTF-8 string. Without it, no `content-disposition` is sent.
+                          """
+                        ]
+                      )
 
     # The most an upload is read at a time.
     @read_length 1_048_576
@@ -188,6 +221,79 @@ if Code.ensure_loaded?(Plug) do
       else
         _outside_or_not_served -> conn
       end
+    end
+
+    @doc """
+    Sends a file as the response, from a controller or a plug of your own.
+
+        {:ok, conn} = Fil.Plug.send_file(conn, report, disposition: {:attachment, "Q3 report.pdf"})
+
+    The file goes out as the mounted plug sends a download (see [Responses](#module-responses)), on every adapter:
+    streamed in a chunked response, with `etag`, `last-modified` and `accept-ranges`, a `304` for a matching
+    `if-none-match` or `if-modified-since`, a `206` for one byte range and a `416` for a range outside the file. A
+    `HEAD` gets the headers only. When the client closes the connection, the rest of the file isn't read. Headers set
+    on `conn` before the call are kept, so you can add a `cache-control`, for example.
+
+    Conditional requests and ranges apply to `GET` and `HEAD`. Any other method, such as a `POST` to an export action,
+    gets the whole file.
+
+    Returns `{:ok, conn}` with the response sent, whatever its status. A missing file, a directory
+    (`Fil.NotFoundError` with `reason: :eisdir`) and any other error of `Fil.stat/2` or `Fil.stream/3` return
+    `{:error, exception}` before anything is sent, so the caller can answer it, for example in an `action_fallback`. An
+    error while the file is streamed comes after the status line, so it raises and the client gets a truncated
+    response.
+
+    ## Options
+
+    #{NimbleOptions.docs(@send_file_schema)}
+    """
+    @spec send_file(Plug.Conn.t(), Fil.Ref.t()) :: Fil.result(Plug.Conn.t())
+    def send_file(conn, ref), do: send_file(conn, ref, [])
+
+    @doc "Sends a file as the response. See `send_file/2`."
+    @spec send_file(Plug.Conn.t(), Fil.Disk.t(), Path.t()) :: Fil.result(Plug.Conn.t())
+    @spec send_file(Plug.Conn.t(), Fil.Ref.t(), keyword()) :: Fil.result(Plug.Conn.t())
+    def send_file(conn, %Fil.Disk{} = disk, path) when is_binary(path), do: send_file(conn, Fil.ref(disk, path), [])
+
+    def send_file(%Plug.Conn{} = conn, %Fil.Ref{} = ref, opts) when is_list(opts) do
+      opts = NimbleOptions.validate!(opts, @send_file_schema)
+
+      headers =
+        for disposition <- List.wrap(opts[:disposition]) do
+          {"content-disposition", disposition_header(disposition, ref)}
+        end
+
+      send_download(conn, ref, opts[:content_type], headers)
+    end
+
+    @doc "Sends a file as the response. See `send_file/2`."
+    @spec send_file(Plug.Conn.t(), Fil.Disk.t(), Path.t(), keyword()) :: Fil.result(Plug.Conn.t())
+    def send_file(conn, %Fil.Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
+      send_file(conn, Fil.ref(disk, path), opts)
+    end
+
+    @doc "Same as `send_file/2`, raising the error on failure."
+    @spec send_file!(Plug.Conn.t(), Fil.Ref.t()) :: Plug.Conn.t()
+    def send_file!(conn, ref), do: unwrap!(send_file(conn, ref))
+
+    @doc "Same as `send_file/3`, raising the error on failure."
+    @spec send_file!(Plug.Conn.t(), Fil.Disk.t(), Path.t()) :: Plug.Conn.t()
+    @spec send_file!(Plug.Conn.t(), Fil.Ref.t(), keyword()) :: Plug.Conn.t()
+    def send_file!(conn, a, b), do: unwrap!(send_file(conn, a, b))
+
+    @doc "Same as `send_file/4`, raising the error on failure."
+    @spec send_file!(Plug.Conn.t(), Fil.Disk.t(), Path.t(), keyword()) :: Plug.Conn.t()
+    def send_file!(conn, disk, path, opts), do: unwrap!(send_file(conn, disk, path, opts))
+
+    defp unwrap!({:ok, conn}), do: conn
+    defp unwrap!({:error, error}), do: raise(error)
+
+    # The file name for `:attachment` comes from the path, as on `Fil.signed_url/3`.
+    defp disposition_header({:attachment, ""}, _ref),
+      do: raise(ArgumentError, "the file name of the :disposition option can't be empty")
+
+    defp disposition_header(disposition, ref) do
+      Fil.Support.ContentDisposition.header(disposition, Path.basename(ref.path))
     end
 
     defp handle(conn, disk, secret, opts) do
@@ -245,24 +351,13 @@ if Code.ensure_loaded?(Plug) do
     defp method(%{method: "PUT"}), do: {:ok, :put}
     defp method(_conn), do: {:error, :method_not_allowed}
 
-    # The file is streamed to the client (`Fil.stream/3`), so its size doesn't matter. The response is chunked, because
-    # plugins can change the content, and then the stored size isn't the size sent. An error while streaming comes
-    # after the status line, so it raises and the client gets a truncated response. The stat gives the validators, so a
-    # `304` or a `416` reads nothing.
+    # A signed URL's disposition is already the header value. A failed stat or stream is answered here, because nothing
+    # has been sent yet.
     defp serve(conn, :get, disk, path, signed, _max_body_size) do
       headers = for disposition <- List.wrap(signed["disposition"]), do: {"content-disposition", disposition}
 
-      with {:ok, stat} <- Fil.stat(disk, path),
-           :regular <- stat.type do
-        conn = put_validators(conn, stat)
-
-        if not_modified?(conn, stat) do
-          send_resp(conn, 304, "")
-        else
-          send_range(conn, {disk, path, stat, headers}, range(conn, stat))
-        end
-      else
-        :directory -> send_error(conn, 404, "not found")
+      case send_download(conn, Fil.ref(disk, path), nil, headers) do
+        {:ok, conn} -> conn
         {:error, error} -> send_fil_error(conn, error)
       end
     end
@@ -294,6 +389,31 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
+    # The file is streamed to the client (`Fil.stream/3`), so its size doesn't matter. The response is chunked, because
+    # plugins can change the content, and then the stored size isn't the size sent. The stat gives the validators, so a
+    # `304` or a `416` reads nothing. Errors before the status line are returned. An error while streaming comes after
+    # it, so it raises and the client gets a truncated response.
+    defp send_download(conn, ref, content_type, headers) do
+      with {:ok, stat} <- Fil.stat(ref),
+           :ok <- check_regular(stat, ref) do
+        conn = put_validators(conn, stat)
+
+        if not_modified?(conn, stat) do
+          {:ok, send_resp(conn, 304, "")}
+        else
+          file = %{ref: ref, stat: stat, content_type: content_type, headers: headers}
+
+          send_range(conn, file, range(conn, stat))
+        end
+      end
+    end
+
+    # A directory is no file to send, as for `Fil.LiveView`.
+    defp check_regular(%Fil.Stat{type: :regular}, _ref), do: :ok
+
+    defp check_regular(%Fil.Stat{type: :directory}, ref),
+      do: {:error, %Fil.NotFoundError{reason: :eisdir, op: :stat, path: ref.path, disk: ref.disk}}
+
     defp put_validators(conn, stat) do
       headers = [
         {"accept-ranges", "bytes"},
@@ -304,9 +424,12 @@ if Code.ensure_loaded?(Plug) do
       merge_resp_headers(conn, for({name, value} <- headers, value != nil, do: {name, value}))
     end
 
-    defp not_modified?(conn, stat) do
+    # Conditional requests are for `GET` and `HEAD` only. Another method (a `POST` to a controller) gets the file.
+    defp not_modified?(%{method: method} = conn, stat) when method in ["GET", "HEAD"] do
       Conditional.not_modified?(stat, get_req_header(conn, "if-none-match"), get_req_header(conn, "if-modified-since"))
     end
+
+    defp not_modified?(_conn, _stat), do: false
 
     # Only a `GET` has a range. A `HEAD` gets the headers of the whole file.
     defp range(%{method: "GET"} = conn, stat) do
@@ -316,52 +439,53 @@ if Code.ensure_loaded?(Plug) do
     defp range(_conn, _stat), do: :whole
 
     # A `416` is a plain text error, without the file's content type and disposition.
-    defp send_range(conn, {_disk, _path, stat, _headers}, :unsatisfiable) do
-      conn
-      |> put_resp_header("content-range", "bytes */#{stat.size}")
-      |> send_error(416, "the range is outside the file")
+    defp send_range(conn, %{stat: stat}, :unsatisfiable) do
+      conn =
+        conn
+        |> put_resp_header("content-range", "bytes */#{stat.size}")
+        |> send_error(416, "the range is outside the file")
+
+      {:ok, conn}
     end
 
-    defp send_range(conn, {disk, path, _stat, _headers} = file, :whole) do
-      case Fil.stream(disk, path) do
-        {:ok, content} ->
-          conn
-          |> put_file_headers(file)
-          |> send_content(200, content)
-
-        {:error, error} ->
-          send_fil_error(conn, error)
+    defp send_range(conn, file, :whole) do
+      with {:ok, content} <- Fil.stream(file.ref) do
+        conn
+        |> put_file_headers(file)
+        |> send_content(200, content)
       end
     end
 
-    defp send_range(conn, {disk, path, stat, _headers} = file, {:range, offset, length}) do
-      case Fil.stream(disk, path, offset: offset, length: length) do
-        {:ok, content} ->
-          conn
-          |> put_file_headers(file)
-          |> put_resp_header("content-range", "bytes #{offset}-#{offset + length - 1}/#{stat.size}")
-          |> send_content(206, content)
-
-        {:error, error} ->
-          send_fil_error(conn, error)
+    defp send_range(conn, %{stat: stat} = file, {:range, offset, length}) do
+      with {:ok, content} <- Fil.stream(file.ref, offset: offset, length: length) do
+        conn
+        |> put_file_headers(file)
+        |> put_resp_header("content-range", "bytes #{offset}-#{offset + length - 1}/#{stat.size}")
+        |> send_content(206, content)
       end
     end
 
-    defp put_file_headers(conn, {_disk, path, stat, headers}) do
+    defp put_file_headers(conn, file) do
+      content_type = file.content_type || file.stat.content_type || MIME.from_path(file.ref.path)
+
       conn
-      |> put_resp_content_type(stat.content_type || MIME.from_path(path), nil)
-      |> merge_resp_headers(headers)
+      |> put_resp_content_type(content_type, nil)
+      |> merge_resp_headers(file.headers)
     end
 
-    defp send_content(%{method: "HEAD"} = conn, status, _content), do: send_resp(conn, status, "")
+    defp send_content(%{method: "HEAD"} = conn, status, _content), do: {:ok, send_resp(conn, status, "")}
 
+    # A client that closes the connection stops the stream, so the rest of the file is never read.
     defp send_content(conn, status, content) do
-      Enum.reduce_while(content, send_chunked(conn, status), fn chunk, conn ->
-        case chunk(conn, chunk) do
-          {:ok, conn} -> {:cont, conn}
-          {:error, _closed} -> {:halt, conn}
-        end
-      end)
+      conn =
+        Enum.reduce_while(content, send_chunked(conn, status), fn chunk, conn ->
+          case chunk(conn, chunk) do
+            {:ok, conn} -> {:cont, conn}
+            {:error, _closed} -> {:halt, conn}
+          end
+        end)
+
+      {:ok, conn}
     end
 
     # The stream reads the body with the latest conn, which it keeps in the process dictionary, because `read_body/2`
