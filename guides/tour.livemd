@@ -1,0 +1,236 @@
+# Tour
+
+```elixir
+Mix.install([
+  {:fil, "~> 0.2"},
+  {:kino, "~> 0.19"}
+])
+```
+
+## Disks
+
+This notebook runs the API of `Fil` on a local and a memory disk, and you can change any cell and run it again. The
+[overview](https://fil.hexdocs.pm/Fil.html) explains the concepts, and the
+[installation guide](https://fil.hexdocs.pm/installation.html) sets up `Fil` in an application.
+
+A disk says where files are stored: an adapter and its options. It's a plain value, so there's nothing to configure or
+start. The local disk below writes to a directory in the system's temporary directory, which the cell empties first,
+so the notebook starts from scratch every time:
+
+```elixir
+root = Path.join(System.tmp_dir!(), "fil-tour")
+File.rm_rf!(root)
+
+local = Fil.disk(adapter: Fil.Adapter.Local, root: root)
+```
+
+A memory disk keeps its files in a store that belongs to a process, here the one that evaluates the cells.
+`Fil.Adapter.Memory.checkout/0` creates it. Livebook evaluates all regular sections in one process, so this one
+checkout covers the rest of the notebook. The files are gone when the runtime restarts.
+
+```elixir
+:ok = Fil.Adapter.Memory.checkout()
+
+memory = Fil.disk(adapter: Fil.Adapter.Memory)
+```
+
+With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same cells work on S3. In Livebook, the Fil disk
+smart cell (under "+ Smart") builds that disk, with the credentials from Livebook secrets.
+
+## Refs
+
+Every function takes a disk and a path relative to the disk's root:
+
+```elixir
+{:ok, _} = Fil.write(local, "hello.txt", "World")
+
+Fil.read(local, "hello.txt")
+```
+
+A `Fil.Ref` names a file on a disk in one value, built with `Fil.ref/2`. Every function that takes a disk and a path
+also takes a ref in their place:
+
+```elixir
+hello = Fil.ref(local, "hello.txt")
+
+Fil.read(hello)
+```
+
+Actions on files return the ref they acted on, and the bang variants return it without `{:ok, _}`, so you can pipe one
+call into the next. The copy below goes from the local disk to the memory disk, which works between any two disks:
+
+```elixir
+local
+|> Fil.write!("reports/q3.txt", "Revenue: 42")
+|> Fil.cp!(Fil.ref(memory, "backups/q3.txt"))
+|> Fil.read!()
+```
+
+## Listing
+
+`Fil.ls/3` lists a directory, one level deep or, with `recursive: true`, every file below it. The results are refs with
+their `stat`:
+
+```elixir
+Fil.write!(local, "reports/q4.txt", "Revenue: 43")
+
+{:ok, reports} = Fil.ls(local, "reports", recursive: true)
+
+reports
+|> Enum.map(&%{path: &1.path, size: &1.stat.size, modified: &1.stat.mtime})
+|> Kino.DataTable.new()
+```
+
+`Fil.stat/2` returns the same for one file, and `Fil.exists?/2` and `Fil.dir?/2` answer yes or no:
+
+```elixir
+{Fil.stat!(local, "reports/q3.txt"), Fil.exists?(memory, "backups/q3.txt"), Fil.dir?(local, "reports")}
+```
+
+## Errors
+
+Every error is an exception struct that says what you can do about it, and means the same on every disk:
+
+```elixir
+{:error, %Fil.NotFoundError{} = error} = Fil.read(memory, "missing.txt")
+
+Exception.message(error)
+```
+
+The struct has the operation, the path, the disk and what the storage reported in `:reason`, so a log line says which
+file failed and why:
+
+```elixir
+Map.take(error, [:op, :path, :reason])
+```
+
+The bang variants raise the same struct.
+
+## Writes that never replace a file
+
+With `if_exists: :error`, a write creates a file only if it doesn't exist yet, and returns a `Fil.AlreadyExistsError`
+otherwise. That makes a simple lock: whoever creates the file first runs the job. The second write below loses:
+
+```elixir
+lock = fn ->
+  case Fil.write(memory, "jobs/today.lock", "started", if_exists: :error) do
+    {:ok, _lock} -> :run_the_job
+    {:error, %Fil.AlreadyExistsError{}} -> :someone_else_won
+  end
+end
+
+{lock.(), lock.()}
+```
+
+## Streaming
+
+`Fil.write/4` takes a stream as well as a binary, and `Fil.stream/3` returns a file's content as a stream of chunks, so
+large files don't have to fit in memory:
+
+```elixir
+chunks = Stream.map(1..1_000, fn i -> "line #{i}\n" end)
+{:ok, log} = Fil.write(local, "logs/big.log", chunks)
+
+log
+|> Fil.stream!()
+|> Enum.reduce(0, &(byte_size(&1) + &2))
+```
+
+A stream from `Fil.stream/3` can go straight into a write on another disk, piece by piece:
+
+```elixir
+log
+|> Fil.stream!()
+|> then(&Fil.write!(memory, "logs/big.log", &1))
+|> Fil.stat!()
+```
+
+## Plugins
+
+A plugin is a function attached to a disk. It gets each operation, calls `next` to run the rest, and returns the
+result. This one prints every operation on its disk:
+
+```elixir
+logged =
+  Fil.attach(local, :log, fn op, next, _opts ->
+    IO.puts("#{op.name} #{op.path}")
+    next.(op)
+  end)
+
+logged
+|> Fil.write!("notes/todo.txt", "Write the tour")
+|> Fil.cp!("notes/done.txt")
+|> Fil.read!()
+```
+
+The [plugins guide](https://fil.hexdocs.pm/plugins.html) explains how to write your own and lists the ones `Fil` ships,
+such as `Fil.Plugin.ContentType`.
+
+For logs and metrics, every operation also emits [Telemetry](https://hexdocs.pm/telemetry) events.
+`Fil.Telemetry.attach_default_logger/1` logs each one with its duration (at `:debug` by default, `:info` here so
+Livebook shows it):
+
+```elixir
+:ok = Fil.Telemetry.attach_default_logger(level: :info)
+
+Fil.read!(local, "hello.txt")
+Fil.read(local, "missing.txt")
+
+:ok = Fil.Telemetry.detach_default_logger()
+```
+
+## URLs
+
+S3 builds public and signed URLs itself. For local and memory disks, `Fil.Plugin.URL` builds them, and `Fil.Plug`
+serves them from your application (there's no server in this notebook, so the URLs below don't open):
+
+```elixir
+secret = 32 |> :crypto.strong_rand_bytes() |> Base.encode64()
+
+served = Fil.Plugin.URL.attach(local, base_url: "http://localhost:4000/storage", secret: secret)
+
+{:ok, public_url} = Fil.url(served, "hello.txt")
+{:ok, download_url} = Fil.signed_url(served, "reports/q3.txt", expires_in: 900)
+{:ok, upload_url} = Fil.signed_url(served, "inbox/new.txt", method: :put)
+
+[public_url, download_url, upload_url]
+```
+
+The [installation guide](https://fil.hexdocs.pm/installation.html) shows how to mount `Fil.Plug`.
+
+## Temporary files
+
+`Fil.tmp/1` returns a ref to a file in a temporary directory of its own, which is removed when the calling process
+exits. It's on a local disk, so a copy from any disk gives a tool, or `File`, the path it needs:
+
+```elixir
+report = Fil.tmp("q3.txt")
+{:ok, _} = Fil.cp(Fil.ref(memory, "backups/q3.txt"), report)
+
+path = Fil.Tmp.path(report)
+{path, File.read!(path)}
+```
+
+## Browsing a disk
+
+`Fil.Kino.browser/3` shows a disk in Livebook: click a directory to open it, a file to preview it, or download it. It
+only reads unless you pass `writable: true`, which adds a delete button to each file and an upload field below the
+table:
+
+```elixir
+Fil.Kino.browser(local, ".", writable: true)
+```
+
+`Fil.Kino.upload/3` is the upload field on its own, writing each file you pick to a directory of a disk:
+
+```elixir
+Fil.Kino.upload(memory, "inbox")
+```
+
+## Next steps
+
+- The [installation guide](https://fil.hexdocs.pm/installation.html) sets up disks in an application: a module for your
+  disks, the config for each environment and tests.
+- The [plugins guide](https://fil.hexdocs.pm/plugins.html) explains how to write plugins.
+- The [Phoenix guide](https://fil.hexdocs.pm/phoenix.html) stores LiveView uploads on a disk.
+- `Fil.Adapter.S3` lists the options of S3 disks, for AWS and S3-compatible storage.
