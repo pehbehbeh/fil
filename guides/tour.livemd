@@ -81,7 +81,7 @@ reports
 |> Kino.DataTable.new()
 ```
 
-`Fil.stat/2` returns the same for one file, and `Fil.exists?/2` and `Fil.dir?/2` answer yes or no:
+`Fil.stat/2` returns the stat of one file, and `Fil.exists?/2` and `Fil.dir?/2` answer yes or no:
 
 ```elixir
 {Fil.stat!(local, "reports/q3.txt"), Fil.exists?(memory, "backups/q3.txt"), Fil.dir?(local, "reports")}
@@ -122,6 +122,13 @@ end
 {lock.(), lock.()}
 ```
 
+Run the cell again and both writes lose, because the lock is still there. `Fil.rm/2` removes it, and succeeds when the
+file is gone already:
+
+```elixir
+Fil.rm!(memory, "jobs/today.lock")
+```
+
 ## Streaming
 
 `Fil.write/4` takes a stream as well as a binary, and `Fil.stream/3` returns a file's content as a stream of chunks, so
@@ -147,8 +154,8 @@ log
 
 ## Plugins
 
-A plugin is a function attached to a disk. It gets each operation, calls `next` to run the rest, and returns the
-result. This one prints every operation on its disk:
+A plugin is a function attached to a disk. It gets each operation, calls `next` to run the rest, and returns the op,
+with the result in `op.result`. This one prints every operation on its disk:
 
 ```elixir
 logged =
@@ -164,11 +171,11 @@ logged
 ```
 
 The [plugins guide](https://fil.hexdocs.pm/plugins.html) explains how to write your own and lists the ones `Fil` ships,
-such as `Fil.Plugin.ContentType`.
+such as [`Fil.Plugin.ContentType`](https://fil.hexdocs.pm/Fil.Plugin.ContentType.html).
 
 For logs and metrics, every operation also emits [Telemetry](https://hexdocs.pm/telemetry) events.
-`Fil.Telemetry.attach_default_logger/1` logs each one with its duration (at `:debug` by default, `:info` here so
-Livebook shows it):
+[`Fil.Telemetry.attach_default_logger/1`](https://fil.hexdocs.pm/Fil.Telemetry.html#attach_default_logger/1) logs
+each one with its duration (at `:debug` by default, `:info` here so Livebook shows it):
 
 ```elixir
 :ok = Fil.Telemetry.attach_default_logger(level: :info)
@@ -201,7 +208,8 @@ The [installation guide](https://fil.hexdocs.pm/installation.html) shows how to 
 ## Temporary files
 
 `Fil.tmp/1` returns a ref to a file in a temporary directory of its own, which is removed when the calling process
-exits. It's on a local disk, so a copy from any disk gives a tool, or `File`, the path it needs:
+exits. It's on a local disk, so after a copy from any disk, `Fil.Tmp.path/1` gives a command-line tool, or `File`, a
+path:
 
 ```elixir
 report = Fil.tmp("q3.txt")
@@ -213,7 +221,7 @@ path = Fil.Tmp.path(report)
 
 ## Browsing a disk
 
-`Fil.Kino.browser/3` shows a disk in Livebook: click a directory to open it, a file to preview it, or download it. It
+`Fil.Kino.browser/3` shows a disk in Livebook: click a directory to open it, or a file to preview or download it. It
 only reads unless you pass `writable: true`, which adds a delete button to each file and an upload field below the
 table:
 
@@ -233,4 +241,5 @@ Fil.Kino.upload(memory, "inbox")
   disks, the config for each environment and tests.
 - The [plugins guide](https://fil.hexdocs.pm/plugins.html) explains how to write plugins.
 - The [Phoenix guide](https://fil.hexdocs.pm/phoenix.html) stores LiveView uploads on a disk.
-- `Fil.Adapter.S3` lists the options of S3 disks, for AWS and S3-compatible storage.
+- [`Fil.Adapter.S3`](https://fil.hexdocs.pm/Fil.Adapter.S3.html) lists the options of S3 disks, for AWS and
+  S3-compatible storage.

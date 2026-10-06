@@ -15,7 +15,16 @@ defmodule CheckNotebooks do
   @force_markdown ~s(<!-- livebook:{"force_markdown":true} -->)
   @fil_dep ~r/\{:fil, "~> [^"]+"\}/
 
-  def main([]), do: @root |> Path.join("guides/*.livemd") |> Path.wildcard() |> main()
+  def main([]) do
+    case @root |> Path.join("guides/*.livemd") |> Path.wildcard() do
+      [] ->
+        IO.puts(:stderr, "check-notebooks: no notebooks in guides/")
+        System.halt(1)
+
+      notebooks ->
+        main(notebooks)
+    end
+  end
 
   def main(notebooks) do
     failed = Enum.reject(notebooks, &run/1)
@@ -46,14 +55,16 @@ defmodule CheckNotebooks do
   end
 
   # A script that evaluates the cells one at a time, as Livebook does, so the setup cell's `Mix.install/2` runs before
-  # the next cell is compiled. Each cell gets the variables of the ones before it, and errors point at the notebook.
+  # the next cell is compiled. Each cell gets the variables, aliases, imports and requires of the ones before it, and
+  # errors point at the notebook.
   defp script(cells, notebook) do
     """
     #{inspect(cells, limit: :infinity, printable_limit: :infinity)}
-    |> Enum.reduce([], fn {line, code}, binding ->
+    |> Enum.reduce({[], Code.env_for_eval(file: #{inspect(notebook)})}, fn {line, code}, {binding, env} ->
       try do
-        {_result, binding} = Code.eval_string(code, binding, file: #{inspect(notebook)}, line: line)
-        binding
+        quoted = Code.string_to_quoted!(code, file: #{inspect(notebook)}, line: line)
+        {_result, binding, env} = Code.eval_quoted_with_env(quoted, binding, env)
+        {binding, env}
       rescue
         exception ->
           IO.puts(:stderr, "check-notebooks: the cell at line \#{line} of #{Path.basename(notebook)} raised")
@@ -69,7 +80,7 @@ defmodule CheckNotebooks do
     |> String.split("\n")
     |> Enum.with_index(1)
     |> Enum.reduce({[], nil, ""}, fn
-      {"```elixir", number}, {cells, nil, previous} -> {cells, {previous, number + 1, []}, "```elixir"}
+      {"```" <> info = fence, number}, {cells, nil, previous} -> open_or_skip(cells, previous, fence, info, number)
       {"```", _number}, {cells, {before, first, lines}, _previous} -> {[{before, first, lines} | cells], nil, "```"}
       {line, _number}, {cells, {before, first, lines}, _previous} -> {cells, {before, first, [line | lines]}, line}
       {"", _number}, {cells, nil, previous} -> {cells, nil, previous}
@@ -79,6 +90,16 @@ defmodule CheckNotebooks do
     |> Enum.reverse()
     |> Enum.reject(fn {before, _first, _lines} -> before == @force_markdown end)
     |> Enum.map(fn {_before, first, lines} -> {first, lines |> Enum.reverse() |> Enum.join("\n")} end)
+  end
+
+  # Spaces around `elixir` still open a cell, so a fence written in an editor as "``` elixir" isn't skipped without a
+  # word. Fences of other languages are Markdown.
+  defp open_or_skip(cells, previous, fence, info, number) do
+    if String.trim(info) == "elixir" do
+      {cells, {previous, number + 1, []}, fence}
+    else
+      {cells, nil, fence}
+    end
   end
 
   defp install_from_checkout(cells, name) do

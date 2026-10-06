@@ -37,7 +37,7 @@ disk = Fil.disk(adapter: Fil.Adapter.Local, root: "storage")
 
 With [Kino](https://hexdocs.pm/kino) installed too, `Fil.Kino.browser/1` shows the files of a disk in Livebook,
 `Fil.Kino.upload/1` is a file field that writes uploads to a disk, and a Fil disk smart cell builds a disk from a form.
-The [tour](tour.livemd) is a notebook that tries the whole API on a local and a memory disk.
+The [tour](tour.livemd) is a notebook that tries the API on a local and a memory disk.
 
 ## A module for your disks
 

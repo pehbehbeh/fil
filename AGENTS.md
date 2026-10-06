@@ -235,7 +235,7 @@ list).
 - README and `guides/installation.md` examples have to keep working against the actual API. The guide is listed under
   the Guides tab on HexDocs (`extras` in `mix.exs`).
 - Notebooks in `guides/*.livemd` run in CI against the repo's code, like the README examples they have to match.
-  `bin/check-notebooks` runs their Elixir cells in order and swaps the setup cell's `{:fil, "~> 0.2"}` for a `path:`
+  `bin/check-notebooks` runs their Elixir cells in order and swaps the setup cell's `{:fil, "~> ..."}` for a `path:`
   dependency, so a notebook needs exactly one such tuple. Write them in an editor: Livebook rewrites the file when
   it saves, which undoes the 120-column wrapping.
 - Examples name refs after the file they hold (`report`, `backup`, `reports`), not `ref` or `refs`.
