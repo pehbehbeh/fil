@@ -100,7 +100,13 @@ defmodule Fil.MixProject do
       favicon: "assets/icon.svg",
       source_ref: "v#{@version}",
       extra_section: "Guides",
-      extras: ["guides/installation.md", "guides/plugins.md", "guides/phoenix.md", "CHANGELOG.md"],
+      extras: [
+        "guides/tour.livemd",
+        "guides/installation.md",
+        "guides/plugins.md",
+        "guides/phoenix.md",
+        "CHANGELOG.md"
+      ],
       groups_for_docs: [
         Building: &(&1[:section] == :building),
         Operations: &(&1[:section] == :operations),
