@@ -122,6 +122,18 @@ rewrite CHANGELOG.md -v h="## [$version] - $(date -u +%F)" -v u="[unreleased]: $
     { print }
     END { if (!seen) { print ""; print u; print l } }'
 grep -q "^## \[$version\] - " CHANGELOG.md || die "couldn't roll the changelog"
+# A new minor version (not a patch or a pre-release) moves the `{:fil, "~> X.Y"}` examples in the docs to it.
+if [[ "$version" =~ ^([0-9]+\.[0-9]+)\.0$ ]]; then
+  requirement="{:fil, \"~> ${BASH_REMATCH[1]}\"}"
+  examples=$(git grep -lE '\{:fil, "~> [0-9]+\.[0-9]+"\}' -- README.md guides lib) ||
+    die "found no {:fil, \"~> X.Y\"} in README.md, guides or lib"
+  for file in $examples; do
+    rewrite "$file" -v r="$requirement" '{ gsub(/\{:fil, "~> [0-9]+\.[0-9]+"\}/, r) } { print }'
+  done
+  ! git grep -E '\{:fil, "~> [0-9]+\.[0-9]+"\}' -- README.md guides lib | grep -vF "$requirement" ||
+    die "couldn't set $requirement everywhere"
+  echo "Set $requirement in: $(echo $examples)"
+fi
 git commit --quiet -am "Release $tag"
 git tag -a "$tag" -m "Release $tag"
 

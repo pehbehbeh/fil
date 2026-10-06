@@ -148,12 +148,13 @@ bin/release 0.2.0
 It checks that `main` is clean, in sync with `origin` and has a green CI run, refuses a version that is tagged or on
 Hex, and a changelog without entries under Unreleased or with an entry that doesn't link to its pull request, and asks
 before releasing while the milestone `v0.2.0` has open issues or pull requests. Then it bumps `@version` in `mix.exs`,
-renames `## [Unreleased]` in `CHANGELOG.md` to `## [0.2.0] - date` and adds its compare link, commits "Release v0.2.0",
-tags `v0.2.0`, runs `mix hex.publish` (package and docs, with your own Hex login and 2FA), commits a fresh
-`## [Unreleased]` heading, pushes branch and tag, creates the GitHub release from the changelog section and closes the
-milestone. Nothing is pushed before Hex accepted the package, and on failure the script prints how to undo the local
-commits. The release commits go to `main` directly, which the ruleset allows only for repository admins (its bypass
-list).
+renames `## [Unreleased]` in `CHANGELOG.md` to `## [0.2.0] - date` and adds its compare link, sets every
+`{:fil, "~> X.Y"}` in `README.md`, `guides/` and `lib/` to `"~> 0.2"` (for a new minor version only, not for a patch or
+a pre-release), commits "Release v0.2.0", tags `v0.2.0`, runs `mix hex.publish` (package and docs, with your own Hex
+login and 2FA), commits a fresh `## [Unreleased]` heading, pushes branch and tag, creates the GitHub release from the
+changelog section and closes the milestone. So examples in the docs name a dependency as `{:fil, "~> X.Y"}`. Nothing
+is pushed before Hex accepted the package, and on failure the script prints how to undo the local commits. The release
+commits go to `main` directly, which the ruleset allows only for repository admins (its bypass list).
 
 - **Changelog:** `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first,
   one entry per user-visible change under `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, added
