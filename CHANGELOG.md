@@ -20,9 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.ls/3` takes `type: :regular` or `type: :directory` to list only files or only directories. With
   `recursive: true`, `type: :directory` lists every directory of the subtree.
   ([#40](https://github.com/pehbehbeh/fil/pull/40))
-- `Fil.ls/3` takes `glob:` to list the paths that match a pattern, such as `glob: "*/{withText,withoutText}"`, in
-  `Path.wildcard/2`'s syntax. No storage matches globs itself, so `Fil` lists one directory level per segment, and the
-  whole subtree once from a `**` on, the same on every adapter. ([#40](https://github.com/pehbehbeh/fil/pull/40))
+- `Fil.wildcard/2,3` lists the paths of a disk that match a pattern, such as `"media/*/{withText,withoutText}"`, with
+  `Path.wildcard/2`'s syntax and dotfile rule (`match_dot:`), plus `type:`. No storage matches patterns itself, so
+  `Fil` lists one directory level per segment, and the whole subtree once from a `**` on, the same on every adapter.
+  ([#40](https://github.com/pehbehbeh/fil/pull/40))
 - `Fil.exists?/3` and `Fil.stat/3` take the same `type:` option, and `Fil.regular?/1,2` checks for a file. On S3,
   `Fil.regular?/1` sends one `HEAD` and `Fil.dir?/1` one listing, where a missing path took both before. The listing
   that checks for a directory now asks for two keys instead of reading the whole directory.
@@ -144,7 +145,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A recursive `c:Fil.Adapter.ls/3` returns the directories of the subtree too, at least every directory that holds a
   file, and `Fil` leaves them out unless the caller asks with `type: :directory`. Adapters of your own need to list
-  them, or `type: :directory` and `glob:` patterns that match directories find nothing below the first level.
+  them, or `type: :directory` and `Fil.wildcard/3` patterns that match directories find nothing below the first level.
   ([#40](https://github.com/pehbehbeh/fil/pull/40))
 - `Fil.LiveView` needs Phoenix 1.8: the optional dependency is `{:phoenix, "~> 1.8", optional: true}` now, so an app
   with an older Phoenix can't resolve `fil` at all. The uploader for direct uploads is LiveView colocated JS, and

@@ -167,8 +167,9 @@ defmodule Fil.Adapter do
 
   A recursive listing includes the directories of the subtree, at least every directory that holds a file, so storage
   without directories derives them from its keys. `Fil` filters by `type:` and leaves out the directories of a
-  recursive listing unless the caller asked for them, so adapters can ignore that option. A `glob:` never reaches the
-  adapter either: `Fil` matches it with one listing per directory level, and a recursive one from a `**` on.
+  recursive listing unless the caller asked for them, so adapters can ignore that option. The pattern of
+  `Fil.wildcard/3` doesn't reach the adapter either: `Fil` matches it with one listing per directory level, and a
+  recursive one from a `**` on.
   """
   @callback ls(state(), path(), opts()) :: {:ok, [{path(), Stat.t()}]} | error()
 

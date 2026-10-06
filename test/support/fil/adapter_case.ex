@@ -1073,17 +1073,17 @@ defmodule Fil.AdapterCase do
         assert Enum.map(refs, & &1.path) == ["sub/child.txt", "sub/deeper/grandchild.txt"]
       end
 
-      test "lists the paths that match a glob", %{disk: disk} do
+      test "lists the paths that match a pattern", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "media/a/withText/x.mp4", "x")
         assert {:ok, _} = Fil.write(disk, "media/a/other/y.mp4", "y")
         assert {:ok, _} = Fil.write(disk, "media/b/withoutText/z.mp4", "z")
         assert {:ok, _} = Fil.write(disk, "media/b.txt", "b")
 
-        assert {:ok, refs} = Fil.ls(disk, "media", glob: "*/{withText,withoutText}")
+        assert {:ok, refs} = Fil.wildcard(disk, "media/*/{withText,withoutText}")
         assert Enum.map(refs, & &1.path) == ["media/a/withText", "media/b/withoutText"]
         assert Enum.all?(refs, &(&1.stat.type == :directory))
 
-        assert {:ok, refs} = Fil.ls(disk, ".", glob: "media/**/*.mp4")
+        assert {:ok, refs} = Fil.wildcard(disk, "media/**/*.mp4")
 
         assert Enum.map(refs, & &1.path) == [
                  "media/a/other/y.mp4",
@@ -1093,10 +1093,10 @@ defmodule Fil.AdapterCase do
 
         assert Enum.all?(refs, &(&1.stat.type == :regular))
 
-        assert {:ok, refs} = Fil.ls(disk, "media", glob: "b*", type: :regular)
+        assert {:ok, refs} = Fil.wildcard(disk, "media/b*", type: :regular)
         assert Enum.map(refs, & &1.path) == ["media/b.txt"]
 
-        assert {:ok, refs} = Fil.ls(disk, "media", glob: "**", type: :directory)
+        assert {:ok, refs} = Fil.wildcard(disk, "media/**", type: :directory)
 
         assert Enum.map(refs, & &1.path) == [
                  "media/a",

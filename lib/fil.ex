@@ -115,24 +115,30 @@ defmodule Fil do
                  default: false,
                  doc: "Walk the whole subtree instead of one level."
                ],
-               glob: [
-                 type: :string,
-                 doc: """
-                 Lists only the paths below the directory that match this pattern, at any depth. The syntax is
-                 `Path.wildcard/2`'s: `*` matches any characters within a name, `?` a single one, `[a-z]` one of a
-                 class, `{pdf,csv}` one of the alternatives, and a `**` segment any number of directories. Unlike
-                 `Path.wildcard/2`, `*` and `?` also match names that start with a dot. `\\` makes the next character
-                 literal (`\\*`). See "Globs" below.
-                 """
-               ],
                type: [
                  type: {:in, [:regular, :directory]},
                  doc: """
                  Lists only files (`:regular`) or only directories (`:directory`), the values of `Fil.Stat`'s `:type`.
-                 Without it, a one-level listing and a glob return both, and a recursive listing returns files.
+                 Without it, a one-level listing returns both and a recursive one returns files.
                  """
                ]
              )
+
+  @wildcard_schema NimbleOptions.new!(
+                     type: [
+                       type: {:in, [:regular, :directory]},
+                       doc: """
+                       Returns only files (`:regular`) or only directories (`:directory`). Without it, both.
+                       """
+                     ],
+                     match_dot: [
+                       type: :boolean,
+                       default: false,
+                       doc: """
+                       Lets `*`, `?` and the other wildcards match names that start with a dot, as in `Path.wildcard/2`.
+                       """
+                     ]
+                   )
 
   @read_schema NimbleOptions.new!(
                  verify_checksum: [
@@ -610,28 +616,6 @@ defmodule Fil do
       |> Enum.filter(&(&1.stat.size == 0))
       |> Enum.each(&Fil.rm/1)
 
-  ## Globs
-
-  `glob:` matches paths relative to the listed directory and returns files and directories, unless `type:` picks one:
-
-      iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
-      iex> Fil.write!(disk, "videos/intro/withText/intro.mp4", "...")
-      iex> Fil.write!(disk, "videos/outro/withoutText/outro.mp4", "...")
-      iex> {:ok, [with_text, without_text]} = Fil.ls(disk, "videos", glob: "*/{withText,withoutText}")
-      iex> with_text
-      #Fil.Ref<memory:videos/intro/withText>
-      iex> without_text
-      #Fil.Ref<memory:videos/outro/withoutText>
-
-  No storage matches globs itself, so `Fil` lists the directories one level at a time: the directory the literal start
-  of the pattern names (`videos` for `videos/*/withText`), then each directory a segment matched. On S3 that's one
-  request per listed directory and level, the same as nested calls to `ls/3`. A `**` segment lists the whole subtree
-  of each directory it starts from, so `glob: "**/*.mp4"` is one recursive listing, and on a large bucket a prefix in
-  front of it (`videos/**/*.mp4`) keeps that listing small.
-
-  A glob can't be combined with `recursive: true`, because a `**` says how deep to go. Each listing is an operation of
-  its own, so plugins and `[:fil, :op]` telemetry events see every one of them.
-
   """
   @doc section: :operations
   @spec ls(Disk.t()) :: result([Ref.t()])
@@ -648,13 +632,7 @@ defmodule Fil do
   def ls(ref, opts) when is_list(opts) do
     opts = validate!(opts, @ls_schema)
 
-    listed =
-      case opts[:glob] do
-        nil -> run(ref, :ls, opts)
-        glob -> glob(ref, glob, opts)
-      end
-
-    with {:ok, listed} <- listed do
+    with {:ok, listed} <- run(ref, :ls, opts) do
       {:ok, filter_type(listed, listed_type(opts))}
     end
   end
@@ -664,6 +642,63 @@ defmodule Fil do
   @spec ls(Disk.t(), Path.t(), keyword()) :: result([Ref.t()])
   def ls(%Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
     ls(Ref.new(disk, path), opts)
+  end
+
+  @doc """
+  Lists the paths that match a pattern, like `Path.wildcard/2` with the disk root as the working directory.
+
+  The syntax is `Path.wildcard/2`'s: `*` matches any characters within a name, `?` a single one, `[a-z]` one of a
+  class, `{pdf,csv}` one of the alternatives, and a `**` segment any number of directories. `\\` makes the next
+  character literal. The pattern is relative to the disk root, and a leading `/` is dropped, as for paths. Names that
+  start with a dot are matched only by the literal start of a pattern (`.cache/*`), unless you pass `match_dot: true`.
+  The result holds files and directories, sorted by path, unless `type:` picks one:
+
+      iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
+      iex> Fil.write!(disk, "videos/intro/withText/intro.mp4", "...")
+      iex> Fil.write!(disk, "videos/outro/withoutText/outro.mp4", "...")
+      iex> {:ok, [with_text, without_text]} = Fil.wildcard(disk, "videos/*/{withText,withoutText}")
+      iex> with_text
+      #Fil.Ref<memory:videos/intro/withText>
+      iex> without_text
+      #Fil.Ref<memory:videos/outro/withoutText>
+      iex> {:ok, [intro, outro]} = Fil.wildcard(disk, "videos/**/*.mp4", type: :regular)
+      iex> {intro.path, outro.path}
+      {"videos/intro/withText/intro.mp4", "videos/outro/withoutText/outro.mp4"}
+
+  No storage matches patterns itself, so `Fil` lists the directories one level at a time with `ls/3`: the directory
+  that the literal start of the pattern names (`videos` for `videos/*/withText`), then each directory a segment
+  matched. On S3 that's one request per listed directory and level, the same as nested calls to `ls/3`. A `**` segment
+  lists the whole subtree of each directory it starts from, so `"**/*.mp4"` is one recursive listing of the disk, and
+  on a large bucket a prefix in front of it (`"videos/**/*.mp4"`) keeps that listing small. Each listing is an
+  operation of its own, so plugins and `[:fil, :op]` telemetry events see every one of them. The first one that fails
+  is the result.
+
+  A pattern built from a variable needs that part escaped if it can hold `*`, `?`, `[`, `{` or `\\`, as with
+  `Path.wildcard/2`. An invalid pattern raises `ArgumentError`.
+
+  ## Options
+
+  #{NimbleOptions.docs(@wildcard_schema)}
+  """
+  @doc section: :operations
+  @spec wildcard(Disk.t(), String.t()) :: result([Ref.t()])
+  def wildcard(%Disk{} = disk, pattern) when is_binary(pattern), do: wildcard(disk, pattern, [])
+
+  @doc "Lists the paths that match a pattern. See `wildcard/2`."
+  @doc section: :operations
+  @spec wildcard(Disk.t(), String.t(), keyword()) :: result([Ref.t()])
+  def wildcard(%Disk{} = disk, pattern, opts) when is_binary(pattern) and is_list(opts) do
+    opts = validate!(opts, @wildcard_schema)
+
+    compiled =
+      pattern
+      |> String.trim_leading("/")
+      |> Fil.Support.Wildcard.compile!()
+
+    # Each listing is an operation of its own, which plugins and telemetry see like any other listing.
+    with {:ok, matched} <- Fil.Support.Wildcard.walk(disk, compiled, opts[:match_dot], &run(&1, :ls, recursive: &2)) do
+      {:ok, filter_type(matched, opts[:type])}
+    end
   end
 
   ## ------------------------------------------------------------------
@@ -1105,6 +1140,16 @@ defmodule Fil do
   @spec ls!(Disk.t(), Path.t(), keyword()) :: [Ref.t()]
   def ls!(a, b, c), do: unwrap!(ls(a, b, c))
 
+  @doc "Same as `wildcard/2`, raising the error on failure."
+  @doc section: :bang
+  @spec wildcard!(Disk.t(), String.t()) :: [Ref.t()]
+  def wildcard!(disk, pattern), do: unwrap!(wildcard(disk, pattern))
+
+  @doc "Same as `wildcard/3`, raising the error on failure."
+  @doc section: :bang
+  @spec wildcard!(Disk.t(), String.t(), keyword()) :: [Ref.t()]
+  def wildcard!(disk, pattern, opts), do: unwrap!(wildcard(disk, pattern, opts))
+
   @doc "Same as `write/2`, raising the error on failure."
   @doc section: :bang
   @spec write!(Ref.t(), content()) :: Ref.t()
@@ -1342,19 +1387,6 @@ defmodule Fil do
     case opts[:disposition] do
       nil -> opts
       disposition -> Keyword.put(opts, :disposition, Fil.Support.ContentDisposition.header(disposition, basename))
-    end
-  end
-
-  # Each listing a glob makes is an operation of its own, which plugins and telemetry see like any other listing.
-  defp glob(ref, glob, opts) do
-    if opts[:recursive] do
-      raise ArgumentError, "the :glob option can't be combined with recursive: true, use ** in the pattern instead"
-    end
-
-    glob = Fil.Support.Glob.compile!(glob)
-
-    with {:ok, dir} <- resolve(ref, :ls) do
-      Fil.Support.Glob.walk(dir, glob, &run(&1, :ls, recursive: &2))
     end
   end
 
