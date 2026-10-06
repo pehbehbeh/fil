@@ -35,10 +35,12 @@ The Hex package is `fil`.
   else. A table with a column per adapter stops fitting on a page once there are many adapters, and readers usually
   care about one or two. New behaviour gets a conformance test in
   `Fil.AdapterCase`.
-- **Adapter docs:** every adapter's `@moduledoc` has the same sections: an intro with an example, Options (generated),
-  Operations and Errors. Operations lists each `Fil` function the adapter implements (`Fil.read/3`, not `read/3`):
-  the storage call and where the adapter departs from the contract in `Fil.Adapter`. The callbacks stay without
-  `@doc` (`@impl` hides them), because users call `Fil`, never the adapter; calling it directly would skip path
+- **Adapter docs:** every adapter's `@moduledoc` has the same sections, in this order: an intro with an example, Options
+  (generated), Operations, Details with a `###` heading per topic of its own (Stores, Uploads in parts, Interrupted
+  writes), and Errors. Operations starts with what the section covers, then has a `###` heading per `Fil` function the
+  adapter implements (`Fil.read/3`, not `read/3`) with bullet points: the storage call as a sentence of its own ("Uses
+  `File.read/1`"), then each place where the adapter departs from the contract in `Fil.Adapter`. The callbacks stay
+  without `@doc` (`@impl` hides them), because users call `Fil`, never the adapter; calling it directly would skip path
   checks, plugins and the error fields `Fil.Op` fills in.
 - **Storage features stay in adapters:** anything the storage has to do itself (checksums, conditional writes,
   URLs) is an adapter option, not a plugin. So is addressing (root, bucket, prefix).

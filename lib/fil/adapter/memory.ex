@@ -23,7 +23,73 @@ defmodule Fil.Adapter.Memory do
         assert {:ok, _} = Fil.write(disk, "avatars/1.png", "png")
       end
 
-  ## Stores
+  ## Options
+
+  #{NimbleOptions.docs(@schema)}
+
+  ## Operations
+
+  For each `Fil` function, this section says how it works on the [store](#module-stores) and where it departs from the
+  [contract](Fil.Adapter.html#module-contract) that every adapter follows. Anything it doesn't mention follows the
+  contract. Directories exist only as prefixes, like on an object store, so there are no empty directories.
+
+  ### `Fil.read/3`
+
+    * Reads the content from the store, or only the part that `offset:` and `length:` ask for.
+    * Reading a directory returns a `Fil.NotFoundError`.
+    * `verify_checksum: true` compares the content with the checksum the write stored.
+
+  ### `Fil.stream/3`
+
+    * Looks up the content (or the part that `offset:` and `length:` ask for) each time the stream is read, and returns
+      it in chunks of 64 KiB.
+    * `verify_checksum: true` compares the content before the first chunk.
+
+  ### `Fil.write/4`
+
+    * Stores the content with one `:ets.insert/2`, so writes are atomic. Collects a stream first.
+    * With `if_exists: :error`, uses `:ets.insert_new/2`, so the check is atomic too.
+    * `checksum:` stores the checksum of the content.
+    * Writing to `report.txt/x` when `report.txt` is a file writes a second file and leaves the first alone.
+
+  ### `Fil.rm/3`
+
+    * Removing a directory succeeds and removes nothing.
+
+  ### `Fil.stat/3`
+
+    * `:etag` is the MD5 of the content in hex (the ETag S3 returns for a single-part upload).
+    * `:content_type` is the `content_type:` the write stored.
+    * `checksum:` returns the stored checksum if the write used the same algorithm, and `nil` otherwise.
+    * A stat on a directory returns `%Fil.Stat{type: :directory}` with every other field `nil`.
+
+  ### `Fil.cp/4`
+
+    * The copy keeps the content type and the checksum.
+    * With `if_exists: :error`, uses `:ets.insert_new/2`, like a write.
+    * Copying a directory returns a `Fil.NotFoundError`.
+    * A copy onto itself leaves the file as it is. With `if_exists: :error`, it returns a `Fil.AlreadyExistsError`.
+
+  ### `Fil.rename/4`
+
+    * Copies the file, then removes the source, but only while it's still the file that was copied (checked and removed
+      in one step with `:ets.select_delete/2`). A write that replaced the source in the meantime stays.
+    * With `if_exists: :error`, such a write fails the move with a `Fil.ConflictError`, and the destination is left as
+      it was.
+    * A move onto itself leaves the file as it is. With `if_exists: :error`, it returns a `Fil.AlreadyExistsError`.
+
+  ### `Fil.url/3` and `Fil.signed_url/3`
+
+    * A memory store has no URLs. Attach `Fil.Plugin.URL` to build them, and `Fil.Plug` serves them, in a test through
+      `Phoenix.ConnTest` too.
+
+  ### `Fil.Disk.same_storage?/2`
+
+    * Compares the normalized `:root`.
+
+  ## Details
+
+  ### Stores
 
   `checkout/0` creates a store owned by the calling process, usually the test. The store is an ETS table, so it's gone
   when the owner exits. Every test starts with an empty store and nothing needs cleaning up, with `async: true` too.
@@ -40,40 +106,6 @@ defmodule Fil.Adapter.Memory do
 
   The disk itself only holds the root, so it can be built anywhere (in `config/test.exs`, for example), and every disk
   built in the test sees the same store.
-
-  ## Options
-
-  #{NimbleOptions.docs(@schema)}
-
-  ## Operations
-
-  Where this list says nothing else, an operation follows the [contract](Fil.Adapter.html#module-contract). Directories
-  exist only as prefixes, like on an object store, so there are no empty directories.
-
-    * `Fil.read/3`: the content from the store, or the part of it that `offset:` and `length:` ask for. Reading a
-      directory is a `Fil.NotFoundError`. `verify_checksum: true` compares the content with the checksum the write
-      stored.
-    * `Fil.stream/3`: the content from the store, or the part `offset:` and `length:` ask for, looked up when the stream
-      is read, in chunks of 64 KiB.
-      `verify_checksum: true` compares it before the first chunk.
-    * `Fil.write/4`: one `:ets.insert/2`, so writes are atomic. A stream is collected first. `if_exists: :error` uses
-      `:ets.insert_new/2`, so its check is atomic too. `checksum:` stores the checksum of the content. Writing to
-      `report.txt/x` when `report.txt` is a file writes a second file and leaves the first alone.
-    * `Fil.rm/3`: removing a directory succeeds and removes nothing.
-    * `Fil.stat/3`: `:etag` is the MD5 of the content in hex (the ETag S3 returns for a single-part upload), and
-      `:content_type` is the `content_type:` the write stored. `checksum:` returns the stored checksum if the write
-      used the same algorithm, and `nil` otherwise. A stat on a directory returns `%Fil.Stat{type: :directory}` with
-      every other field `nil`.
-    * `Fil.cp/4`: the copy keeps the content type and the checksum. `if_exists: :error` uses `:ets.insert_new/2`, like
-      a write. Copying a directory is a `Fil.NotFoundError`. A copy onto itself leaves the file as it is, and with
-      `if_exists: :error` returns a `Fil.AlreadyExistsError`.
-    * `Fil.rename/4`: a copy, then removing the source, only while it's still the file that was copied (checked and
-      removed in one step with `:ets.select_delete/2`). A write that replaced the source meanwhile stays. With
-      `if_exists: :error`, it fails the move with a `Fil.ConflictError`, and the destination is left as it was. A move
-      onto itself leaves the file as it is, and with `if_exists: :error` returns a `Fil.AlreadyExistsError`.
-    * `Fil.url/3` and `Fil.signed_url/3`: a memory store has no URLs. Attach `Fil.Plugin.URL` to build them, and
-      `Fil.Plug` serves them, in a test through `Phoenix.ConnTest` too.
-    * `Fil.Disk.same_storage?/2`: compares the normalized `:root`.
 
   ## Errors
 

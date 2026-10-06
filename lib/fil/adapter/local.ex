@@ -25,48 +25,93 @@ defmodule Fil.Adapter.Local do
 
   ## Operations
 
-  Where this list says nothing else, an operation follows the [contract](Fil.Adapter.html#module-contract).
+  For each `Fil` function, this section says which `File` or `:file` function it uses and where it departs from the
+  [contract](Fil.Adapter.html#module-contract) that every adapter follows. Anything it doesn't mention follows the
+  contract.
 
-    * `Fil.read/3`: `File.read/1`, or `:file.pread/3` for the part that `offset:` and `length:` ask for. Reading a
-      directory is a `Fil.InvalidRequestError`. The filesystem stores no checksums, so `verify_checksum: true` is
-      ignored.
-    * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read, from
-      `offset:` on and up to `length:` bytes.
-    * `Fil.write/4`: the content, in memory or a stream, goes to a temporary file named `.fil-` and a unique suffix in
-      the destination directory, which `File.rename/2` then moves into place, so readers never see a partial file. A
-      failed write leaves nothing behind, and removes the directories it created. So does a writer that's killed, within
-      the limits below this list. `if_exists: :error` hard-links the temporary file to the destination instead, which
-      fails if it exists (on a filesystem without hard links, it creates the destination with `O_EXCL` first).
-      `checksum:` is ignored. Writing over a directory, or to `report.txt/x` when `report.txt` is a file, is a
-      `Fil.InvalidRequestError`.
-    * `Fil.rm/3`: `File.rm/1`, with a missing file mapped to success. Removing a directory is a
-      `Fil.InvalidRequestError`.
-    * `Fil.stat/3`: `File.stat/2`. `:etag` is a `"size-mtime"` tag: good enough to notice a change, but it misses a
-      write in the same second that keeps the size. `Fil.Plug` sends it as a strong validator anyway, as nginx does.
-      `:content_type` is `nil`, because the filesystem doesn't store one (`Fil.Plug` guesses it from the extension).
-      `checksum:` reads the whole file to compute the checksum.
-    * `Fil.ls/3`: `File.ls/1`, walked depth-first when recursive. Empty directories are listed too, temporary `.fil-`
-      files of writes aren't. The disk reserves that prefix, so a file of your own whose name starts with `.fil-` is
-      skipped as well. A path that isn't a directory lists nothing, the same as a missing one.
-    * `Fil.cp/4`: `File.cp/2`. `if_exists: :error` copies to a `.fil-` temporary file instead and hard-links it to the
-      destination, like a write. A copy or a move that fails removes the directories it created, like a write. Copying
-      a directory is a `Fil.InvalidRequestError`. A copy onto itself leaves the file as it is, and with
-      `if_exists: :error` returns a `Fil.AlreadyExistsError`.
-    * `Fil.rename/4`: `File.rename/2`, which moves directories too. `if_exists: :error` hard-links the file to the
-      destination and then removes the source. Where the link fails with `:eperm` or `:enotsup` (a filesystem without
-      hard links, or on Linux a file of another user with `fs.protected_hardlinks` on), it creates the destination with
-      `O_EXCL` first and then moves the file there, like a write. A symlink is moved that way too, so the destination
-      is the link and not its target. A write that replaces the source after the link fails the move with a
+  ### `Fil.read/3`
+
+    * Uses `File.read/1`, or `:file.pread/3` to read only the part that `offset:` and `length:` ask for.
+    * Reading a directory returns a `Fil.InvalidRequestError`.
+    * Ignores `verify_checksum: true`, because the filesystem stores no checksums.
+
+  ### `Fil.stream/3`
+
+    * Opens the file once to check that it can be read.
+    * Each time the stream is read, reads the file in chunks of 64 KiB, from `offset:` on and up to `length:` bytes.
+
+  ### `Fil.write/4`
+
+    * Writes the content (in memory or a stream) to a temporary file in the destination directory, named `.fil-` and a
+      unique suffix, then moves it into place with `File.rename/2`. Readers never see a partial file.
+    * A failed write leaves nothing behind and removes the directories it created. So does a writer that's killed,
+      within the limits in [Interrupted writes](#module-interrupted-writes).
+    * With `if_exists: :error`, hard-links the temporary file to the destination instead, which fails if the destination
+      exists. On a filesystem without hard links, it creates the destination with `O_EXCL` first.
+    * Ignores `checksum:`.
+    * Writing over a directory, or to `report.txt/x` when `report.txt` is a file, returns a `Fil.InvalidRequestError`.
+
+  ### `Fil.rm/3`
+
+    * Uses `File.rm/1`. A missing file counts as success.
+    * Removing a directory returns a `Fil.InvalidRequestError`.
+
+  ### `Fil.stat/3`
+
+    * Uses `File.stat/2`.
+    * `:etag` is a `"size-mtime"` tag. It notices most changes, but misses a write in the same second that keeps the
+      size. `Fil.Plug` sends it as a strong validator anyway, as nginx does.
+    * `:content_type` is `nil`, because the filesystem doesn't store one (`Fil.Plug` guesses it from the extension).
+    * `checksum:` reads the whole file to compute the checksum.
+
+  ### `Fil.ls/3`
+
+    * Uses `File.ls/1`, and walks the tree depth-first when recursive.
+    * Lists empty directories too.
+    * Skips the temporary `.fil-` files of writes. The disk reserves that prefix, so a file of your own whose name
+      starts with `.fil-` is skipped as well.
+    * A path that isn't a directory lists nothing, the same as a missing one.
+
+  ### `Fil.cp/4`
+
+    * Uses `File.cp/2`.
+    * With `if_exists: :error`, copies to a temporary `.fil-` file instead and hard-links it to the destination, like a
+      write.
+    * A copy that fails removes the directories it created, like a write.
+    * Copying a directory returns a `Fil.InvalidRequestError`.
+    * A copy onto itself leaves the file as it is. With `if_exists: :error`, it returns a `Fil.AlreadyExistsError`.
+
+  ### `Fil.rename/4`
+
+    * Uses `File.rename/2`, which moves directories too.
+    * A move that fails removes the directories it created, like a write.
+    * With `if_exists: :error`, hard-links the file to the destination, then removes the source. Where the link fails
+      with `:eperm` or `:enotsup` (a filesystem without hard links, or on Linux a file of another user with
+      `fs.protected_hardlinks` on), it creates the destination with `O_EXCL` first and then moves the file there, like a
+      write. A symlink is moved that way too, so the destination is the link and not its target.
+    * With `if_exists: :error`, a write that replaces the source after the link fails the move with a
       `Fil.ConflictError` and leaves the destination as it was. A write in the short moment between that check and the
-      removal of the source is lost. A directory is still moved with `File.rename/2`, which replaces an empty
-      directory. A file or a directory with files in it is a `Fil.AlreadyExistsError`. A move onto itself leaves the
-      file as it is, and with `if_exists: :error` returns a `Fil.AlreadyExistsError`.
-    * `Fil.rm_rf/3`: `File.rm_rf/1`, counting the files it removed. Files whose name starts with `.fil-` are removed
-      too, but not counted.
-    * `Fil.url/3` and `Fil.signed_url/3`: the filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and
-      `Fil.Plug` serves them.
-    * `Fil.Disk.same_storage?/2`: compares the expanded `:root`, so `"priv/storage"` and its absolute path are the
-      same storage.
+      removal of the source is lost.
+    * With `if_exists: :error`, a directory is still moved with `File.rename/2`, which replaces an empty directory. A
+      file or a directory with files in it returns a `Fil.AlreadyExistsError`.
+    * A move onto itself leaves the file as it is. With `if_exists: :error`, it returns a `Fil.AlreadyExistsError`.
+
+  ### `Fil.rm_rf/3`
+
+    * Uses `File.rm_rf/1` and counts the files it removed.
+    * Removes files whose name starts with `.fil-` too, but doesn't count them.
+
+  ### `Fil.url/3` and `Fil.signed_url/3`
+
+    * The filesystem has no URLs. Attach `Fil.Plugin.URL` to build them, and `Fil.Plug` serves them.
+
+  ### `Fil.Disk.same_storage?/2`
+
+    * Compares the expanded `:root`, so `"priv/storage"` and its absolute path are the same storage.
+
+  ## Details
+
+  ### Interrupted writes
 
   When a writer is killed before it's done (a request process that the server stops when the client disconnects, for
   example), `Fil`'s application removes its `.fil-` file and the directories it created once the process is gone. The

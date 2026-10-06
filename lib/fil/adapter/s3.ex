@@ -106,57 +106,107 @@ defmodule Fil.Adapter.S3 do
 
   ## Operations
 
-  Where this list says nothing else, an operation follows the [contract](Fil.Adapter.html#module-contract). Directories
-  exist only as key prefixes, so there are no empty directories.
+  For each `Fil` function, this section says which S3 requests it sends and where it departs from the
+  [contract](Fil.Adapter.html#module-contract) that every adapter follows. Anything it doesn't mention follows the
+  contract. Directories exist only as key prefixes, so there are no empty directories.
 
-    * `Fil.read/3`: GetObject. Reading a directory is a `Fil.NotFoundError`. `verify_checksum: true` asks S3 for the
-      stored checksum (`x-amz-checksum-mode: ENABLED`) and compares it with the downloaded content, including the
-      composite checksum of an upload in parts (see [Checksums](#module-checksums)). Objects stored with another
-      algorithm, or with none, are read without a check. `offset:` and `length:` send a `Range` header, and S3's `416`
-      for a range from the end on is empty content.
-    * `Fil.stream/3`: HeadObject, then GetObject each time the stream is read. The download runs in a process of its
-      own and goes only as fast as the stream is read. `verify_checksum: true` computes the checksum while streaming.
-      `offset:` and `length:` are clamped to the size from the HeadObject and sent as a `Range` header, and an empty
-      range downloads nothing.
-    * `Fil.write/4`: PutObject for content in memory, and for a stream of known size (`size:`, a `File.Stream`, a stream
-      from `Fil.stream/3`), which is sent as it's read. Its last chunk goes out only once the stream has ended, so a
-      stream that raises after its last chunk leaves no object. A stream without a size (or with `size: :unknown`) or
-      with `checksum:`, and anything over 5 GiB, goes up in parts instead (see
-      [Uploads in parts](#module-uploads-in-parts)). `if_exists: :error` sends `If-None-Match: *`. `checksum:`
-      (`:sha256`, `:sha1` or `:crc32`) sends the checksum of the content in `x-amz-checksum-*`, S3 rejects the upload if
-      what it received doesn't match, and stores the checksum with the object. Writing to `report.txt/x` when
-      `report.txt` is an object writes a second object and leaves the first alone.
-    * `Fil.rm/3`: DeleteObject, which S3 already treats as idempotent (a `404` for a missing bucket is still an error).
-      Removing a directory succeeds and removes nothing.
-    * `Fil.stat/3`: HeadObject, then a prefix probe (ListObjectsV2 with `max-keys=2`) if there's no object.
-      `type: :regular` sends only the HeadObject and `type: :directory` (`Fil.dir?/1`) only the probe, so a key that
-      is an object and a prefix at once is both a file and a directory. A directory marker alone doesn't make a
-      directory for the probe, though a listing of its parent lists it. `:etag` and
-      `:content_type` are the ones S3 returns, and the ETag of an upload in parts ends in `-` and the number of parts.
-      `checksum:` returns the checksum S3 stored if the write used the same algorithm, and `nil` otherwise, as well as
-      for the composite checksum of an upload in parts.
-    * `Fil.ls/3`: ListObjectsV2, with `delimiter=/` unless recursive, paginated internally. A recursive listing finds
-      the directories in the keys, so an empty directory shows up only as a directory marker (an empty object whose key
-      ends in `/`, as consoles create for a new folder), which is listed as the directory.
-    * `Fil.cp/4`: CopyObject. `if_exists: :error` sends `If-None-Match: *`, which AWS checks on copies since October
-      2025 (RustFS 1.0.0 does too). Copying a directory is a `Fil.NotFoundError`. S3 refuses to copy an object onto
-      itself, so that's a `Fil.InvalidRequestError`, `reason: "InvalidRequest"`, with or without `if_exists: :error`.
-      The other adapters copy the file onto itself, or return a `Fil.AlreadyExistsError` with `if_exists: :error`. A
-      copy of a file uploaded in parts gets a new checksum, of the whole file, so it doesn't keep the one of the parts.
-    * `Fil.rename/4`: CopyObject, then DeleteObject. A copy that fails, with `if_exists: :error` too, fails before the
-      source is deleted. Renaming an object onto itself fails like the copy. The DeleteObject removes whatever is at the
-      source by then, so a write that replaces the source between the two requests is lost. The other adapters keep
-      it, and with `if_exists: :error` fail the move with a `Fil.ConflictError`.
-    * `Fil.rm_rf/3`: ListObjectsV2, then one DeleteObject per key.
-    * `Fil.url/3`: the object URL, without a signature, so it works for public objects only.
-    * `Fil.signed_url/3`: a presigned GET or PUT URL, with `response-content-disposition` for `disposition:`, and the
-      `query:` parameters. An upload's `content_type:`, `size:` and `if_exists: :error` are signed headers
-      (`content-type`, `content-length` and `if-none-match: *`), so S3 refuses a PUT without them, or with other
-      values, with a `403`, and answers `412` when `if_exists: :error` finds an object.
-    * `Fil.Disk.same_storage?/2`: compares `:endpoint`, `:region`, `:bucket` and the prefix from `:root`, so disks
-      with other credentials, `:public_endpoint`, `:path_style` or `:req_options` are the same storage.
+  ### `Fil.read/3`
 
-  ## Uploads in parts
+    * Uses GetObject.
+    * Reading a directory returns a `Fil.NotFoundError`.
+    * `offset:` and `length:` send a `Range` header. S3 answers a range that starts at the end of the object with a
+      `416`, which is read as empty content.
+    * `verify_checksum: true` asks S3 for the stored checksum (`x-amz-checksum-mode: ENABLED`) and compares it with the
+      downloaded content, including the composite checksum of an upload in parts (see [Checksums](#module-checksums)).
+      Objects stored with another algorithm, or with none, are read without a check.
+
+  ### `Fil.stream/3`
+
+    * Uses HeadObject first, then GetObject each time the stream is read.
+    * The download runs in a process of its own and goes only as fast as the stream is read.
+    * `offset:` and `length:` are clamped to the size from the HeadObject and sent as a `Range` header. An empty range
+      downloads nothing.
+    * `verify_checksum: true` computes the checksum while streaming.
+
+  ### `Fil.write/4`
+
+    * Uses PutObject for content in memory and for a stream of known size (`size:`, a `File.Stream`, a stream from
+      `Fil.stream/3`), which is sent as it's read. The last chunk goes out only once the stream has ended, so a stream
+      that raises after its last chunk leaves no object.
+    * Uploads in parts instead for a stream without a size (or with `size: :unknown`), a stream with `checksum:`, and
+      anything over 5 GiB (see [Uploads in parts](#module-uploads-in-parts)).
+    * With `if_exists: :error`, sends `If-None-Match: *`.
+    * `checksum:` (`:sha256`, `:sha1` or `:crc32`) sends the checksum of the content in `x-amz-checksum-*`. S3 rejects
+      the upload if what it received doesn't match, and stores the checksum with the object.
+    * Writing to `report.txt/x` when `report.txt` is an object writes a second object and leaves the first alone.
+
+  ### `Fil.rm/3`
+
+    * Uses DeleteObject, which S3 already treats as idempotent. A `404` for a missing bucket is still an error.
+    * Removing a directory succeeds and removes nothing.
+
+  ### `Fil.stat/3`
+
+    * Uses HeadObject. If there's no object, it checks for keys with the path as their prefix (ListObjectsV2 with
+      `max-keys=2`), so `Fil.dir?/1` works.
+    * `type: :regular` sends only the HeadObject, and `type: :directory` (`Fil.dir?/1`) only the prefix check. So a key
+      that is an object and a prefix at once is both a file and a directory.
+    * A directory marker alone doesn't make a directory for the prefix check, though a listing of its parent lists it.
+    * `:etag` and `:content_type` are the ones S3 returns. The ETag of an upload in parts ends in `-` and the number of
+      parts.
+    * `checksum:` returns the checksum S3 stored if the write used the same algorithm, and `nil` otherwise. It's `nil`
+      for the composite checksum of an upload in parts too.
+
+  ### `Fil.ls/3`
+
+    * Uses ListObjectsV2, with `delimiter=/` unless recursive, and fetches every page.
+    * A recursive listing finds the directories in the keys, so an empty directory shows up only as a directory marker
+      (an empty object whose key ends in `/`, as consoles create for a new folder), which is listed as the directory.
+
+  ### `Fil.cp/4`
+
+    * Uses CopyObject.
+    * With `if_exists: :error`, sends `If-None-Match: *`. AWS checks it on copies since October 2025, and RustFS 1.0.0
+      does too.
+    * Copying a directory returns a `Fil.NotFoundError`.
+    * S3 refuses to copy an object onto itself, so that's a `Fil.InvalidRequestError` with `reason: "InvalidRequest"`,
+      with or without `if_exists: :error`. The other adapters copy the file onto itself, or return a
+      `Fil.AlreadyExistsError` with `if_exists: :error`.
+    * A copy of a file uploaded in parts gets a new checksum of the whole file, and doesn't keep the one of the parts.
+
+  ### `Fil.rename/4`
+
+    * Uses CopyObject, then DeleteObject.
+    * A copy that fails (with `if_exists: :error` too) fails before the source is deleted.
+    * Renaming an object onto itself fails like the copy.
+    * The DeleteObject removes whatever is at the source by then, so a write that replaces the source between the two
+      requests is lost. The other adapters keep it, and with `if_exists: :error` fail the move with a
+      `Fil.ConflictError`.
+
+  ### `Fil.rm_rf/3`
+
+    * Uses ListObjectsV2, then one DeleteObject per key.
+
+  ### `Fil.url/3`
+
+    * Returns the object URL, without a signature, so it works for public objects only.
+
+  ### `Fil.signed_url/3`
+
+    * Returns a presigned GET or PUT URL.
+    * `disposition:` becomes `response-content-disposition`, and the `query:` parameters are added to the URL.
+    * For an upload, `content_type:`, `size:` and `if_exists: :error` are signed headers (`content-type`,
+      `content-length` and `if-none-match: *`). S3 refuses a PUT without them, or with other values, with a `403`, and
+      answers `412` when `if_exists: :error` finds an object.
+
+  ### `Fil.Disk.same_storage?/2`
+
+    * Compares `:endpoint`, `:region`, `:bucket` and the prefix from `:root`. Disks that differ only in credentials,
+      `:public_endpoint`, `:path_style` or `:req_options` are the same storage.
+
+  ## Details
+
+  ### Uploads in parts
 
   A stream without a size (or with `size: :unknown`), a stream with `checksum:`, and content over 5 GiB (the largest
   PutObject) are read one part at a time, `:part_size` bytes each, so an upload keeps about one part and one chunk in
@@ -193,7 +243,7 @@ defmodule Fil.Adapter.S3 do
   and the creation and the abort run in a process of their own (see
   [HTTP requests in `Fil.Telemetry`](Fil.Telemetry.html#module-http-requests)).
 
-  ### Checksums
+  #### Checksums
 
   `checksum: :crc32` covers the whole file, however it's uploaded. Each part is sent with its CRC32, and the completion
   with the CRC32 of all of the content (`FULL_OBJECT`), which S3 checks and stores as it does for a PutObject.
