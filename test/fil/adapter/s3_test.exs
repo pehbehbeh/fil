@@ -395,19 +395,21 @@ defmodule Fil.Adapter.S3Test do
     end
 
     @tag :tmp_dir
-    test "a file stream is sent as it's read, with the file's size", %{tmp_dir: tmp_dir} do
+    test "a file stream and {:file, path} are sent as they're read, with the file's size", %{tmp_dir: tmp_dir} do
       path = Path.join(tmp_dir, "a.txt")
       File.write!(path, "Hello, World")
-      stub([response(200), response(200)])
+      stub([response(200), response(200), response(200)])
 
       assert {:ok, _} = Fil.write(disk(), "a.txt", File.stream!(path, 5))
       assert {:ok, _} = Fil.write(disk(), "b.txt", File.stream!(path, 5, read_offset: 7))
+      assert {:ok, _} = Fil.write(disk(), "c.txt", {:file, path})
 
-      assert [whole, offset] = requests()
+      assert [whole, offset, file] = requests()
       assert {whole.assigns.body, header(whole, "content-length")} == {"Hello, World", "12"}
       assert {offset.assigns.body, header(offset, "content-length")} == {"World", "5"}
+      assert {file.method, file.assigns.body, header(file, "content-length")} == {"PUT", "Hello, World", "12"}
 
-      for request <- [whole, offset], do: assert(header(request, "x-amz-content-sha256") == "UNSIGNED-PAYLOAD")
+      for request <- [whole, offset, file], do: assert(header(request, "x-amz-content-sha256") == "UNSIGNED-PAYLOAD")
     end
 
     test "a stream from Fil.stream/3 is sent as it's read, with the size its adapter found" do

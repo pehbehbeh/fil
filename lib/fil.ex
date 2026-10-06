@@ -43,10 +43,10 @@ defmodule Fil do
   @type result(value) :: {:ok, value} | {:error, error() | Exception.t()}
 
   @typedoc """
-  What `write/4` takes: iodata, or a stream of it (any `Enumerable` that isn't a list, such as a `Stream` or a
-  `File.Stream`). A list is always iodata.
+  What `write/4` takes: iodata, a stream of it (any `Enumerable` that isn't a list, such as a `Stream` or a
+  `File.Stream`), or `{:file, path}` for a file on the local filesystem. A list is always iodata.
   """
-  @type content :: iodata() | Enumerable.t()
+  @type content :: iodata() | Enumerable.t() | {:file, String.t()}
 
   @typedoc "A plugin callback: a function or a `{module, function}` pair. See the [Plugins guide](plugins.md)."
   @type plugin_callback :: (Op.t(), (Op.t() -> Op.t()), keyword() -> Op.t()) | {module(), atom()}
@@ -94,10 +94,11 @@ defmodule Fil do
       without a size in parts. Content of another size raises `ArgumentError` and writes nothing, whatever the plugins
       do with it. Plugins that transform the content drop the size.
 
-      Without it, a `File.Stream` that reads bytes (`File.stream!(path, 65_536)`, not lines) without a mode that
-      changes them (`:compressed`, `:trim_bom`, an encoding) has the size of its file, minus its `:read_offset`, and a
-      stream from `stream/3` the size its adapter found. When such a stream turns out to have another size, because
-      the file changed while it was read, the write returns `Fil.ConflictError` and writes nothing.
+      Without it, `{:file, path}` has the size of its file, and so does a `File.Stream` that reads bytes
+      (`File.stream!(path, 65_536)`, not lines) without a mode that changes them (`:compressed`, `:trim_bom`, an
+      encoding), minus its `:read_offset`. A stream from `stream/3` has the size its adapter found. When such content
+      turns out to have another size, because the file changed while it was read, the write returns `Fil.ConflictError`
+      and writes nothing.
 
       `size: :unknown` writes the stream as it's read, without a size (S3 uploads it in parts). Use it for a file that
       grows while it's written, such as a log that's still appended to, which is then written as far as it was read,
@@ -559,12 +560,18 @@ defmodule Fil do
   @doc """
   Writes a file, creating missing parent directories.
 
-  `content` is iodata, or a stream of it (see `t:content/0`). A stream is written as it's read, without holding the
-  content in memory at once, and a file is only there once the stream has ended. If reading the stream raises, nothing
-  is written: one of `Fil`'s errors (from a stream of `stream/3`, say) comes back as `{:error, error}`, and any other
-  exception propagates. S3 sends a stream whose size it knows in one request, and uploads any other in parts. `Fil`
-  finds the size of a `File.Stream` of bytes and of a stream from `stream/3` itself; for any other stream, pass it with
-  `:size` if you know it.
+  `content` is iodata, a stream of it, or `{:file, path}` for a file on the local filesystem (see `t:content/0`). A
+  stream is written as it's read, without holding the content in memory at once, and a file is only there once the
+  stream has ended. If reading the stream raises, nothing is written: one of `Fil`'s errors (from a stream of
+  `stream/3`, say) comes back as `{:error, error}`, and any other exception propagates. S3 sends a stream whose size it
+  knows in one request, and uploads any other in parts. `Fil` finds the size of a local file, of a `File.Stream` of
+  bytes and of a stream from `stream/3` itself; for any other stream, pass it with `:size` if you know it.
+
+  `{:file, path}` streams the file in chunks of 64 KiB, the same as `File.stream!(path, 65_536)`. A file that doesn't
+  exist, or a directory, raises `File.Error` before anything runs, as it's the caller's input, like the content itself.
+  Any other failure to read it raises `File.Error` while it's written, as a `File.Stream` does, and nothing is written.
+  The local file's name plays no part: the content type comes from `:content_type` or from `Fil.Plugin.ContentType`,
+  which looks at the destination path.
 
   ## Options
 
@@ -582,9 +589,10 @@ defmodule Fil do
       iex> Fil.read(disk, "numbers.txt")
       {:ok, "123"}
 
-  Uploads and files from disk are streams too:
+  A local file, such as an upload's temporary file, is written as it's read:
 
-      Fil.write(s3, "videos/intro.mp4", File.stream!("intro.mp4", 65_536))
+      Fil.write(s3, "videos/intro.mp4", {:file, "intro.mp4"})
+      Fil.write(s3, "documents/upload.pdf", {:file, upload.path})
 
   """
   @doc section: :operations
@@ -603,7 +611,11 @@ defmodule Fil do
     opts = validate!(opts, @write_schema)
     :ok = Content.validate!(content)
 
-    {content, write_opts, size} = check_content!(content, opts)
+    {content, write_opts, size} =
+      content
+      |> Content.from_file!()
+      |> check_content!(opts)
+
     run(ref, :write, write_opts, [content: content], size)
   end
 
@@ -1157,8 +1169,8 @@ defmodule Fil do
   rescue
     ArgumentError ->
       reraise ArgumentError,
-              "expected the content to be iodata or an enumerable of iodata, got a list that isn't iodata: " <>
-                inspect(content),
+              "expected the content to be iodata, an enumerable of iodata or {:file, path}, " <>
+                "got a list that isn't iodata: " <> inspect(content),
               __STACKTRACE__
   end
 

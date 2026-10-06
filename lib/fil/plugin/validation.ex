@@ -50,7 +50,7 @@ defmodule Fil.Plugin.Validation do
         Fil.disk(adapter: Fil.Adapter.Local, root: "priv/storage/avatars")
         |> Fil.Plugin.Validation.attach(max_size: 2_000_000, content_types: ["image/png", "image/jpeg", "image/webp"])
 
-      Fil.write(avatars, "1.png", File.stream!("cat.gif", 65_536))
+      Fil.write(avatars, "1.png", {:file, "cat.gif"})
       #=> {:error, %Fil.InvalidContentError{reason: {:content_type, "image/gif"}}}
 
   A refused write returns `Fil.InvalidContentError` with a `:reason` that says which rule it broke, and writes nothing,

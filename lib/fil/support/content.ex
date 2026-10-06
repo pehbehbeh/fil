@@ -4,22 +4,45 @@ defmodule Fil.Support.Content do
   alias Fil.Support.Sized
   alias Fil.Support.Telemetry
 
-  # Content is iodata or a stream (any other enumerable of iodata). These helpers turn a stream into what
-  # adapters, plugins and callers get: non-empty binaries, in order.
+  # Content is iodata, a stream (any other enumerable of iodata) or a local file (`{:file, path}`, which `from_file!/1`
+  # turns into a stream). These helpers turn a stream into what adapters, plugins and callers get: non-empty binaries,
+  # in order.
+
+  # The chunk size of the stream for `{:file, path}`.
+  @chunk_size 65_536
 
   @doc "Whether `content` is iodata rather than a stream. A list is iodata, even though it's enumerable too."
   @spec iodata?(term()) :: boolean()
   def iodata?(content), do: is_binary(content) or is_list(content)
 
-  @doc "Raises unless `content` can be written: iodata or an enumerable."
+  @doc "Raises unless `content` can be written: iodata, an enumerable or `{:file, path}`."
   @spec validate!(term()) :: :ok
+  def validate!({:file, path}) when is_binary(path), do: :ok
+
   def validate!(content) do
     if iodata?(content) or Enumerable.impl_for(content) != nil do
       :ok
     else
-      raise ArgumentError, "expected the content to be iodata or an enumerable of iodata, got: #{inspect(content)}"
+      raise ArgumentError,
+            "expected the content to be iodata, an enumerable of iodata or {:file, path}, got: #{inspect(content)}"
     end
   end
+
+  @doc """
+  The stream of `{:file, path}`: a `File.Stream` of bytes, whose size `known_size/1` finds. Any other content is
+  returned as it is. A file that doesn't exist, or a directory, raises `File.Error` right away, as `File.stream!/2`
+  would once it's read, so nothing runs before it fails. Other read errors (no permission) raise when it's read.
+  """
+  @spec from_file!(term()) :: iodata() | Enumerable.t()
+  def from_file!({:file, path}) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :directory}} -> raise File.Error, reason: :eisdir, action: "stream", path: path
+      {:ok, _stat} -> File.stream!(path, @chunk_size)
+      {:error, reason} -> raise File.Error, reason: reason, action: "stream", path: path
+    end
+  end
+
+  def from_file!(content), do: content
 
   @doc "The chunks of a stream as non-empty binaries. Iodata becomes a list of at most one binary."
   @spec chunks(iodata() | Enumerable.t()) :: Enumerable.t()

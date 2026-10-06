@@ -102,12 +102,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.stream/1,2,3` and `Fil.stream!/1,2,3` return a file's content as a stream of binaries, on every disk. They
   check the file right away and read it when the stream is enumerated.
   ([#10](https://github.com/pehbehbeh/fil/pull/10))
-- `Fil.write/4` takes a stream as well as iodata. A stream that raises writes nothing. S3 sends a stream of known size
-  as it's read, in one request, and uploads any other in parts. `Fil` finds the size of a `File.Stream` of bytes and of
-  a stream from `Fil.stream/3` itself, and the new `size:` option gives it for other streams. `size: :unknown` turns
-  finding it off, for a file that grows while it's written (a log) or whose stat size may be wrong (`/sys`, network
-  and FUSE file systems).
-  ([#10](https://github.com/pehbehbeh/fil/pull/10), [#15](https://github.com/pehbehbeh/fil/pull/15))
+- `Fil.write/4` takes a stream as well as iodata, and `{:file, path}` for a local file, such as the `path` of a
+  `Plug.Upload`. A stream that raises writes nothing. S3 sends a stream of known size as it's read, in one request, and
+  uploads any other in parts. `Fil` finds the size of a local file, of a `File.Stream` of bytes and of a stream from
+  `Fil.stream/3` itself, and the new `size:` option gives it for other streams. `size: :unknown` turns finding it off,
+  for a file that grows while it's written (a log) or whose stat size may be wrong (`/sys`, network and FUSE file
+  systems).
+  ([#10](https://github.com/pehbehbeh/fil/pull/10), [#15](https://github.com/pehbehbeh/fil/pull/15),
+  [#38](https://github.com/pehbehbeh/fil/pull/38))
 - `Fil.Op.update_content/2` and `Fil.Op.update_result/2` take a `stream:` function, which transforms a stream lazily,
   chunk by chunk or with state across chunks. `op.streaming` marks a read from `Fil.stream/3`. A read transform that
   raises one of `Fil`'s errors turns the read into that error. The plugins guide describes what a plugin can rely on.
