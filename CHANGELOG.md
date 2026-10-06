@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Fil.disk/1` takes `signed_url:` with default options for `Fil.signed_url/3` on that disk (`expires_in:`,
   `disposition:` and `if_exists:`), so a disk from config can give every signed URL a day and every download the
   `:attachment` disposition. The options of a call replace them, and a default that doesn't fit the method (a
-  disposition on an upload) is left out.
+  disposition on an upload) is left out. ([#37](https://github.com/pehbehbeh/fil/pull/37))
 - `Fil.Plugin.Validation` refuses writes by size (`max_size:`, `min_size:`), by content type (`content_types:`, checked
   against the content's magic bytes, so a GIF named `.png` or HTML in a `.txt` fails, and `image/*` doesn't take SVG)
   and by extension, plus a `check:` of your own. A refused write returns `Fil.InvalidContentError` and writes nothing,
