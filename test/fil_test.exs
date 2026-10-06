@@ -101,6 +101,25 @@ defmodule FilTest do
     test "size: is only an option of writes", %{disk: disk} do
       assert_raise ArgumentError, ~r/unknown options \[:size\]/, fn -> Fil.cp(disk, "a.txt", "b.txt", size: 1) end
     end
+
+    test "verify_checksum: true can't check a part of a file", %{disk: disk} do
+      for opts <- [[offset: 1], [length: 1], [offset: 0, length: 1]] do
+        assert_raise ArgumentError, ~r/can't be combined with :offset or :length/, fn ->
+          Fil.read(disk, "a.txt", [verify_checksum: true] ++ opts)
+        end
+
+        assert_raise ArgumentError, ~r/can't be combined/, fn ->
+          Fil.stream(disk, "a.txt", [verify_checksum: true] ++ opts)
+        end
+      end
+
+      assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "a.txt", verify_checksum: true, offset: 0)
+    end
+
+    test "offset: and length: take a non-negative and a positive integer", %{disk: disk} do
+      assert_raise ArgumentError, ~r/invalid value for :offset option/, fn -> Fil.read(disk, "a.txt", offset: -1) end
+      assert_raise ArgumentError, ~r/invalid value for :length option/, fn -> Fil.read(disk, "a.txt", length: 0) end
+    end
   end
 
   describe "stream/2" do

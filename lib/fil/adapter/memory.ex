@@ -50,8 +50,9 @@ defmodule Fil.Adapter.Memory do
   Where this list says nothing else, an operation follows the [contract](Fil.Adapter.html#module-contract). Directories
   exist only as prefixes, like on an object store, so there are no empty directories.
 
-    * `Fil.read/3`: the content from the store. Reading a directory is a `Fil.NotFoundError`. `verify_checksum: true`
-      compares the content with the checksum the write stored.
+    * `Fil.read/3`: the content from the store, or the part of it that `offset:` and `length:` ask for. Reading a
+      directory is a `Fil.NotFoundError`. `verify_checksum: true` compares the content with the checksum the write
+      stored.
     * `Fil.stream/3`: the content from the store, looked up when the stream is read, in chunks of 64 KiB.
       `verify_checksum: true` compares it before the first chunk.
     * `Fil.write/4`: one `:ets.insert/2`, so writes are atomic. A stream is collected first. `if_exists: :error` uses
@@ -88,6 +89,7 @@ defmodule Fil.Adapter.Memory do
   @behaviour Fil.Adapter
 
   alias Fil.Stat
+  alias Fil.Support.ByteRange
   alias Fil.Support.Checksum
   alias Fil.Support.Content
   alias Fil.Support.MemoryStores
@@ -180,8 +182,16 @@ defmodule Fil.Adapter.Memory do
   @impl Fil.Adapter
   def read(state, path, opts) do
     case :ets.lookup(store!(), key(state, path)) do
-      [{_key, content, _content_type, _mtime, checksum}] -> verify(content, checksum, opts)
+      [{_key, content, _content_type, _mtime, checksum}] -> verify(slice(content, opts), checksum, opts)
       [] -> {:error, %Fil.NotFoundError{reason: :enoent}}
+    end
+  end
+
+  # A sub-binary, so nothing is copied.
+  defp slice(content, opts) do
+    case ByteRange.from_options(opts) do
+      nil -> content
+      range -> ByteRange.slice(content, range)
     end
   end
 
@@ -199,7 +209,7 @@ defmodule Fil.Adapter.Memory do
   def stream(state, path, opts) do
     case :ets.lookup(store!(), key(state, path)) do
       [{_key, content, _content_type, _mtime, _checksum}] ->
-        {:ok, Stream.flat_map([path], &read_chunks!(state, &1, opts)), byte_size(content)}
+        {:ok, Stream.flat_map([path], &read_chunks!(state, &1, opts)), byte_size(slice(content, opts))}
 
       [] ->
         {:error, %Fil.NotFoundError{reason: :enoent}}

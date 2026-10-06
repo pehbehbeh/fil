@@ -112,9 +112,12 @@ defmodule Fil.Adapter.S3 do
     * `Fil.read/3`: GetObject. Reading a directory is a `Fil.NotFoundError`. `verify_checksum: true` asks S3 for the
       stored checksum (`x-amz-checksum-mode: ENABLED`) and compares it with the downloaded content, including the
       composite checksum of an upload in parts (see [Checksums](#module-checksums)). Objects stored with another
-      algorithm, or with none, are read without a check.
+      algorithm, or with none, are read without a check. `offset:` and `length:` send a `Range` header, and S3's `416`
+      for a range from the end on is empty content.
     * `Fil.stream/3`: HeadObject, then GetObject each time the stream is read. The download runs in a process of its
       own and goes only as fast as the stream is read. `verify_checksum: true` computes the checksum while streaming.
+      `offset:` and `length:` are clamped to the size from the HeadObject and sent as a `Range` header, and an empty
+      range downloads nothing.
     * `Fil.write/4`: PutObject for content in memory, and for a stream of known size (`size:`, a `File.Stream`, a stream
       from `Fil.stream/3`), which is sent as it's read. A stream without a size (or with `size: :unknown`) or with
       `checksum:`, and anything over 5 GiB, goes up in parts instead (see [Uploads in parts](#module-uploads-in-parts)).
@@ -229,6 +232,7 @@ defmodule Fil.Adapter.S3 do
   @behaviour Fil.Adapter
 
   alias Fil.Stat
+  alias Fil.Support.ByteRange
   alias Fil.Support.Checksum
   alias Fil.Support.Content
   alias Fil.Support.Parts
@@ -296,6 +300,13 @@ defmodule Fil.Adapter.S3 do
 
   @impl Fil.Adapter
   def read(state, path, opts) do
+    case ByteRange.from_options(opts) do
+      nil -> read_object(state, path, opts)
+      range -> read_range(state, path, range)
+    end
+  end
+
+  defp read_object(state, path, opts) do
     verify? = Keyword.get(opts, :verify_checksum, false)
     headers = if verify?, do: [@checksum_mode], else: []
 
@@ -306,6 +317,21 @@ defmodule Fil.Adapter.S3 do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # S3 answers a range that starts at or after the end, and any range of an empty object, with `416 InvalidRange`: the
+  # range is empty then. A server that ignores the header sends the whole object, which is cut here.
+  defp read_range(state, path, range) do
+    case request(state, :get, key(state, path), headers: [range_header(range)]) do
+      {:ok, %{status: 206, body: body}} -> {:ok, body}
+      {:ok, %{status: 200, body: body}} -> {:ok, ByteRange.slice(body, range)}
+      {:ok, %{status: 416}} -> {:ok, ""}
+      {:ok, response} -> {:error, error(response)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp range_header({offset, nil}), do: {"range", "bytes=#{offset}-"}
+  defp range_header({offset, length}), do: {"range", "bytes=#{offset}-#{offset + length - 1}"}
 
   @impl Fil.Adapter
   def write(state, path, content, opts) do
@@ -383,25 +409,34 @@ defmodule Fil.Adapter.S3 do
     headers = if verify?, do: [@checksum_mode], else: []
 
     case request(state, :head, key(state, path), headers: headers) do
-      {:ok, %{status: 200} = response} -> download(state, key(state, path), response, verify?)
+      {:ok, %{status: 200} = response} -> download(state, key(state, path), response, verify?, opts)
       {:ok, %{status: 404}} -> with {:ok, content} <- read(state, path, opts), do: {:ok, [content], byte_size(content)}
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp download(state, key, response, verify?) do
+  defp download(state, key, response, verify?, opts) do
     check = if verify?, do: download_check(state, key, response), else: {:ok, nil}
 
-    with {:ok, check} <- check do
-      stream =
-        Stream.resource(
-          fn -> start_download(state, key, check) end,
-          &next_chunk/1,
-          &stop_download/1
-        )
+    with {:ok, check} <- check,
+         {headers, size} <- download_range(content_length(response), ByteRange.from_options(opts)) do
+      start = fn -> start_download(state, key, check, headers) end
+      {:ok, Stream.resource(start, &next_chunk/1, &stop_download/1), size}
+    else
+      :empty -> {:ok, [], 0}
+      {:error, error} -> {:error, error}
+    end
+  end
 
-      {:ok, stream, content_length(response)}
+  # The `Range` header of the download and the size of the stream. A range is clamped to the size the HeadObject found,
+  # so the stream knows its size, and an empty range downloads nothing (S3 would answer it with `416`).
+  defp download_range(size, nil), do: {[], size}
+
+  defp download_range(size, range) do
+    case ByteRange.clamp(range, size) do
+      {_start, 0} -> :empty
+      {start, count} -> {[range_header({start, count})], count}
     end
   end
 
@@ -432,7 +467,7 @@ defmodule Fil.Adapter.S3 do
     %{algorithm: algorithm, checksum: Checksum.init_parts(algorithm, part_size), composite: composite}
   end
 
-  defp start_download(state, key, check) do
+  defp start_download(state, key, check, range) do
     reader = self()
     ref = make_ref()
     # `$callers` lets the download find what the reader was allowed, such as a `Req.Test` stub.
@@ -444,11 +479,13 @@ defmodule Fil.Adapter.S3 do
         Process.set_label({__MODULE__, :stream, key})
         Process.put(:"$callers", callers)
         relay = %Relay{to: reader, ref: ref, monitor: Process.monitor(reader)}
-        headers = if check, do: [@checksum_mode], else: []
+        headers = if check, do: [@checksum_mode | range], else: range
+        # S3 answers a range with `206`, even one that covers the whole object.
+        ok = if range == [], do: 200, else: 206
 
         result =
-          case request(state, :get, key, headers: headers, into: relay) do
-            {:ok, %{status: 200, headers: headers}} -> {:ok, headers}
+          case request(state, :get, key, headers: headers, into: Relay.into(relay, ok)) do
+            {:ok, %{status: ^ok, headers: headers}} -> {:ok, headers}
             {:ok, response} -> {:error, error(response)}
             {:error, reason} -> {:error, reason}
           end

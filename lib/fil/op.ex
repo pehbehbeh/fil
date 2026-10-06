@@ -22,12 +22,17 @@ defmodule Fil.Op do
 
   alias Fil.Disk
   alias Fil.Ref
+  alias Fil.Support.ByteRange
   alias Fil.Support.Content
   alias Fil.Support.Sized
   alias Fil.Support.Telemetry
 
   # Tags a `Fil` error raised while a write's content is read, on its way to `run_chain/2`.
   @content_error {__MODULE__, :content_error}
+
+  # The private key of a ranged read's result as the adapter returned it: the range of the file, not all of it. Holds
+  # the function that reads the whole file (see `ranged_read/2`).
+  @ranged {__MODULE__, :ranged}
 
   @enforce_keys [:disk, :name, :path]
   defstruct [:disk, :name, :path, :dest, :content, :result, streaming: false, options: [], private: %{}]
@@ -98,11 +103,12 @@ defmodule Fil.Op do
 
   A plugin that sets the result instead of calling `next` answers the call itself, and the adapter never runs. An error
   is an exception: one of `Fil`'s (see [Errors](Fil.Adapter.html#module-errors)) or the plugin's own. `Fil` fills in
-  the `:op`, `:path` and `:disk` of its own errors where the plugin left them `nil`.
+  the `:op`, `:path` and `:disk` of its own errors where the plugin left them `nil`. Content set on a read with
+  `offset:` or `length:` is taken as the whole file, and `Fil` cuts the part from it (see [Ranges](plugins.md#ranges)).
   """
   @spec put_result(t(), {:ok, term()} | {:error, Exception.t()}) :: t()
   def put_result(%__MODULE__{} = op, {tag, _value} = result) when tag in [:ok, :error] do
-    %{op | result: result}
+    %{whole(op) | result: result}
   end
 
   @doc """
@@ -173,18 +179,20 @@ defmodule Fil.Op do
   Takes the same `iodata:` and `stream:` functions as `update_content/2`. The result of `Fil.stream/3` is a stream, and
   the transforms run when the caller reads it. With only `iodata:`, the stream is collected then too.
 
+  On a read with `offset:` or `length:`, the adapter reads only that part of the file, but a transform gets the whole
+  file (it's read again) and `Fil` cuts the part from what the plugins return. See [Ranges](plugins.md#ranges).
+
   A transform that raises one of `Fil`'s errors, such as `Fil.ChecksumMismatchError` for content that fails a check,
   turns a read that returns a binary into that error. On a stream, the error is raised when the caller reads it, with
   the operation, the path and the disk filled in.
   """
   @spec update_result(t(), transform()) :: t()
-  def update_result(%__MODULE__{name: :read, result: {:ok, content}} = op, funs) do
+  def update_result(%__MODULE__{name: :read, result: {:ok, _content}} = op, funs) do
     funs = validate_transform!(funs)
 
-    if Content.iodata?(content) do
-      %{op | result: transform_iodata_result(content, funs)}
-    else
-      %{op | result: {:ok, transform_result_stream(content, funs)}}
+    case read_whole(op) do
+      %__MODULE__{result: {:ok, content}} = op -> transform_result(op, content, funs)
+      op -> op
     end
   end
 
@@ -192,6 +200,22 @@ defmodule Fil.Op do
     _ = validate_transform!(funs)
     op
   end
+
+  defp transform_result(op, content, funs) do
+    if Content.iodata?(content) do
+      %{op | result: transform_iodata_result(content, funs)}
+    else
+      %{op | result: {:ok, transform_result_stream(content, funs)}}
+    end
+  end
+
+  # A ranged read whose result is still the range the adapter read (see `ranged_read/2`). A transform needs the whole
+  # file, so it's read again, and `run_chain/2` slices the result once the plugins are done.
+  defp read_whole(%__MODULE__{private: %{@ranged => read}} = op), do: %{whole(op) | result: read.()}
+  defp read_whole(op), do: op
+
+  # The result is the whole file from here on: the plugin transformed it or answered with content of its own.
+  defp whole(%__MODULE__{private: private} = op), do: %{op | private: Map.delete(private, @ranged)}
 
   # A transform that fails with one of `Fil`'s errors (a decryption that finds the content tampered with, say) turns
   # the read into that error. A stream raises it instead, when it's read.
@@ -363,7 +387,31 @@ defmodule Fil.Op do
     :throw, {@content_error, error} -> {:error, put_context(error, caller)}
   end
 
+  defp run_chain(%__MODULE__{name: :read} = caller, chain) do
+    caller
+    |> chain.()
+    |> slice_result(ByteRange.from_options(caller.options))
+  end
+
   defp run_chain(caller, chain), do: chain.(caller).result
+
+  # A ranged read returns the range of the content as the caller gets it. The adapter read only the range, unless a
+  # plugin transformed the content or answered with its own, which is the whole file and gets sliced here.
+  defp slice_result(%__MODULE__{result: result}, nil), do: result
+  defp slice_result(%__MODULE__{private: %{@ranged => _read}, result: result}, _range), do: result
+
+  defp slice_result(%__MODULE__{result: {:ok, content}}, range) do
+    sliced = if Content.iodata?(content), do: ByteRange.slice(content, range), else: slice_stream(content, range)
+    {:ok, sliced}
+  end
+
+  defp slice_result(%__MODULE__{result: result}, _range), do: result
+
+  defp slice_stream(content, range) do
+    content
+    |> Content.chunks()
+    |> ByteRange.slice(range)
+  end
 
   # Errors a plugin's transform raises while the caller reads a stream get the caller's context too, the same as the
   # adapter's (see `to_result/3`), and reading the stream emits the stream events. Iodata a plugin answered with becomes
@@ -407,13 +455,12 @@ defmodule Fil.Op do
          {:ok, dest} <- normalize_dest(op.dest) do
       op = found_size(%{op | path: path, dest: dest}, caller)
 
-      %{
+      result =
         op
-        | result:
-            op
-            |> call_adapter()
-            |> to_result(op, caller)
-      }
+        |> call_adapter()
+        |> to_result(op, caller)
+
+      ranged_read(%{op | result: result}, caller)
     else
       {:error, :ebadpath} -> %{op | result: {:error, put_context(%Fil.InvalidRequestError{reason: :ebadpath}, caller)}}
     end
@@ -428,6 +475,25 @@ defmodule Fil.Op do
   end
 
   defp found_size(op, _caller), do: op
+
+  # A read with a range keeps how to read the whole file, for a plugin on the way back that transforms the content
+  # (`read_whole/1`): a slice of stored bytes can't be decompressed or decrypted. A stream is read only when it's
+  # enumerated, so the range costs nothing more then, but content in memory is read a second time.
+  defp ranged_read(%__MODULE__{name: :read, result: {:ok, _content}, options: options} = op, caller) do
+    if ByteRange.from_options(options) do
+      whole = %{op | options: ByteRange.drop(options)}
+
+      put_private(op, @ranged, fn ->
+        whole
+        |> call_adapter()
+        |> to_result(whole, caller)
+      end)
+    else
+      op
+    end
+  end
+
+  defp ranged_read(op, _caller), do: op
 
   defp normalize_dest(nil), do: {:ok, nil}
   defp normalize_dest(dest), do: Fil.Support.Path.normalize(dest)

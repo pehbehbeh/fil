@@ -221,6 +221,13 @@ With a `File.stream!` of bytes, as above, or a stream from `stream`, `Fil` knows
 it's read, in one request. For other streams, pass `size:` if you know it, or S3 uploads the stream in parts of 8 MiB
 (the local and memory disks don't need the size).
 
+`offset:` and `length:` read part of a file, and the storage reads only that part (S3 with a `Range` header):
+
+```elixir
+{:ok, header} = Fil.read(s3, "videos/intro.mp4", length: 4096)
+{:ok, rest} = Fil.stream(s3, "videos/intro.mp4", offset: 4096)
+```
+
 `url` returns the public URL of a file, and `signed_url` an expiring one, so clients can download or upload a file
 directly instead of going through your application code. S3 serves its URLs itself. For local and in-memory disks,
 `Fil.Plugin.URL` builds them and `Fil.Plug` serves them from your application:

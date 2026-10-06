@@ -60,6 +60,10 @@ defmodule Fil.Adapter do
       directory has no checksum, and a copy keeps the checksum of a file written in one part
     * `verify_checksum: true` on `c:read/3` fails with `Fil.ChecksumMismatchError` when the content doesn't match a
       stored checksum
+    * `offset:` and `length:` on `c:read/3` and `c:stream/3` read only part of the file: up to `length:` bytes from byte
+      `offset:` on, or to the end without `length:`. A part that reaches past the end is shorter, and one that starts at
+      or after the end is empty, without an error. `c:stream/3` returns the size of the part. `Fil` never passes them
+      together with `verify_checksum: true`
 
   `Fil.AdapterCase` (internal for now) tests this contract against a live disk.
 

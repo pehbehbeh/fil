@@ -80,6 +80,25 @@ defmodule Fil.AdapterCase do
     )
   end
 
+  @doc "`disk` with a plugin that compresses writes with `gzip/1` and decompresses reads with `gunzip/1`."
+  @spec compressing(Fil.Disk.t()) :: Fil.Disk.t()
+  def compressing(disk) do
+    Fil.attach(disk, :gzip, fn
+      %Fil.Op{name: :write} = op, next, _opts ->
+        op
+        |> Fil.Op.update_content(iodata: &:zlib.gzip/1, stream: &gzip/1)
+        |> next.()
+
+      %Fil.Op{name: :read} = op, next, _opts ->
+        op
+        |> next.()
+        |> Fil.Op.update_result(iodata: &:zlib.gunzip/1, stream: &gunzip/1)
+
+      op, next, _opts ->
+        next.(op)
+    end)
+  end
+
   @doc "Decompresses what `gzip/1` compressed."
   @spec gunzip(Enumerable.t()) :: Enumerable.t()
   def gunzip(chunks) do
@@ -172,7 +191,7 @@ defmodule Fil.AdapterCase do
 
       alias Fil.Adapter.Local
 
-      import Fil.AdapterCase, only: [chunked: 2, gzip: 1, gunzip: 1, large: 0]
+      import Fil.AdapterCase, only: [chunked: 2, compressing: 1, gzip: 1, gunzip: 1, large: 0]
 
       unquote_splicing(moduletags)
 
@@ -331,6 +350,85 @@ defmodule Fil.AdapterCase do
         assert disk
                |> Fil.stream!("big.bin")
                |> Enum.join() == content
+      end
+
+      test "reads and streams part of a file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "digits.txt", "0123456789")
+
+        for {opts, part} <- [
+              {[offset: 2, length: 3], "234"},
+              {[offset: 7], "789"},
+              {[length: 4], "0123"},
+              {[offset: 0], "0123456789"},
+              {[offset: 8, length: 5], "89"},
+              {[offset: 9, length: 1], "9"},
+              {[offset: 10], ""},
+              {[offset: 20, length: 2], ""}
+            ] do
+          assert Fil.read(disk, "digits.txt", opts) == {:ok, part}, "read with #{inspect(opts)}"
+
+          assert disk
+                 |> Fil.stream!("digits.txt", opts)
+                 |> Enum.join() == part,
+                 "stream with #{inspect(opts)}"
+        end
+      end
+
+      test "a part of an empty or a missing file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "empty.txt", "")
+        assert Fil.read(disk, "empty.txt", offset: 0, length: 1) == {:ok, ""}
+
+        assert disk
+               |> Fil.stream!("empty.txt", length: 1)
+               |> Enum.to_list() == []
+
+        assert {:error, %Fil.NotFoundError{op: :read}} = Fil.read(disk, "nope.txt", offset: 1)
+        assert {:error, %Fil.NotFoundError{op: :read}} = Fil.stream(disk, "nope.txt", offset: 1, length: 2)
+      end
+
+      test "streams a part of a large file, with its size", %{disk: disk, other_disk: other_disk} do
+        content = :crypto.strong_rand_bytes(300_000)
+        assert {:ok, _} = Fil.write(disk, "big.bin", content)
+        part = binary_part(content, 100_000, 150_000)
+
+        assert {:ok, stream} = Fil.stream(disk, "big.bin", offset: 100_000, length: 150_000)
+        assert Enum.join(stream) == part
+
+        # A write checks a stream against the size its adapter found, so a wrong one would be a conflict.
+        assert {:ok, _} = Fil.write(disk, "part.bin", stream)
+        assert {:ok, _} = Fil.write(other_disk, "part.bin", stream)
+        assert Fil.read(disk, "part.bin") == {:ok, part}
+        assert Fil.read(other_disk, "part.bin") == {:ok, part}
+      end
+
+      test "plugins that transform reads get the whole file, and the part is cut from their result", %{disk: disk} do
+        compressing = compressing(disk)
+
+        content = String.duplicate("all work and no play makes Jack a dull boy\n", 5_000)
+        part = binary_part(content, 100_000, 50_000)
+        assert {:ok, _} = Fil.write(compressing, "jack.txt.gz", content)
+
+        assert Fil.read(compressing, "jack.txt.gz", offset: 100_000, length: 50_000) == {:ok, part}
+
+        assert compressing
+               |> Fil.stream!("jack.txt.gz", offset: 100_000, length: 50_000)
+               |> Enum.join() == part
+
+        assert Fil.read(compressing, "jack.txt.gz", offset: byte_size(content)) == {:ok, ""}
+      end
+
+      test "a plugin that answers a ranged read itself gets its answer cut", %{disk: disk} do
+        caching =
+          Fil.attach(disk, :cache, fn
+            %Fil.Op{name: :read} = op, _next, _opts -> Fil.Op.put_result(op, {:ok, "cached content"})
+            op, next, _opts -> next.(op)
+          end)
+
+        assert Fil.read(caching, "anything.txt", offset: 7) == {:ok, "content"}
+
+        assert caching
+               |> Fil.stream!("anything.txt", length: 6)
+               |> Enum.join() == "cached"
       end
 
       test "a stream goes straight into a write", %{disk: disk, other_disk: other_disk} do
@@ -592,21 +690,7 @@ defmodule Fil.AdapterCase do
       end
 
       test "plugins keep state across the chunks of a stream", %{disk: disk} do
-        compressing =
-          Fil.attach(disk, :gzip, fn
-            %Fil.Op{name: :write} = op, next, _opts ->
-              op
-              |> Fil.Op.update_content(iodata: &:zlib.gzip/1, stream: &gzip/1)
-              |> next.()
-
-            %Fil.Op{name: :read} = op, next, _opts ->
-              op
-              |> next.()
-              |> Fil.Op.update_result(iodata: &:zlib.gunzip/1, stream: &gunzip/1)
-
-            op, next, _opts ->
-              next.(op)
-          end)
+        compressing = compressing(disk)
 
         content = String.duplicate("all work and no play makes Jack a dull boy\n", 5_000)
         stream = chunked(content, 1_000)

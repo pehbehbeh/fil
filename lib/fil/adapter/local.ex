@@ -27,9 +27,11 @@ defmodule Fil.Adapter.Local do
 
   Where this list says nothing else, an operation follows the [contract](Fil.Adapter.html#module-contract).
 
-    * `Fil.read/3`: `File.read/1`. Reading a directory is a `Fil.InvalidRequestError`. The filesystem stores no
-      checksums, so `verify_checksum: true` is ignored.
-    * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read.
+    * `Fil.read/3`: `File.read/1`, or `:file.pread/3` for the part that `offset:` and `length:` ask for. Reading a
+      directory is a `Fil.InvalidRequestError`. The filesystem stores no checksums, so `verify_checksum: true` is
+      ignored.
+    * `Fil.stream/3`: opens the file to check it, then reads it in chunks of 64 KiB each time the stream is read, from
+      `offset:` on and up to `length:` bytes.
     * `Fil.write/4`: the content, in memory or a stream, goes to a temporary file named `.fil-` and a unique suffix in
       the destination directory, which `File.rename/2` then moves into place, so readers never see a partial file. A
       failed write leaves nothing behind, and removes the directories it created. So does a writer that's killed, within
@@ -96,6 +98,7 @@ defmodule Fil.Adapter.Local do
   @behaviour Fil.Adapter
 
   alias Fil.Stat
+  alias Fil.Support.ByteRange
   alias Fil.Support.Checksum
   alias Fil.Support.Tmp
   alias Fil.Support.Unique
@@ -126,10 +129,10 @@ defmodule Fil.Adapter.Local do
   # Each callback works with the POSIX atoms from `File` and turns an error into a struct at the end (`to_error/1`).
 
   @impl Fil.Adapter
-  def read(state, path, _opts), do: to_error(read_file(state, path))
+  def read(state, path, opts), do: to_error(read_file(state, path, ByteRange.from_options(opts)))
 
   @impl Fil.Adapter
-  def stream(state, path, _opts), do: to_error(stream_file(state, path))
+  def stream(state, path, opts), do: to_error(stream_file(state, path, ByteRange.from_options(opts)))
 
   @impl Fil.Adapter
   def write(state, path, content, opts), do: to_error(write_file(state, path, content, opts))
@@ -162,19 +165,42 @@ defmodule Fil.Adapter.Local do
     end
   end
 
-  defp read_file(state, path) do
+  defp read_file(state, path, nil) do
     with {:ok, full} <- full_path(state, path), do: missing(File.read(full))
   end
 
+  # Only the range is read, with one `:file.pread/3`.
+  defp read_file(state, path, range) do
+    with {:ok, full} <- full_path(state, path),
+         {:ok, io} <- open_read(full) do
+      read_range(io, range)
+    end
+  end
+
+  defp read_range(io, range) do
+    {:ok, size} = :file.position(io, :eof)
+    {start, count} = ByteRange.clamp(range, size)
+
+    case :file.pread(io, start, count) do
+      {:ok, content} -> {:ok, content}
+      :eof -> {:ok, ""}
+      {:error, reason} -> {:error, reason}
+    end
+  after
+    :file.close(io)
+  end
+
   # The file is opened once to check it, and again each time the stream is read, by the process that reads it (a raw
-  # file belongs to the process that opened it).
-  defp stream_file(state, path) do
+  # file belongs to the process that opened it). A range starts the reads at its first byte and stops them at its last.
+  defp stream_file(state, path, range) do
     with {:ok, full} <- full_path(state, path),
          {:ok, io} <- open_read(full) do
       {:ok, size} = :file.position(io, :eof)
       :ok = :file.close(io)
+      # Without a range, the stream reads to the end, even of a file that grows meanwhile.
+      {start, count} = if range, do: ByteRange.clamp(range, size), else: {0, nil}
 
-      {:ok, Stream.resource(fn -> open_read!(full) end, &read_chunk/1, &:file.close/1), size}
+      {:ok, Stream.resource(fn -> open_at!(full, start, count) end, &read_chunk/1, &close_read/1), count || size}
     end
   end
 
@@ -187,13 +213,24 @@ defmodule Fil.Adapter.Local do
     end
   end
 
-  defp read_chunk(io) do
-    case :file.read(io, @chunk_size) do
-      {:ok, chunk} -> {[chunk], io}
-      :eof -> {:halt, io}
+  # The state is the file and the number of bytes left to read, `nil` for all of it.
+  defp open_at!(full, start, count) do
+    io = open_read!(full)
+    {:ok, _position} = :file.position(io, start)
+    {io, count}
+  end
+
+  defp read_chunk({io, 0}), do: {:halt, {io, 0}}
+
+  defp read_chunk({io, left}) do
+    case :file.read(io, min(@chunk_size, left || @chunk_size)) do
+      {:ok, chunk} -> {[chunk], {io, left && left - byte_size(chunk)}}
+      :eof -> {:halt, {io, left}}
       {:error, reason} -> raise to_struct(reason)
     end
   end
+
+  defp close_read({io, _left}), do: :file.close(io)
 
   # The content goes to a temporary file next to the destination, which then takes its place in one step. Whatever
   # happens in between (an error, or a stream that raises), the temporary file is removed, and so are the directories

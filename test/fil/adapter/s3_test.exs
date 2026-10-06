@@ -1140,6 +1140,52 @@ defmodule Fil.Adapter.S3Test do
     end
   end
 
+  describe "ranges" do
+    test "a read sends a Range header" do
+      stub([response(206, "234"), response(206, "789")])
+
+      assert Fil.read(disk(), "a.txt", offset: 2, length: 3) == {:ok, "234"}
+      assert Fil.read(disk(), "a.txt", offset: 7) == {:ok, "789"}
+      assert Enum.map(requests(), &header(&1, "range")) == ["bytes=2-4", "bytes=7-"]
+    end
+
+    test "a range from the end on is empty" do
+      stub([response(416, error_xml("InvalidRange"))])
+
+      assert Fil.read(disk(), "a.txt", offset: 10) == {:ok, ""}
+    end
+
+    test "a server that ignores the Range header sends the whole object, which is cut" do
+      stub([response(200, "0123456789")])
+
+      assert Fil.read(disk(), "a.txt", offset: 2, length: 3) == {:ok, "234"}
+    end
+
+    test "a stream clamps the range to the size from the HeadObject" do
+      stub([response(200, "", [{"content-length", "10"}]), response(206, ["78", "9"])])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", offset: 7, length: 5)
+      assert Enum.join(stream) == "789"
+      assert [%{method: "HEAD"}, %{method: "GET"} = get] = requests()
+      assert header(get, "range") == "bytes=7-9"
+    end
+
+    test "a stream of an empty range downloads nothing" do
+      stub([response(200, "", [{"content-length", "10"}])])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", offset: 10)
+      assert Enum.to_list(stream) == []
+      assert [%{method: "HEAD"}] = requests()
+    end
+
+    test "a stream of a range that fails raises with the error" do
+      stub([response(200, "", [{"content-length", "10"}]), response(403, error_xml("AccessDenied"))])
+
+      assert {:ok, stream} = Fil.stream(disk(), "a.txt", offset: 2)
+      assert_raise Fil.AccessDeniedError, fn -> Enum.to_list(stream) end
+    end
+  end
+
   describe "rm/1" do
     test "is idempotent" do
       stub([response(204), response(404)])
