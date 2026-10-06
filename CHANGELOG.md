@@ -19,12 +19,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   disposition on an upload) is left out. ([#37](https://github.com/pehbehbeh/fil/pull/37))
 - `Fil.ls/3` takes `type: :regular` or `type: :directory` to list only files or only directories. With
   `recursive: true`, `type: :directory` lists every directory of the subtree.
+  ([#40](https://github.com/pehbehbeh/fil/pull/40))
 - `Fil.ls/3` takes `glob:` to list the paths that match a pattern, such as `glob: "*/{withText,withoutText}"`, in
   `Path.wildcard/2`'s syntax. No storage matches globs itself, so `Fil` lists one directory level per segment, and the
-  whole subtree once from a `**` on, the same on every adapter.
+  whole subtree once from a `**` on, the same on every adapter. ([#40](https://github.com/pehbehbeh/fil/pull/40))
 - `Fil.exists?/3` and `Fil.stat/3` take the same `type:` option, and `Fil.regular?/1,2` checks for a file. On S3,
   `Fil.regular?/1` sends one `HEAD` and `Fil.dir?/1` one listing, where a missing path took both before. The listing
   that checks for a directory now asks for two keys instead of reading the whole directory.
+  ([#40](https://github.com/pehbehbeh/fil/pull/40))
 - `Fil.Plugin.Validation` refuses writes by size (`max_size:`, `min_size:`), by content type (`content_types:`, checked
   against the content's magic bytes, so a GIF named `.png` or HTML in a `.txt` fails, and `image/*` doesn't take SVG)
   and by extension, plus a `check:` of your own. A refused write returns `Fil.InvalidContentError` and writes nothing,
@@ -143,6 +145,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A recursive `c:Fil.Adapter.ls/3` returns the directories of the subtree too, at least every directory that holds a
   file, and `Fil` leaves them out unless the caller asks with `type: :directory`. Adapters of your own need to list
   them, or `type: :directory` and `glob:` patterns that match directories find nothing below the first level.
+  ([#40](https://github.com/pehbehbeh/fil/pull/40))
 - `Fil.LiveView` needs Phoenix 1.8: the optional dependency is `{:phoenix, "~> 1.8", optional: true}` now, so an app
   with an older Phoenix can't resolve `fil` at all. The uploader for direct uploads is LiveView colocated JS, and
   LiveView 1.2 raises at compile time when a component with colocated JS compiles below Phoenix 1.8.
@@ -191,7 +194,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - A recursive `Fil.ls/3` on S3 no longer returns directory markers (the empty objects whose key ends in `/` that
-  consoles create for a folder) as files.
+  consoles create for a folder) as files. ([#40](https://github.com/pehbehbeh/fil/pull/40))
 - `Fil.Plug` answers `403` instead of `500` for signed URLs whose query parameters aren't plain strings.
   ([#1](https://github.com/pehbehbeh/fil/pull/1))
 - `Fil.cp/3` and `Fil.rename/3` with `if_exists: :error` replaced an existing file within one disk, and refused only
