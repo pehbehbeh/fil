@@ -183,6 +183,47 @@ defmodule Fil.Plugin.ValidationTest do
       assert reason(Fil.write(disk, "report", @zip)) == {:content_type, "application/zip"}
     end
 
+    test "wildcards don't take the types a browser runs scripts in", %{disk: disk} do
+      svg = ~s{<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>}
+      xhtml = ~s(<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><script/></html>)
+
+      wildcard = validating(disk, content_types: ["image/*", "text/*"])
+      assert reason(Fil.write(wildcard, "a.svg", svg)) == {:content_type, "image/svg+xml"}
+      assert reason(Fil.write(wildcard, "a.txt", "<html>")) == {:content_type, "text/html"}
+
+      named = validating(disk, content_types: ["image/svg+xml", "application/xml"])
+      assert {:ok, _} = Fil.write(named, "a.svg", svg)
+      assert {:ok, _} = Fil.write(named, "a.xml", ~s(<?xml version="1.0"?><feed/>), content_type: "text/xml")
+      assert reason(Fil.write(named, "b.xml", xhtml)) == {:content_type, "text/html"}
+    end
+
+    test "common types that browsers and MIME name differently are the same", %{disk: disk} do
+      m4a = <<0, 0, 0, 0x1C, "ftypM4A ">> <> :binary.copy(<<0>>, 50)
+      utf16_csv = <<0xFF, 0xFE, "i", 0, "d", 0, "\n", 0>>
+
+      zips = validating(disk, content_types: ["application/zip"])
+      audio = validating(disk, content_types: ["audio/mp4"])
+      tables = validating(disk, content_types: ["text/csv"])
+
+      assert {:ok, _} = Fil.write(zips, "a.zip", @zip, content_type: "application/x-zip-compressed")
+      assert {:ok, _} = Fil.write(audio, "a.m4a", m4a)
+      assert {:ok, _} = Fil.write(tables, "a.csv", utf16_csv)
+      assert {:ok, _} = Fil.write(tables, "b.csv", @csv, content_type: "")
+    end
+
+    test "a copy across disks is checked as a write to the destination", %{disk: disk} do
+      source = Fil.disk(adapter: Memory, root: "source")
+      {:ok, gif} = Fil.write(source, "a.png", @gif)
+      {:ok, png} = Fil.write(source, "b.png", @png)
+      disk = validating(disk, content_types: ["image/png"])
+      a = Fil.ref(disk, "a.png")
+      b = Fil.ref(disk, "b.png")
+
+      assert {:error, %Fil.InvalidContentError{op: :cp, reason: {:content_type, "image/gif"}}} = Fil.cp(gif, a)
+      assert {:ok, _} = Fil.cp(png, b)
+      refute Fil.exists?(a)
+    end
+
     test "the type is checked across chunks, as soon as there are enough bytes", %{disk: disk} do
       disk = validating(disk, content_types: ["text/plain"])
       long = :binary.copy("a", 5_000)
@@ -271,6 +312,22 @@ defmodule Fil.Plugin.ValidationTest do
       assert {:ok, _url} = Fil.signed_url(signing, "a.gif")
     end
 
+    test "check: runs on upload URLs", %{disk: disk} do
+      signing =
+        disk
+        |> Validation.attach(check: fn op -> if op.name == :signed_url, do: {:error, :no_uploads}, else: :ok end)
+        |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
+
+      assert reason(Fil.signed_url(signing, "a.png", method: :put)) == :no_uploads
+      assert {:ok, _url} = Fil.signed_url(signing, "a.png")
+    end
+
+    test "a disk that can't sign upload URLs says so", %{disk: disk} do
+      disk = Validation.attach(disk, content_types: ["image/png"])
+
+      assert {:error, %Fil.UnsupportedError{reason: :no_callback}} = Fil.signed_url(disk, "a.png", method: :put)
+    end
+
     test "a URL Fil.Plug serves needs nothing more, because its upload is checked", %{disk: disk} do
       signing =
         disk
@@ -309,6 +366,11 @@ defmodule Fil.Plugin.ValidationTest do
 
       assert {:error, %Fil.UnsupportedError{reason: {:unchecked, :content_types}}} =
                Fil.signed_url(disk, "a.png", method: :put)
+
+      limited = s3(max_size: 10, presigned_uploads: :check_declared)
+
+      assert {:error, %Fil.UnsupportedError{reason: {:unchecked, :max_size}}} =
+               Fil.signed_url(limited, "a.png", method: :put)
     end
   end
 

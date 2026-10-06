@@ -9,11 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- `Fil.Plugin.Validation` refuses writes by size (`max_size:`, `min_size:`), by content type (`content_types:`,
-  checked against the content's magic bytes, so a GIF named `.png` or HTML in a `.txt` fails) and by extension, plus a
-  `check:` of your own. A refused write returns `Fil.InvalidContentError` and writes nothing, and a stream fails as
-  soon as it breaks a rule. Upload URLs are checked when they're signed, and a presigned S3 upload that would skip a
-  content check is refused unless `presigned_uploads: :check_declared` trusts its signed content type.
+- `Fil.Plugin.Validation` refuses writes by size (`max_size:`, `min_size:`), by content type (`content_types:`, checked
+  against the content's magic bytes, so a GIF named `.png` or HTML in a `.txt` fails, and `image/*` doesn't take SVG)
+  and by extension, plus a `check:` of your own. A refused write returns `Fil.InvalidContentError` and writes nothing,
+  and a stream fails as soon as it breaks a rule. Upload URLs are checked when they're signed, and a presigned S3 upload
+  that would skip a content check is refused unless `presigned_uploads: :check_declared` trusts its signed content type.
   ([#36](https://github.com/pehbehbeh/fil/pull/36))
 - `Fil.Op.scan_content/4` and `Fil.Op.scan_result/4` let a plugin read the content of a write or a read as it passes,
   without changing it. A stream keeps its chunks and its `:size`, so S3 still sends it in one request. A plugin refuses

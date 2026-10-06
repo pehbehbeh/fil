@@ -70,12 +70,12 @@ defmodule Fil.InvalidContentError do
   @moduledoc """
   A plugin refused the content. Send other content.
 
-  Plugins return or raise it for content that breaks the disk's rules, such as `Fil.Plugin.Validation` for a file
-  that's too large or of a type the disk doesn't take. `:reason` says which rule, in the form the plugin documents. Raised while the content of a write
-  is read (from a function given to `Fil.Op.scan_content/4`, say), it's the write's result, and nothing is written.
-  `Fil.Plug` answers an upload that fails with it with a `413` for `{:too_large, _}`, a `415` for
-  `{:content_type, _}`, `{:content_type_mismatch, _, _}` and `{:extension, _}`, and a `422` for anything else, without
-  the reason.
+  Plugins return or raise it for content that breaks the disk's rules, such as `Fil.Plugin.Validation` for a file that's
+  too large or of a type the disk doesn't take. `:reason` says which rule, in the form the plugin documents. Raised
+  while the content of a write is read (from a function given to `Fil.Op.scan_content/4`, say), it's the write's result,
+  and nothing is written. `Fil.Plug` answers an upload that fails with it with a `413` for `{:too_large, _}`, a `415`
+  for `{:content_type, _}`, `{:content_type_mismatch, _, _}` and `{:extension, _}`, and a `422` for anything else,
+  without the reason.
 
       iex> disk =
       ...>   Fil.disk(adapter: Fil.Adapter.Memory)

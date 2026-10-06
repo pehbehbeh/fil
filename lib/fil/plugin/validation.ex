@@ -14,8 +14,8 @@ defmodule Fil.Plugin.Validation do
             content_types: [
               type: {:list, {:custom, __MODULE__, :validate_content_type, []}},
               doc: """
-              The content types the disk takes, such as `"image/png"`, or `"image/*"` for every image type. They're
-              checked against the content itself, see [Content types](#module-content-types).
+              The content types the disk takes, such as `"image/png"`, or `"image/*"` for every image type but SVG.
+              They're checked against the content itself, see [Content types](#module-content-types).
               """
             ],
             extensions: [
@@ -79,8 +79,10 @@ defmodule Fil.Plugin.Validation do
 
   With `content_types:`, the type comes from the content's first bytes, its magic bytes, and has to be allowed. Images,
   PDF, ZIP and the formats built on it (Office documents, EPUB), audio, video, archives and executables have a
-  signature. So do HTML, SVG and XML, so they can't pass as plain text. A type that's declared too has to match the
-  content:
+  signature. So do HTML that starts the way browsers recognise it (the tags of the
+  [WHATWG MIME Sniffing standard](https://mimesniff.spec.whatwg.org/#identifying-a-resource-with-an-unknown-mime-type)),
+  SVG and XML, so they can't pass as plain text. Text that starts like HTML counts as HTML, which also catches
+  Markdown that starts with `<p>` or a comment. A type that's declared too has to match the content:
 
     * the call's `content_type:` (the request's `content-type` on an upload through `Fil.Plug`) has to be allowed, and
       the content has to be of that type. A GIF declared as `image/png` fails with
@@ -93,9 +95,17 @@ defmodule Fil.Plugin.Validation do
       it fails with `{:content_type, nil}`
 
   Office documents are ZIP files inside, and an `.xlsx` is checked as `application/zip` with the type it declares. So
-  `content_types: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]` takes Excel files but no other
-  ZIP. A file whose content doesn't match its extension, such as a PNG renamed to `.jpg`, fails when its declared type
-  comes from the extension, as it does in browsers.
+  `content_types: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]` takes ZIP files named or
+  declared as Excel files, and no ZIP named or declared as anything else. A file whose content doesn't match its
+  extension, such as a PNG renamed to `.jpg`, fails when its declared type comes from the extension, as it does in
+  browsers.
+
+  HTML, SVG, XML and the `+xml` types are documents a browser renders and runs scripts in, also XML with an XHTML root
+  (detected as `text/html`) or a stylesheet. A wildcard such as `image/*` or `text/*` doesn't take them, so they have
+  to be listed by name, and only for disks whose files are never served from your application's origin.
+
+  A copy across disks writes without a `content_type:`, so content without a signature is checked by the destination's
+  extension, and fails with `{:content_type, nil}` without one.
 
   ## Upload URLs
 
@@ -173,14 +183,25 @@ defmodule Fil.Plugin.Validation do
         op
         |> scan(opts)
         |> next.()
-
-      {:error, %{__exception__: true} = error} ->
-        Op.put_result(op, {:error, error})
+        |> check_signed(op, opts)
 
       {:error, reason} ->
-        Op.put_result(op, {:error, %Fil.InvalidContentError{reason: reason}})
+        refuse(op, reason)
     end
   end
+
+  defp refuse(op, %{__exception__: true} = error), do: Op.put_result(op, {:error, error})
+  defp refuse(op, reason), do: Op.put_result(op, {:error, %Fil.InvalidContentError{reason: reason}})
+
+  # A URL is refused only once it's signed, so a disk that can't sign upload URLs at all still says so.
+  defp check_signed(%Op{result: {:ok, _url}} = signed, %Op{name: :signed_url} = op, opts) do
+    case check_presigned(op, opts) do
+      :ok -> signed
+      {:error, error} -> refuse(signed, error)
+    end
+  end
+
+  defp check_signed(returned, _op, _opts), do: returned
 
   ## ------------------------------------------------------------------
   ## Before the content
@@ -199,9 +220,8 @@ defmodule Fil.Plugin.Validation do
 
     with :ok <- run_check(op, opts[:check]),
          :ok <- check_extension(op.path, opts[:extensions]),
-         :ok <- check_size(size, opts),
-         :ok <- check_types(declared, extension_type(op.path), opts[:content_types]) do
-      check_presigned(op, size, declared, opts)
+         :ok <- check_size(size, opts) do
+      check_types(declared, extension_type(op.path), opts[:content_types])
     end
   end
 
@@ -249,17 +269,15 @@ defmodule Fil.Plugin.Validation do
   # An upload URL that `Fil.Plug` serves is checked when the upload is written. Any other is signed by the storage,
   # and its content never comes through here: what the signature can't enforce is refused, or for `:check_declared`,
   # the content type is taken from the signature.
-  defp check_presigned(%Op{name: :signed_url} = op, size, declared, opts) do
+  defp check_presigned(op, opts) do
     if Fil.Plugin.URL.secret(op.disk) == nil do
       opts
-      |> unchecked_rule(size, declared)
+      |> unchecked_rule(declared_size(op), declared_type(op))
       |> unchecked()
     else
       :ok
     end
   end
-
-  defp check_presigned(_op, _size, _declared, _opts), do: :ok
 
   defp unchecked_rule(opts, size, declared) do
     cond do
@@ -360,17 +378,16 @@ defmodule Fil.Plugin.Validation do
   ## ------------------------------------------------------------------
 
   defp allowed?(type, allowed) do
-    Enum.any?(allowed, fn
-      "*/*" ->
-        true
-
-      pattern ->
-        case String.split(pattern, "/") do
-          [major, "*"] -> String.starts_with?(type, major <> "/")
-          _type -> type == pattern
-        end
+    Enum.any?(allowed, fn pattern ->
+      case String.split(pattern, "/") do
+        [major, "*"] -> String.starts_with?(type, major <> "/") and not scripted?(type)
+        _type -> type == pattern
+      end
     end)
   end
+
+  # Types a browser renders as a document and runs scripts in. A wildcard doesn't take them, they're listed by name.
+  defp scripted?(type), do: type in ["text/html", "image/svg+xml", "application/xml"] or String.ends_with?(type, "+xml")
 
   # A size the call declared, or the size of content in memory.
   defp declared_size(%Op{name: :write, content: content} = op) do
@@ -390,7 +407,7 @@ defmodule Fil.Plugin.Validation do
   defp declared_type(op) do
     with type when is_binary(type) <- Op.get_option(op, :content_type) do
       case Magic.normalize(type) do
-        "application/octet-stream" -> nil
+        unknown when unknown in ["", "application/octet-stream"] -> nil
         type -> type
       end
     end
