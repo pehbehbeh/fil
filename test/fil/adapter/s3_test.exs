@@ -1409,6 +1409,16 @@ defmodule Fil.Adapter.S3Test do
       assert Enum.map(refs, & &1.path) == ["photos/a.jpg"]
     end
 
+    test "a recursive listing lists directory markers as directories" do
+      stub([response(200, list_recursive_with_marker()), response(200, list_recursive_with_marker())])
+
+      assert {:ok, refs} = Fil.ls(disk(), "photos", recursive: true)
+      assert Enum.map(refs, & &1.path) == ["photos/2026/b.jpg", "photos/a.jpg"]
+
+      assert {:ok, refs} = Fil.ls(disk(), "photos", recursive: true, type: :directory)
+      assert Enum.map(refs, & &1.path) == ["photos/2026", "photos/empty"]
+    end
+
     test "an unparsable body is unavailable" do
       stub([response(200, "not xml at all")])
 
@@ -1444,15 +1454,42 @@ defmodule Fil.Adapter.S3Test do
       assert Enum.map(requests(), & &1.method) == ["HEAD", "GET"]
     end
 
-    test "dir? is true for a prefix and false for an object" do
-      stub([response(404), response(200, list_page_two())])
+    test "dir? lists the prefix without a HEAD" do
+      stub([response(200, list_page_two())])
       assert Fil.dir?(disk(), "photos")
 
-      stub([response(200, "", [{"content-length", "1"}])])
-      refute Fil.dir?(disk(), "a.jpg")
+      assert [request] = requests()
+      assert request.method == "GET"
+      assert request.query_params == %{"list-type" => "2", "prefix" => "photos/", "delimiter" => "/", "max-keys" => "2"}
 
-      stub([response(404), response(200, empty_list())])
-      refute Fil.dir?(disk(), "nope")
+      stub([response(200, empty_list())])
+      refute Fil.dir?(disk(), "a.jpg")
+      assert [%{method: "GET"}] = requests()
+    end
+
+    test "dir? doesn't count the directory's own marker" do
+      stub([response(200, list_with_marker())])
+      assert Fil.dir?(disk(), "photos")
+
+      stub([response(200, list_only_marker())])
+      refute Fil.dir?(disk(), "photos")
+    end
+
+    test "regular? sends one HEAD and no prefix probe" do
+      stub([response(404)])
+      refute Fil.regular?(disk(), "photos")
+      assert [%{method: "HEAD"}] = requests()
+
+      stub([response(200, "", [{"content-length", "1"}])])
+      assert Fil.regular?(disk(), "a.jpg")
+      assert [%{method: "HEAD"}] = requests()
+    end
+
+    test "stat with type: :regular is not found without a probe" do
+      stub([response(404)])
+
+      assert {:error, %Fil.NotFoundError{reason: {:http_status, 404}}} = Fil.stat(disk(), "photos", type: :regular)
+      assert [%{method: "HEAD"}] = requests()
     end
 
     test "a missing key with nothing under it is not found" do
@@ -2141,6 +2178,29 @@ defmodule Fil.Adapter.S3Test do
     <ListBucketResult>
       <IsTruncated>false</IsTruncated>
       <Contents><Key>photos/a.jpg</Key><Size>1</Size></Contents>
+      <Contents><Key>photos/2026/b.jpg</Key><Size>2</Size></Contents>
+    </ListBucketResult>
+    """
+  end
+
+  defp list_only_marker do
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <ListBucketResult>
+      <IsTruncated>false</IsTruncated>
+      <Contents><Key>photos/</Key><Size>0</Size></Contents>
+    </ListBucketResult>
+    """
+  end
+
+  defp list_recursive_with_marker do
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <ListBucketResult>
+      <IsTruncated>false</IsTruncated>
+      <Contents><Key>photos/</Key><Size>0</Size></Contents>
+      <Contents><Key>photos/a.jpg</Key><Size>1</Size></Contents>
+      <Contents><Key>photos/empty/</Key><Size>0</Size></Contents>
       <Contents><Key>photos/2026/b.jpg</Key><Size>2</Size></Contents>
     </ListBucketResult>
     """

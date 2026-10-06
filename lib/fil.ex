@@ -114,6 +114,23 @@ defmodule Fil do
                  type: :boolean,
                  default: false,
                  doc: "Walk the whole subtree instead of one level."
+               ],
+               glob: [
+                 type: :string,
+                 doc: """
+                 Lists only the paths below the directory that match this pattern, at any depth. The syntax is
+                 `Path.wildcard/2`'s: `*` matches any characters within a name, `?` a single one, `[a-z]` one of a
+                 class, `{pdf,csv}` one of the alternatives, and a `**` segment any number of directories. Unlike
+                 `Path.wildcard/2`, `*` and `?` also match names that start with a dot. `\\` makes the next character
+                 literal (`\\*`). See "Globs" below.
+                 """
+               ],
+               type: [
+                 type: {:in, [:regular, :directory]},
+                 doc: """
+                 Lists only files (`:regular`) or only directories (`:directory`), the values of `Fil.Stat`'s `:type`.
+                 Without it, a one-level listing and a glob return both, and a recursive listing returns files.
+                 """
                ]
              )
 
@@ -146,15 +163,31 @@ defmodule Fil do
                  ]
                )
 
-  @stat_schema NimbleOptions.new!(
-                 checksum: [
-                   type: {:in, @checksums},
-                   doc: """
-                   Fills in `Fil.Stat`'s `:checksum` for this algorithm. S3 returns the checksum stored with the object,
-                   or `nil` if it was written without one. The local filesystem computes it by reading the file.
-                   """
-                 ]
-               )
+  @stat_type_option [
+    type: [
+      type: {:in, [:regular, :directory]},
+      doc: """
+      Counts only a file (`:regular`) or only a directory (`:directory`), the values of `Fil.Stat`'s `:type`. Anything
+      else is a `Fil.NotFoundError`. Adapters can skip looking for the other type, which saves S3 a request.
+      """
+    ]
+  ]
+
+  @exists_schema NimbleOptions.new!(@stat_type_option)
+
+  @checksum_option [
+    checksum: [
+      type: {:in, @checksums},
+      doc: """
+      Fills in `Fil.Stat`'s `:checksum` for this algorithm. S3 returns the checksum stored with the object, or `nil` if
+      it was written without one. The local filesystem computes it by reading the file.
+      """
+    ]
+  ]
+
+  @stat_schema @checksum_option
+               |> Keyword.merge(@stat_type_option)
+               |> NimbleOptions.new!()
 
   # Removals take no options yet. The empty schemas still make an unknown option raise instead of being ignored.
   @rm_schema NimbleOptions.new!([])
@@ -438,7 +471,9 @@ defmodule Fil do
   def stat(ref, opts) when is_list(opts) do
     opts = validate!(opts, @stat_schema)
 
-    run(ref, :stat, opts)
+    ref
+    |> run(:stat, opts)
+    |> check_type(ref, opts[:type])
   end
 
   @doc "Returns metadata for a file or directory. See `stat/1`."
@@ -449,30 +484,74 @@ defmodule Fil do
   end
 
   @doc """
-  Whether anything exists at this path.
+  Whether anything exists at this path, or with `type:` whether a file or a directory does.
 
   Predicates return a plain boolean, so unreachable storage or an invalid path is `false`. Use `stat/1` when you need
   to tell those cases apart.
 
+  `regular?/1` is `exists?(ref, type: :regular)` and `dir?/1` is `exists?(ref, type: :directory)`. Pass the type when
+  you know what you're looking for: S3 then needs one request where it otherwise needs two for a missing path (a `HEAD`
+  for the file, then a listing for the directory).
+
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
-      iex> Fil.write!(disk, "hello.txt", "World")
-      iex> Fil.exists?(disk, "hello.txt")
+      iex> Fil.write!(disk, "reports/q3.pdf", "%PDF")
+      iex> Fil.exists?(disk, "reports/q3.pdf")
       true
+      iex> Fil.exists?(disk, "reports", type: :regular)
+      false
       iex> Fil.exists?(disk, "nope.txt")
       false
 
+  ## Options
+
+  #{NimbleOptions.docs(@exists_schema)}
   """
   @doc section: :operations
   @spec exists?(Ref.t()) :: boolean()
-  def exists?(ref), do: match?({:ok, _}, stat(ref))
+  def exists?(ref), do: exists?(ref, [])
 
   @doc "Whether anything exists at this path. See `exists?/1`."
   @doc section: :operations
   @spec exists?(Disk.t(), Path.t()) :: boolean()
-  def exists?(%Disk{} = disk, path) when is_binary(path), do: exists?(Ref.new(disk, path))
+  @spec exists?(Ref.t(), keyword()) :: boolean()
+  def exists?(%Disk{} = disk, path) when is_binary(path), do: exists?(Ref.new(disk, path), [])
+
+  def exists?(ref, opts) when is_list(opts) do
+    opts = validate!(opts, @exists_schema)
+
+    match?({:ok, _}, stat(ref, opts))
+  end
+
+  @doc "Whether anything exists at this path. See `exists?/1`."
+  @doc section: :operations
+  @spec exists?(Disk.t(), Path.t(), keyword()) :: boolean()
+  def exists?(%Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
+    exists?(Ref.new(disk, path), opts)
+  end
 
   @doc """
-  Whether this path is a directory. On object stores, that means a non-empty prefix.
+  Whether this path is a file. Same as `exists?(ref, type: :regular)`, see `exists?/1`.
+
+      iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
+      iex> Fil.write!(disk, "reports/q3.pdf", "%PDF")
+      iex> Fil.regular?(disk, "reports/q3.pdf")
+      true
+      iex> Fil.regular?(disk, "reports")
+      false
+
+  """
+  @doc section: :operations
+  @spec regular?(Ref.t()) :: boolean()
+  def regular?(ref), do: exists?(ref, type: :regular)
+
+  @doc "Whether this path is a file. See `regular?/1`."
+  @doc section: :operations
+  @spec regular?(Disk.t(), Path.t()) :: boolean()
+  def regular?(%Disk{} = disk, path) when is_binary(path), do: exists?(disk, path, type: :regular)
+
+  @doc """
+  Whether this path is a directory, which on object stores means a non-empty prefix. Same as
+  `exists?(ref, type: :directory)`, see `exists?/1`.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> Fil.write!(disk, "reports/q3.pdf", "%PDF")
@@ -484,12 +563,12 @@ defmodule Fil do
   """
   @doc section: :operations
   @spec dir?(Ref.t()) :: boolean()
-  def dir?(ref), do: match?({:ok, %Stat{type: :directory}}, stat(ref))
+  def dir?(ref), do: exists?(ref, type: :directory)
 
   @doc "Whether this path is a directory. See `dir?/1`."
   @doc section: :operations
   @spec dir?(Disk.t(), Path.t()) :: boolean()
-  def dir?(%Disk{} = disk, path) when is_binary(path), do: dir?(Ref.new(disk, path))
+  def dir?(%Disk{} = disk, path) when is_binary(path), do: exists?(disk, path, type: :directory)
 
   @doc """
   Lists a directory. The whole listing is loaded into memory.
@@ -497,8 +576,9 @@ defmodule Fil do
   One level deep by default; pass `recursive: true` to walk the whole subtree. Paths are relative to the disk root, and
   a missing prefix returns an empty list.
 
-  A one-level listing includes directories. A recursive listing returns files only, because object stores only have
-  directories implicitly and the result should be the same on every adapter.
+  A one-level listing includes directories. A recursive listing returns files only, unless you ask for its directories
+  with `type: :directory`: at least every directory that holds a file, because object stores have directories only
+  implicitly. Whether empty directories show up too is on the adapter's page.
 
   ## Options
 
@@ -517,6 +597,9 @@ defmodule Fil do
       iex> {:ok, [_hello, report]} = Fil.ls(disk, ".", recursive: true)
       iex> report
       #Fil.Ref<memory:reports/q3.pdf>
+      iex> {:ok, [reports]} = Fil.ls(disk, ".", type: :directory)
+      iex> reports
+      #Fil.Ref<memory:reports>
 
   The results are ordinary refs with `:stat` filled in from the listing, so you can pass them to any other
   function:
@@ -526,6 +609,28 @@ defmodule Fil do
       reports
       |> Enum.filter(&(&1.stat.size == 0))
       |> Enum.each(&Fil.rm/1)
+
+  ## Globs
+
+  `glob:` matches paths relative to the listed directory and returns files and directories, unless `type:` picks one:
+
+      iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
+      iex> Fil.write!(disk, "videos/intro/withText/intro.mp4", "...")
+      iex> Fil.write!(disk, "videos/outro/withoutText/outro.mp4", "...")
+      iex> {:ok, [with_text, without_text]} = Fil.ls(disk, "videos", glob: "*/{withText,withoutText}")
+      iex> with_text
+      #Fil.Ref<memory:videos/intro/withText>
+      iex> without_text
+      #Fil.Ref<memory:videos/outro/withoutText>
+
+  No storage matches globs itself, so `Fil` lists the directories one level at a time: the directory the literal start
+  of the pattern names (`videos` for `videos/*/withText`), then each directory a segment matched. On S3 that's one
+  request per listed directory and level, the same as nested calls to `ls/3`. A `**` segment lists the whole subtree
+  of each directory it starts from, so `glob: "**/*.mp4"` is one recursive listing, and on a large bucket a prefix in
+  front of it (`videos/**/*.mp4`) keeps that listing small.
+
+  A glob can't be combined with `recursive: true`, because a `**` says how deep to go. Each listing is an operation of
+  its own, so plugins and `[:fil, :op]` telemetry events see every one of them.
 
   """
   @doc section: :operations
@@ -543,7 +648,15 @@ defmodule Fil do
   def ls(ref, opts) when is_list(opts) do
     opts = validate!(opts, @ls_schema)
 
-    run(ref, :ls, opts)
+    listed =
+      case opts[:glob] do
+        nil -> run(ref, :ls, opts)
+        glob -> glob(ref, glob, opts)
+      end
+
+    with {:ok, listed} <- listed do
+      {:ok, filter_type(listed, listed_type(opts))}
+    end
   end
 
   @doc "Lists a directory. See `ls/1`."
@@ -1231,6 +1344,42 @@ defmodule Fil do
       disposition -> Keyword.put(opts, :disposition, Fil.Support.ContentDisposition.header(disposition, basename))
     end
   end
+
+  # Each listing a glob makes is an operation of its own, which plugins and telemetry see like any other listing.
+  defp glob(ref, glob, opts) do
+    if opts[:recursive] do
+      raise ArgumentError, "the :glob option can't be combined with recursive: true, use ** in the pattern instead"
+    end
+
+    glob = Fil.Support.Glob.compile!(glob)
+
+    with {:ok, dir} <- resolve(ref, :ls) do
+      Fil.Support.Glob.walk(dir, glob, &run(&1, :ls, recursive: &2))
+    end
+  end
+
+  # Adapters may ignore `type:` on a stat, and plugins may answer a stat themselves, so the type is checked here.
+  defp check_type({:ok, %Stat{type: type}} = result, _ref, wanted) when wanted in [nil, type], do: result
+  defp check_type({:ok, %Stat{}}, ref, :regular), do: wrong_type(ref, :eisdir)
+  defp check_type({:ok, %Stat{}}, ref, :directory), do: wrong_type(ref, :enotdir)
+  defp check_type(error, _ref, _wanted), do: error
+
+  # The stat succeeded, so the path normalizes.
+  defp wrong_type(%Ref{disk: disk, path: path}, reason) do
+    {:ok, path} = Fil.Support.Path.normalize(path)
+    {:error, %Fil.NotFoundError{op: :stat, path: path, disk: disk, reason: reason}}
+  end
+
+  # Adapters list directories in recursive listings too, so files only is a filter here.
+  defp listed_type(opts) do
+    case Keyword.fetch(opts, :type) do
+      {:ok, type} -> type
+      :error -> if opts[:recursive], do: :regular
+    end
+  end
+
+  defp filter_type(listed, nil), do: listed
+  defp filter_type(listed, type), do: Enum.filter(listed, &(&1.stat.type == type))
 
   defp run(ref, name, opts, fields \\ [], size \\ nil) do
     with {:ok, %Ref{disk: disk, path: path}} <- resolve(ref, name) do

@@ -719,7 +719,7 @@ defmodule Fil.Adapter.Local do
     child_path = Fil.Support.Path.join(prefix, name)
 
     case listing(child_full, child_path) do
-      {:ok, {_path, %Stat{type: :directory}}} -> walk(child_full, child_path)
+      {:ok, {_path, %Stat{type: :directory}} = listed} -> [listed | walk(child_full, child_path)]
       {:ok, listed} -> [listed]
       :error -> []
     end
@@ -743,7 +743,7 @@ defmodule Fil.Adapter.Local do
       {:ok, %File.Stat{type: :directory}} ->
         full
         |> walk(".")
-        |> length()
+        |> Enum.count(&match?({_path, %Stat{type: :regular}}, &1))
 
       _other ->
         0
