@@ -54,18 +54,23 @@ To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html)
 - **One API for many kinds of storage.** Local disk, S3 (and S3-compatible stores) and an in-memory disk for async
   tests, with the same behaviour on every adapter. `cp` and `rename` work across disks.
 - **Just values.** A disk is a plain value: no application config, no registry, nothing to supervise. It works in a
-  script or a Livebook with `Mix.install/1`. In Livebook, [`Fil.Kino`](https://fil.hexdocs.pm/Fil.Kino.html) browses a
-  disk, uploads files to it, and adds a smart cell that builds one.
+  script or a Livebook with `Mix.install/1`.
 - **Pluggable.** Anything that isn't about where files are stored is a [plugin](https://fil.hexdocs.pm/plugins.html),
   such as setting content types or logging.
 - **Few dependencies.** Req, NimbleOptions, MIME and Telemetry, plus Plug if you serve files. Cloud adapters use Req
   instead of their own SDKs.
 - **Streaming.** Files can be read and written as streams on every disk, so large files don't have to fit in memory.
+- **Integrations.** Each one is compiled only when its dependency is in your project:
+  - Plug: [`Fil.Plug`](https://fil.hexdocs.pm/Fil.Plug.html) serves public and signed URLs from your endpoint or router,
+    and sends files from controllers.
+  - Phoenix LiveView: [`Fil.LiveView`](https://fil.hexdocs.pm/Fil.LiveView.html) stores uploads on any disk, also
+    straight from the browser, and has an upload field for forms (see the
+    [Phoenix guide](https://fil.hexdocs.pm/phoenix.html)).
+  - Ecto: [`Fil.Ecto.Ref`](https://fil.hexdocs.pm/Fil.Ecto.Ref.html) stores refs in Ecto schemas.
+  - Livebook: [`Fil.Kino`](https://fil.hexdocs.pm/Fil.Kino.html) browses a disk, uploads files to it, and adds a smart
+    cell that builds one.
 - **URLs on every disk.** Public and signed GET and PUT URLs, from S3 itself or from
-  [`Fil.Plugin.URL`](https://fil.hexdocs.pm/Fil.Plugin.URL.html) and [`Fil.Plug`](https://fil.hexdocs.pm/Fil.Plug.html).
-- **Phoenix uploads.** [`Fil.LiveView`](https://fil.hexdocs.pm/Fil.LiveView.html) stores LiveView uploads on any disk,
-  also straight from the browser (see the [Phoenix guide](https://fil.hexdocs.pm/phoenix.html)), and
-  [`Fil.Ecto.Ref`](https://fil.hexdocs.pm/Fil.Ecto.Ref.html) stores the refs in Ecto schemas.
+  [`Fil.Plugin.URL`](https://fil.hexdocs.pm/Fil.Plugin.URL.html) and `Fil.Plug`.
 - **Safe by default.** Paths can't climb out of the disk root, `if_exists: :error` never replaces a file, and S3
   verifies checksums.
 - **Errors you can act on.** Each error, such as [`Fil.NotFoundError`](https://fil.hexdocs.pm/Fil.NotFoundError.html) or
