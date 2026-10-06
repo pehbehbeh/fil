@@ -122,7 +122,24 @@ defmodule Fil do
                    doc: """
                    Checks the content against the checksum stored with it and returns `Fil.ChecksumMismatchError` if
                    they differ. Content without a stored checksum (see the `:checksum` option of `write/4`), or on
-                   storage that stores none, is returned unchecked.
+                   storage that stores none, is returned unchecked. A stored checksum covers the whole file, so it can't
+                   be combined with `:offset` or `:length`.
+                   """
+                 ],
+                 offset: [
+                   type: :non_neg_integer,
+                   doc: """
+                   Reads from this byte on, counted from 0. The storage reads only the part that's asked for (S3 with a
+                   `Range` header). From the end of the file on, the content is empty.
+                   """
+                 ],
+                 length: [
+                   type: :pos_integer,
+                   doc: """
+                   Reads at most this many bytes, from `:offset` on. Without it, the read goes to the end of the file.
+                   Content that ends sooner is shorter, without an error. Plugins that transform the content on the
+                   way back get the whole file, and the range is cut from what they return, so offsets count bytes of
+                   the content as you get it (see [Plugins](plugins.md#ranges)).
                    """
                  ]
                )
@@ -308,6 +325,8 @@ defmodule Fil do
       iex> Fil.write!(disk, "hello.txt", "World")
       iex> Fil.read(disk, "hello.txt")
       {:ok, "World"}
+      iex> Fil.read(disk, "hello.txt", offset: 1, length: 3)
+      {:ok, "orl"}
       iex> {:error, %Fil.NotFoundError{path: "nope.txt", reason: :enoent}} = Fil.read(disk, "nope.txt")
 
   ## Options
@@ -325,7 +344,7 @@ defmodule Fil do
   def read(%Disk{} = disk, path) when is_binary(path), do: read(Ref.new(disk, path), [])
 
   def read(ref, opts) when is_list(opts) do
-    opts = validate!(opts, @read_schema)
+    opts = validate_read!(opts)
 
     run(ref, :read, opts)
   end
@@ -358,6 +377,10 @@ defmodule Fil do
       {:ok, backup} = Fil.stream(s3, "backups/2026-09.tar")
       Fil.write(local, "restore/2026-09.tar", backup)
 
+  With `:offset` and `:length`, the stream reads only that part of the file, as `Fil.Plug` does for a `Range` request:
+
+      {:ok, clip} = Fil.stream(disk, "videos/intro.mp4", offset: 1_048_576, length: 65_536)
+
   ## Options
 
   #{NimbleOptions.docs(@read_schema)}
@@ -373,7 +396,7 @@ defmodule Fil do
   def stream(%Disk{} = disk, path) when is_binary(path), do: stream(Ref.new(disk, path), [])
 
   def stream(ref, opts) when is_list(opts) do
-    opts = validate!(opts, @read_schema)
+    opts = validate_read!(opts)
 
     # The chunks are binaries, even where a plugin's transform returns iodata.
     with {:ok, content} <- run(ref, :read, opts, streaming: true), do: {:ok, Content.chunks(content)}
@@ -1077,6 +1100,16 @@ defmodule Fil do
       {:ok, validated} -> validated
       {:error, error} -> raise ArgumentError, Exception.message(error)
     end
+  end
+
+  defp validate_read!(opts) do
+    opts = validate!(opts, @read_schema)
+
+    if opts[:verify_checksum] and Fil.Support.ByteRange.from_options(opts) != nil do
+      raise ArgumentError, "verify_checksum: true checks the whole file and can't be combined with :offset or :length"
+    end
+
+    opts
   end
 
   # The caller's content is checked before plugins see it, so a plugin that collects, transforms or replaces it doesn't

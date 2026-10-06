@@ -8,8 +8,8 @@ defmodule Fil.Stat do
     * `:size`: size in bytes (`nil` for directories on object stores)
     * `:type`: `:regular` or `:directory`
     * `:mtime`: last modification time as a `DateTime` in UTC
-    * `:etag`: an opaque version tag. `Fil.Adapter.Local` derives a weak one (`"size-mtime"`); S3 returns the object's
-      ETag
+    * `:etag`: an opaque version tag. `Fil.Adapter.Local` derives one from the size and the modification time
+      (`"size-mtime"`, which `Fil.Plug` sends as a strong validator, as nginx does); S3 returns the object's ETag
     * `:content_type`: the stored MIME type, when the storage keeps one
     * `:checksum`: `{algorithm, checksum}`, with the checksum base64 encoded the way S3 encodes it. Only filled in when
       `Fil.stat/3` is called with the `:checksum` option

@@ -350,6 +350,193 @@ defmodule Fil.PlugTest do
     end
   end
 
+  describe "validators" do
+    test "GET and HEAD send the etag, the modification time and accept-ranges", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+      {:ok, stat} = Fil.stat(disk, "a.txt")
+
+      for method <- [:get, :head] do
+        conn = download(disk, "a.txt", [], method)
+
+        assert conn.status == 200
+        assert get_resp_header(conn, "etag") == [~s("#{stat.etag}")]
+        assert get_resp_header(conn, "last-modified") == [http_date(stat.mtime)]
+        assert get_resp_header(conn, "accept-ranges") == ["bytes"]
+      end
+    end
+
+    test "If-None-Match with the etag is a 304, on GET and HEAD", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+      {:ok, stat} = Fil.stat(disk, "a.txt")
+      etag = ~s("#{stat.etag}")
+
+      for value <- [etag, "W/" <> etag, ~s("other", #{etag}), "*"], method <- [:get, :head] do
+        conn = download(disk, "a.txt", [{"if-none-match", value}], method)
+
+        assert conn.status == 304, "#{method} with If-None-Match: #{value}"
+        assert conn.resp_body == ""
+        assert get_resp_header(conn, "etag") == [etag]
+        assert get_resp_header(conn, "last-modified") == [http_date(stat.mtime)]
+      end
+
+      conn = download(disk, "a.txt", [{"if-none-match", ~s("other")}])
+      assert {conn.status, conn.resp_body} == {200, "0123456789"}
+    end
+
+    test "If-Modified-Since is a 304 for a file that hasn't changed since", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+      {:ok, stat} = Fil.stat(disk, "a.txt")
+      modified = http_date(stat.mtime)
+
+      later =
+        stat.mtime
+        |> DateTime.add(60)
+        |> http_date()
+
+      earlier =
+        stat.mtime
+        |> DateTime.add(-60)
+        |> http_date()
+
+      assert download(disk, "a.txt", [{"if-modified-since", modified}]).status == 304
+      assert download(disk, "a.txt", [{"if-modified-since", later}]).status == 304
+      assert download(disk, "a.txt", [{"if-modified-since", earlier}]).status == 200
+      assert download(disk, "a.txt", [{"if-modified-since", "yesterday"}]).status == 200
+
+      # If-None-Match decides when both are there.
+      headers = [{"if-none-match", ~s("other")}, {"if-modified-since", modified}]
+      assert download(disk, "a.txt", headers).status == 200
+    end
+  end
+
+  describe "ranges" do
+    test "one byte range is a 206 with its content range", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+
+      for {range, body, content_range} <- [
+            {"bytes=2-4", "234", "bytes 2-4/10"},
+            {"bytes=7-", "789", "bytes 7-9/10"},
+            {"bytes=-3", "789", "bytes 7-9/10"},
+            {"bytes=8-100", "89", "bytes 8-9/10"},
+            {"bytes=-20", "0123456789", "bytes 0-9/10"},
+            {"bytes=0-0", "0", "bytes 0-0/10"},
+            {"Bytes=1-1", "1", "bytes 1-1/10"}
+          ] do
+        conn = download(disk, "a.txt", [{"range", range}])
+
+        assert {conn.status, conn.resp_body} == {206, body}, range
+        assert get_resp_header(conn, "content-range") == [content_range]
+        assert get_resp_header(conn, "accept-ranges") == ["bytes"]
+      end
+    end
+
+    test "a range outside the file is a 416", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+      {:ok, _} = Fil.write(disk, "empty.txt", "")
+
+      cases = [{"a.txt", "bytes=10-", 10}, {"a.txt", "bytes=-0", 10}, {"empty.txt", "bytes=0-", 0}]
+
+      for {path, range, size} <- cases do
+        conn = download(disk, path, [{"range", range}])
+
+        assert conn.status == 416, range
+        assert get_resp_header(conn, "content-range") == ["bytes */#{size}"]
+      end
+    end
+
+    test "several ranges, invalid ones and other units get the whole file", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+
+      for range <- ["bytes=0-1,4-5", "bytes=5-2", "bytes=a-b", "bytes=1", "bytes=+1-2", "items=0-1", "bytes"] do
+        conn = download(disk, "a.txt", [{"range", range}])
+
+        assert {conn.status, conn.resp_body} == {200, "0123456789"}, range
+        assert get_resp_header(conn, "content-range") == []
+      end
+    end
+
+    test "a 416 has no disposition, and a 304 comes before the range", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+      {:ok, stat} = Fil.stat(disk, "a.txt")
+      {:ok, url} = Fil.signed_url(disk, "a.txt", disposition: :attachment)
+      uri = URI.parse(url)
+
+      outside =
+        :get
+        |> conn(uri.path <> "?" <> uri.query)
+        |> put_req_header("range", "bytes=20-")
+        |> call(disk)
+
+      assert outside.status == 416
+      assert get_resp_header(outside, "content-disposition") == []
+      assert get_resp_header(outside, "content-type") == ["text/plain; charset=utf-8"]
+
+      headers = [{"range", "bytes=2-4"}, {"if-none-match", ~s("#{stat.etag}")}]
+      assert download(disk, "a.txt", headers).status == 304
+    end
+
+    test "HEAD ignores the range", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+
+      assert download(disk, "a.txt", [{"range", "bytes=2-4"}], :head).status == 200
+    end
+
+    test "If-Range sends the range only for the same file", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "a.txt", "0123456789")
+      {:ok, stat} = Fil.stat(disk, "a.txt")
+      etag = ~s("#{stat.etag}")
+
+      for {if_range, status} <- [
+            {etag, 206},
+            {http_date(stat.mtime), 206},
+            {~s("other"), 200},
+            {"W/" <> etag, 200},
+            {stat.mtime
+             |> DateTime.add(-60)
+             |> http_date(), 200},
+            {"yesterday", 200}
+          ] do
+        conn = download(disk, "a.txt", [{"range", "bytes=2-4"}, {"if-range", if_range}])
+
+        assert conn.status == status, "If-Range: #{if_range}"
+      end
+    end
+
+    test "a large file streams only its range", %{disk: disk} do
+      content = :crypto.strong_rand_bytes(300_000)
+      {:ok, _} = Fil.write(disk, "big.bin", content)
+
+      conn = download(disk, "big.bin", [{"range", "bytes=100000-199999"}])
+
+      assert conn.status == 206
+      assert conn.state == :chunked
+      assert conn.resp_body == binary_part(content, 100_000, 100_000)
+      assert get_resp_header(conn, "content-range") == ["bytes 100000-199999/300000"]
+    end
+
+    test "a plugin that transforms reads serves ranges of the transformed content", %{disk: disk} do
+      gzip =
+        Fil.attach(disk, :gzip, fn
+          %Fil.Op{name: :write} = op, next, _opts ->
+            op
+            |> Fil.Op.update_content(iodata: &:zlib.gzip/1)
+            |> next.()
+
+          %Fil.Op{name: :read} = op, next, _opts ->
+            op
+            |> next.()
+            |> Fil.Op.update_result(iodata: &:zlib.gunzip/1)
+
+          op, next, _opts ->
+            next.(op)
+        end)
+
+      {:ok, _} = Fil.write(gzip, "a.txt", "0123456789")
+
+      assert download(gzip, "a.txt", [{"range", "bytes=2-4"}]).resp_body == "234"
+    end
+  end
+
   describe "public: true" do
     test "serves the URLs Fil.url/2 builds", %{disk: disk} do
       {:ok, _} = Fil.write(disk, "avatars/a 1.png", "png")
@@ -364,6 +551,28 @@ defmodule Fil.PlugTest do
       assert public_request(:get, "/storage/avatars/2.png", disk).status == 404
       assert public_request(:get, "/storage/avatars", disk).status == 404
       assert public_request(:get, "/storage", disk).status == 404
+    end
+
+    test "serves ranges and 304s", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "avatars/1.png", "0123456789")
+      {:ok, stat} = Fil.stat(disk, "avatars/1.png")
+      opts = Fil.Plug.init(at: "/storage", disk: disk, public: true)
+
+      ranged =
+        :get
+        |> conn("/storage/avatars/1.png")
+        |> put_req_header("range", "bytes=2-4")
+        |> Fil.Plug.call(opts)
+
+      assert {ranged.status, ranged.resp_body} == {206, "234"}
+
+      cached =
+        :get
+        |> conn("/storage/avatars/1.png")
+        |> put_req_header("if-none-match", ~s("#{stat.etag}"))
+        |> Fil.Plug.call(opts)
+
+      assert cached.status == 304
     end
 
     test "sets a disposition only from a valid signature", %{disk: disk} do
@@ -409,6 +618,19 @@ defmodule Fil.PlugTest do
       assert passed.state == :unset
     end
   end
+
+  # A GET (or another method) of a signed URL for `path`, with request headers.
+  defp download(disk, path, headers, method \\ :get) do
+    {:ok, url} = Fil.signed_url(disk, path)
+    uri = URI.parse(url)
+    conn = conn(method, uri.path <> "?" <> uri.query)
+
+    headers
+    |> Enum.reduce(conn, fn {name, value}, conn -> put_req_header(conn, name, value) end)
+    |> call(disk)
+  end
+
+  defp http_date(time), do: Calendar.strftime(time, "%a, %d %b %Y %H:%M:%S GMT")
 end
 
 defmodule Fil.PlugTest.OneDisk do

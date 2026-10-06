@@ -249,6 +249,23 @@ A transform can change the size of the content, so `Fil.Op.update_content/2` dro
 On S3, a stream without a size is uploaded in parts. A plugin that knows the new size declares it again with
 `Fil.Op.put_option(op, :size, size)`, so S3 can send the stream in one request.
 
+### Ranges
+
+`Fil.read/3` and `Fil.stream/3` take `offset:` and `length:` to read part of a file, and `Fil.Plug` uses them for
+`Range` requests. A plugin needs to do nothing for them:
+
+  * the adapter reads only the part, and the result comes back through the plugins as usual
+  * a plugin that transforms the result with `Fil.Op.update_result/2` gets the whole file instead, because a part of
+    compressed or encrypted bytes can't be decompressed or decrypted on its own. `Fil` reads the file again for it and
+    cuts the part from what the plugins return. A stream reads nothing until it's enumerated, so only content in
+    memory is read twice
+  * a plugin that answers with `Fil.Op.put_result/2` instead of calling `next`, such as a cache, answers with the whole
+    file too, and `Fil` cuts the part from it. A result set with `Fil.Op.put_result/2` after `next`, such as the stream
+    wrapped for a measurement, is still the part
+
+So offsets always count bytes of the content as the caller gets it. The options are in `op.options`: a plugin that
+keeps what a read returned, such as a cache, checks for `:offset` and `:length` there and keeps only whole files.
+
 ## Paths
 
 A plugin may rewrite `op.path` (to put everything under a tenant prefix, for example). The path is normalized again
