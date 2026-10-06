@@ -1056,7 +1056,7 @@ defmodule Fil.PlugTest.OneDisk do
           next.(op)
       end)
 
-    conn = %{conn(:get, "/download") | adapter: {Fil.PlugTest.ClosingAdapter, test}}
+    conn = %{conn(:get, "/download") | adapter: {Fil.PlugHelper.ClosingAdapter, test}}
 
     assert {:ok, %Plug.Conn{state: :chunked}} = Fil.Plug.send_file(conn, reading, "big.bin")
     assert_received {:read, "a"}
@@ -1167,18 +1167,5 @@ defmodule Fil.PlugTest.OneDisk do
       assert public_request(:put, uri.path <> "?" <> uri.query, signing, "yes").status == 200
       assert Fil.read(signing, "new.txt") == {:ok, "yes"}
     end
-  end
-end
-
-defmodule Fil.PlugTest.ClosingAdapter do
-  @moduledoc false
-
-  # A connection the client closes as soon as the first chunk is sent. The state is the test process.
-
-  def send_chunked(test, _status, _headers), do: {:ok, nil, test}
-
-  def chunk(test, _chunk) do
-    send(test, :closed)
-    {:error, :closed}
   end
 end

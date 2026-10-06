@@ -54,3 +54,16 @@ defmodule Fil.PlugHelper do
     end)
   end
 end
+
+defmodule Fil.PlugHelper.ClosingAdapter do
+  @moduledoc false
+
+  # A connection the client closes as soon as the first chunk is sent. The state is the test process.
+
+  def send_chunked(test, _status, _headers), do: {:ok, nil, test}
+
+  def chunk(test, _chunk) do
+    send(test, :closed)
+    {:error, :closed}
+  end
+end
