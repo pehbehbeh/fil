@@ -230,7 +230,8 @@ it's read, in one request. For other streams, pass `size:` if you know it, or S3
 
 `url` returns the public URL of a file, and `signed_url` an expiring one, so clients can download or upload a file
 directly instead of going through your application code. S3 serves its URLs itself. For local and in-memory disks,
-`Fil.Plugin.URL` builds them and `Fil.Plug` serves them from your application:
+`Fil.Plugin.URL` builds them and `Fil.Plug` serves them from your application, with etags, `304`s and range requests,
+so browsers can cache files and seek in videos:
 
 ```elixir
 {:ok, logo_url} = Fil.url(s3, "logo.png")

@@ -112,6 +112,17 @@ if Code.ensure_loaded?(Plug) do
       * `GET` and `HEAD` on a URL signed for `:get` return the file, with its stored content type or one guessed from
         the extension, and the `content-disposition` the URL was signed with (`disposition:`). The file is streamed
         as a chunked response, so it never has to fit in memory
+      * downloads send `etag` and `last-modified` from `Fil.stat/3` and `accept-ranges: bytes`. A request whose
+        `if-none-match` lists the etag (or is `*`) gets a `304` without a body, and so does one without `if-none-match`
+        whose `if-modified-since` isn't older than the file. The etag is sent as a strong validator on every adapter,
+        including the `"size-mtime"` tag of `Fil.Adapter.Local`, as nginx and `Plug.Static` do
+      * a `GET` with one byte range (`range: bytes=0-1023`, `bytes=1024-` or `bytes=-1024`) gets a `206` with that part
+        and its `content-range`, read from the storage with `Fil.stream/3`'s `offset:` and `length:`. A range that
+        starts at or after the end of the file is a `416`. Several ranges, a range the plug can't parse, and an
+        `if-range` that's neither the etag nor the exact `last-modified` get a `200` with the whole file. Ranges work
+        with signed URLs too, because the signature covers the method, the path and the query, not the headers.
+        Offsets count bytes of the content as plugins return it, and the total in `content-range` is the size
+        `Fil.stat/3` returns, so a plugin that changes the size of the content should change it in the stat too
       * `PUT` on a URL signed for `:put` writes the request body, with the request's `content-type`, the same as a
         presigned PUT on S3. The body is streamed into `Fil.write/4` as it's read, with the `content-length` as
         `size:`. Plugins attached to the disk run as for any other write. A URL signed with `content_type:` or `size:`
@@ -131,6 +142,8 @@ if Code.ensure_loaded?(Plug) do
     """
 
     @behaviour Plug
+
+    alias Fil.Support.Conditional
 
     import Plug.Conn
 
@@ -231,17 +244,23 @@ if Code.ensure_loaded?(Plug) do
 
     # The file is streamed to the client (`Fil.stream/3`), so its size doesn't matter. The response is chunked, because
     # plugins can change the content, and then the stored size isn't the size sent. An error while streaming comes
-    # after the status line, so it raises and the client gets a truncated response.
+    # after the status line, so it raises and the client gets a truncated response. The stat gives the validators, so a
+    # `304` or a `416` reads nothing.
     defp serve(conn, :get, disk, path, signed, _max_body_size) do
       headers = for disposition <- List.wrap(signed["disposition"]), do: {"content-disposition", disposition}
 
       with {:ok, stat} <- Fil.stat(disk, path),
-           :regular <- stat.type,
-           {:ok, content} <- Fil.stream(disk, path) do
-        conn
-        |> put_resp_content_type(stat.content_type || MIME.from_path(path), nil)
-        |> merge_resp_headers(headers)
-        |> send_content(content)
+           :regular <- stat.type do
+        conn = put_validators(conn, stat)
+
+        if not_modified?(conn, stat) do
+          send_resp(conn, 304, "")
+        else
+          conn
+          |> put_resp_content_type(stat.content_type || MIME.from_path(path), nil)
+          |> merge_resp_headers(headers)
+          |> send_download(disk, path, stat)
+        end
       else
         :directory -> send_error(conn, 404, "not found")
         {:error, error} -> send_fil_error(conn, error)
@@ -275,10 +294,61 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp send_content(%{method: "HEAD"} = conn, _content), do: send_resp(conn, 200, "")
+    defp put_validators(conn, stat) do
+      headers = [
+        {"accept-ranges", "bytes"},
+        {"etag", Conditional.etag(stat)},
+        {"last-modified", Conditional.last_modified(stat)}
+      ]
 
-    defp send_content(conn, content) do
-      Enum.reduce_while(content, send_chunked(conn, 200), fn chunk, conn ->
+      merge_resp_headers(conn, for({name, value} <- headers, value != nil, do: {name, value}))
+    end
+
+    defp not_modified?(conn, stat) do
+      Conditional.not_modified?(stat, get_req_header(conn, "if-none-match"), get_req_header(conn, "if-modified-since"))
+    end
+
+    # Only a `GET` has a range. A `HEAD` gets the headers of the whole file.
+    defp send_download(conn, disk, path, stat) do
+      range =
+        if conn.method == "GET" do
+          Conditional.range(stat, get_req_header(conn, "range"), get_req_header(conn, "if-range"))
+        else
+          :whole
+        end
+
+      send_range(conn, disk, path, stat, range)
+    end
+
+    defp send_range(conn, _disk, _path, stat, :unsatisfiable) do
+      conn
+      |> put_resp_header("content-range", "bytes */#{stat.size}")
+      |> send_error(416, "the range is outside the file")
+    end
+
+    defp send_range(conn, disk, path, _stat, :whole) do
+      case Fil.stream(disk, path) do
+        {:ok, content} -> send_content(conn, 200, content)
+        {:error, error} -> send_fil_error(conn, error)
+      end
+    end
+
+    defp send_range(conn, disk, path, stat, {:range, offset, length}) do
+      case Fil.stream(disk, path, offset: offset, length: length) do
+        {:ok, content} ->
+          conn
+          |> put_resp_header("content-range", "bytes #{offset}-#{offset + length - 1}/#{stat.size}")
+          |> send_content(206, content)
+
+        {:error, error} ->
+          send_fil_error(conn, error)
+      end
+    end
+
+    defp send_content(%{method: "HEAD"} = conn, status, _content), do: send_resp(conn, status, "")
+
+    defp send_content(conn, status, content) do
+      Enum.reduce_while(content, send_chunked(conn, status), fn chunk, conn ->
         case chunk(conn, chunk) do
           {:ok, conn} -> {:cont, conn}
           {:error, _closed} -> {:halt, conn}

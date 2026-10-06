@@ -1197,6 +1197,16 @@ defmodule Fil.AdapterCase do
         assert {200, _headers, "content"} = fil_request(disk, :get, url, [])
       end
 
+      test "a signed URL downloads a byte range", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "signed/digits.txt", "0123456789")
+        assert {:ok, url} = Fil.signed_url(disk, "signed/digits.txt", expires_in: 60)
+
+        assert {206, headers, "234"} = fil_request(disk, :get, url, headers: [{"range", "bytes=2-4"}])
+        assert {"content-range", "bytes 2-4/10"} in headers
+
+        assert {206, _headers, "789"} = fil_request(disk, :get, url, headers: [{"range", "bytes=-3"}])
+      end
+
       test "a signed URL uploads a file", %{disk: disk} do
         assert {:ok, url} = Fil.signed_url(disk, "inbox/new.txt", method: :put, expires_in: 60)
 
