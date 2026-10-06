@@ -161,6 +161,16 @@ Then serve the URLs in your endpoint, above `Plug.Parsers`, at the path of `base
 plug Fil.Plug, at: "/uploads", disk: &MyApp.Storage.uploads/0
 ```
 
+Options that every URL of a disk shares go into its `signed_url:` option, and the options of a call replace them:
+
+```elixir
+uploads: [
+  adapter: Fil.Adapter.Local,
+  root: "priv/storage/uploads",
+  signed_url: [expires_in: 3600, disposition: :attachment]
+]
+```
+
 In production, `uploads` has no `Fil.Plugin.URL`, so its URLs go to S3 and the plug lets every request pass.
 `Fil.Plug` also serves public files without a signature, see its documentation.
 
