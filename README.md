@@ -9,6 +9,7 @@
 [![License](https://img.shields.io/hexpm/l/fil.svg)](https://github.com/pehbehbeh/fil/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/fil.svg)](https://hex.pm/packages/fil)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://fil.hexdocs.pm)
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Ffil.hexdocs.pm%2Ftour.livemd)
 
 `Fil` is a pluggable file storage abstraction for Elixir.
 
@@ -26,6 +27,8 @@ disk
 ```
 
 With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes to S3.
+
+To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html) in [Livebook](https://livebook.dev).
 
 ## Table of Contents
 

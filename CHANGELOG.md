@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- A tour of the API as a [Livebook](https://livebook.dev) notebook, under Guides in the docs and linked from the README
+  with a "Run in Livebook" badge.
 - `Fil.LiveView.external/2` lets the browser upload files straight to a disk, on every adapter: S3 with a presigned PUT,
   local and memory disks through `Fil.Plug`. The consume functions then check each file instead of writing it, and
   refuse one that's older than its upload URL or larger than `max_file_size`. The browser side is one import in
