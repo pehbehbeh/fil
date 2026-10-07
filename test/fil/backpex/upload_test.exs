@@ -19,7 +19,6 @@ end
 defmodule Fil.Backpex.UploadTest do
   alias Fil.Backpex.UploadTest.Migration
   alias Fil.Backpex.UploadTest.Repo
-  alias Fil.BackpexTest.DirectUpload
   alias Fil.BackpexTest.Product
   alias Fil.BackpexTest.ProductLive
   alias Fil.BackpexTest.Storage
@@ -44,141 +43,144 @@ defmodule Fil.Backpex.UploadTest do
   end
 
   defp field(name, options) do
-    Fil.Backpex.Upload.validate_config!(
-      {name, Map.merge(%{module: Fil.Backpex.Upload, label: "Files"}, options)},
-      ProductLive
-    )
+    options = Map.merge(%{module: Fil.Backpex.Upload, label: "Files"}, options)
+    config = Fil.Backpex.Upload.validate_config!({name, options}, ProductLive)
+    {name, Map.new(config)}
   end
 
-  describe "validate_config!/2" do
-    test "builds a single file field from a Fil.Ecto.Ref field" do
-      config = field(:avatar, %{accept: ~w(.png image/jpeg)})
+  # The socket of the form component, as Backpex passes it to the field.
+  defp form_socket(assigns \\ %{}) do
+    assigns = Map.merge(%{item: %Product{}, live_resource: ProductLive}, assigns)
+    Phoenix.Component.assign(%Phoenix.LiveView.Socket{}, assigns)
+  end
 
-      assert config[:upload_key] == :avatar
-      assert config[:max_entries] == 1
-      refute config[:fil].multiple?
-      assert config[:fil].extensions == ~w(.png .jpg .jpeg)
-      refute Keyword.has_key?(config, :external)
+  # The upload the field allows, which raises for invalid options.
+  defp allowed(name, options, socket \\ form_socket()) do
+    field = field(name, options)
+    socket = Fil.Backpex.Upload.assign_uploads(field, socket)
+    socket.assigns.uploads[name]
+  end
 
-      for callback <- [:list_existing_files, :put_upload_change, :consume_upload, :remove_uploads] do
-        assert is_function(config[callback])
-      end
+  describe "assign_uploads/2" do
+    test "allows one file for a Fil.Ecto.Ref field" do
+      upload = allowed(:avatar, %{accept: ~w(.png image/jpeg)})
+
+      assert upload.max_entries == 1
+      assert upload.accept == ".png,image/jpeg"
+      refute upload.external
     end
 
     test "takes 1 as max_entries for a single file and nothing else" do
-      assert field(:avatar, %{accept: ~w(.png), max_entries: 1})[:max_entries] == 1
+      assert allowed(:avatar, %{accept: ~w(.png), max_entries: 1}).max_entries == 1
 
       assert_raise ArgumentError, ~r/:avatar in Fil.BackpexTest.ProductLive holds one file/, fn ->
-        field(:avatar, %{accept: ~w(.png), max_entries: 2})
+        allowed(:avatar, %{accept: ~w(.png), max_entries: 2})
       end
     end
 
     test "needs max_entries for an array field" do
-      assert field(:photos, %{accept: ~w(.png), max_entries: 4})[:max_entries] == 4
+      assert allowed(:photos, %{accept: ~w(.png), max_entries: 4}).max_entries == 4
 
       assert_raise ArgumentError, ~r/needs :max_entries, because it's an \{:array, Fil.Ecto.Ref\} field/, fn ->
-        field(:photos, %{accept: ~w(.png)})
+        allowed(:photos, %{accept: ~w(.png)})
       end
     end
 
     test "takes an upload_key" do
-      assert field(:avatar, %{accept: ~w(.png), upload_key: :picture})[:upload_key] == :picture
+      field = field(:avatar, %{accept: ~w(.png), upload_key: :picture})
+      socket = Fil.Backpex.Upload.assign_uploads(field, form_socket())
+      assert socket.assigns.uploads[:picture]
     end
 
     test "defaults accept to the extensions, and needs one of them" do
-      config = field(:avatar, %{extensions: ~w(.png)})
-      assert config[:accept] == ~w(.png)
+      assert allowed(:avatar, %{extensions: ~w(.png)}).accept == ".png"
 
-      assert_raise ArgumentError, ~r/needs :accept or :extensions/, fn -> field(:avatar, %{}) end
+      assert_raise ArgumentError, ~r/needs :accept or :extensions/, fn -> allowed(:avatar, %{}) end
     end
 
     test "needs extensions when accept allows none" do
       assert_raise ArgumentError, ~r/needs :extensions, because :accept allows no extension/, fn ->
-        field(:avatar, %{accept: ~w(image/*)})
+        allowed(:avatar, %{accept: ~w(image/*)})
       end
 
-      assert field(:avatar, %{accept: ~w(image/*), extensions: ~w(.png)})[:fil].extensions == ~w(.png)
+      assert allowed(:avatar, %{accept: ~w(image/*), extensions: ~w(.png)}).accept == "image/*"
+
+      assert_raise ArgumentError, ~r/needs at least one extension/, fn ->
+        allowed(:avatar, %{accept: ~w(.png), extensions: []})
+      end
     end
 
     test "raises for a field of another type" do
       assert_raise ArgumentError, ~r/:name in Fil.BackpexTest.Product has the type :string/, fn ->
-        field(:name, %{accept: ~w(.png)})
-      end
-    end
-
-    test "refuses the callbacks it builds, and unknown options" do
-      for option <- [consume_upload: &Function.identity/1, external: &Function.identity/1, disk: :uploads] do
-        assert_raise RuntimeError, ~r/unknown options/, fn ->
-          field(:avatar, Map.new([{:accept, ~w(.png)}, option]))
-        end
+        allowed(:name, %{accept: ~w(.png)})
       end
     end
 
     test "refuses searchable array fields and index_editable" do
       assert_raise ArgumentError, ~r/can't be searchable/, fn ->
-        field(:photos, %{accept: ~w(.png), max_entries: 2, searchable: true})
+        allowed(:photos, %{accept: ~w(.png), max_entries: 2, searchable: true})
       end
 
-      assert field(:avatar, %{accept: ~w(.png), searchable: true})[:searchable]
+      assert allowed(:avatar, %{accept: ~w(.png), searchable: true})
 
       assert_raise ArgumentError, ~r/can't be index_editable/, fn ->
-        field(:avatar, %{accept: ~w(.png), index_editable: true})
+        allowed(:avatar, %{accept: ~w(.png), index_editable: true})
       end
     end
 
     test "allows direct: true only when Backpex takes upload_error:" do
-      options = %{module: Fil.Backpex.Upload, label: "Docs", accept: ~w(.pdf), max_entries: 2, direct: true}
+      field = field(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true})
 
-      config = Fil.Backpex.Upload.__validate_config__({:docs, options}, ProductLive, true)
-      assert is_function(config[:external], 2)
-      assert config[:upload_error] == (&Fil.LiveView.upload_error/2)
+      options = Fil.Backpex.Upload.__upload_options__(field, form_socket(), true)
+      assert is_function(options.external, 2)
 
       assert_raise ArgumentError, ~r/can't use direct: true, because this Backpex version has no upload_error:/, fn ->
-        Fil.Backpex.Upload.__validate_config__({:docs, options}, ProductLive, false)
+        Fil.Backpex.Upload.__upload_options__(field, form_socket(), false)
       end
-
-      indirect = Fil.Backpex.Upload.__validate_config__({:docs, %{options | direct: false}}, ProductLive, false)
-      refute Keyword.has_key?(indirect, :upload_error)
     end
 
     test "detects upload_error: in the installed Backpex" do
       options = %{accept: ~w(.pdf), max_entries: 2, direct: true}
 
+      assert {:docs, %{upload_error: upload_error}} = field(:docs, options)
+      assert upload_error == (&Fil.LiveView.upload_error/2)
+
       if Keyword.has_key?(Backpex.Fields.Upload.config_schema(), :upload_error) do
-        assert field(:docs, options)[:upload_error] == (&Fil.LiveView.upload_error/2)
+        assert is_function(allowed(:docs, options).external, 2)
       else
-        assert_raise ArgumentError, ~r/has no upload_error: option/, fn -> field(:docs, options) end
+        assert_raise ArgumentError, ~r/has no upload_error: option/, fn -> allowed(:docs, options) end
       end
     end
 
     test "refuses direct: true with if_exists: :overwrite" do
-      options = %{module: Fil.Backpex.Upload, label: "Docs", accept: ~w(.pdf), max_entries: 2, direct: true}
+      field = field(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true, if_exists: :overwrite})
 
       assert_raise ArgumentError, ~r/can't use direct: true with if_exists: :overwrite/, fn ->
-        Fil.Backpex.Upload.__validate_config__({:docs, Map.put(options, :if_exists, :overwrite)}, ProductLive, true)
+        Fil.Backpex.Upload.__upload_options__(field, form_socket(), true)
       end
     end
 
-    test "raises ArgumentError for invalid options of its own" do
-      assert_raise ArgumentError, ~r/:avatar in Fil.BackpexTest.ProductLive has an invalid option/, fn ->
-        field(:avatar, %{accept: ~w(.png), if_exists: :replace})
-      end
-
-      assert_raise ArgumentError, ~r/needs at least one extension/, fn ->
-        field(:avatar, %{accept: ~w(.png), extensions: []})
-      end
-    end
-
-    test "raises outside a LiveResource" do
-      options = %{module: Fil.Backpex.Upload, label: "Avatar", accept: ~w(.png)}
-
-      # InlineCRUD passes the name of its own field.
-      assert_raise ArgumentError, ~r/not in Backpex.Fields.InlineCRUD/, fn ->
-        Fil.Backpex.Upload.validate_config!({:avatar, options}, :addresses)
+    test "raises outside the fields of a LiveResource" do
+      assert_raise ArgumentError, ~r/not in the form of a resource action/, fn ->
+        allowed(:avatar, %{accept: ~w(.png)}, form_socket(%{action_type: :resource}))
       end
 
       assert_raise ArgumentError, ~r/needs an adapter with a :schema/, fn ->
-        Fil.Backpex.Upload.validate_config!({:avatar, options}, Fil.Backpex.UploadTest.NoSchema)
+        allowed(:avatar, %{accept: ~w(.png)}, form_socket(%{live_resource: Fil.Backpex.UploadTest.NoSchema}))
+      end
+    end
+  end
+
+  describe "validate_config!/2" do
+    test "refuses the callbacks the field implements, unknown and invalid options" do
+      for option <- [consume_upload: &Function.identity/1, external: &Function.identity/1, disk: :uploads] do
+        assert_raise RuntimeError, ~r/unknown options/, fn ->
+          field(:avatar, Map.new([{:accept, ~w(.png)}, option]))
+        end
+      end
+
+      assert_raise RuntimeError, ~r/Configuration error for field "avatar".*:if_exists/s, fn ->
+        field(:avatar, %{accept: ~w(.png), if_exists: :replace})
       end
     end
   end
@@ -320,17 +322,13 @@ defmodule Fil.Backpex.UploadTest do
     test "ignores a removed path the record doesn't have", context do
       other = Fil.write!(context.disk, "other/x.png", "someone else's")
       product = context.product
-      config = field(:photos, %{accept: ~w(.png), max_entries: 3})
+      field = field(:photos, %{accept: ~w(.png), max_entries: 3})
+      socket = Fil.Backpex.Upload.assign_uploads(field, form_socket(%{item: product}))
 
-      socket =
-        %Phoenix.LiveView.Socket{}
-        |> Phoenix.LiveView.allow_upload(:photos, accept: ~w(.png), max_entries: 3)
-        |> Phoenix.Component.assign(:item, product)
-
-      params = config[:put_upload_change].(socket, %{}, product, {[], []}, ["other/x.png"], :insert)
+      params = Fil.Backpex.Upload.put_upload_change(field, socket, %{}, product, {[], []}, ["other/x.png"], :insert)
       assert Enum.map(params["photos"], & &1.path) == ["old/a.png", "old/b.png"]
 
-      config[:remove_uploads].(socket, product, ["other/x.png"])
+      Fil.Backpex.Upload.remove_uploads(field, socket, product, ["other/x.png"])
       assert Fil.exists?(other)
       assert Fil.exists?(context.a)
       assert Fil.exists?(context.b)
@@ -352,14 +350,19 @@ defmodule Fil.Backpex.UploadTest do
     end
 
     test "refuses new files that get the same path in an array field", context do
-      config = field(:photos, %{accept: ~w(.png), max_entries: 3, path: &"old/#{&1.client_name}"})
-      field = {:photos, Map.new(config)}
+      field = field(:photos, %{accept: ~w(.png), max_entries: 3, path: &"old/#{&1.client_name}"})
       changeset = Ecto.Changeset.change(context.product)
 
       assigns = fn names, removed ->
         entries = for {name, i} <- Enum.with_index(names), do: entry(name, i)
         upload = struct!(Phoenix.LiveView.UploadConfig, name: :photos, max_entries: 3, entries: entries)
-        %{uploads: %{photos: upload}, item: context.product, removed_uploads: [photos: removed]}
+
+        %{
+          uploads: %{photos: upload},
+          item: context.product,
+          removed_uploads: [photos: removed],
+          live_resource: ProductLive
+        }
       end
 
       error = {"A file with this name already exists", [validation: :unique_path]}
@@ -434,27 +437,15 @@ defmodule Fil.Backpex.UploadTest do
     end
 
     test "refuses a path with another extension when it signs the URL" do
-      config = direct_field()
-      socket = direct_socket()
+      field = field(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true})
+      %{external: external} = Fil.Backpex.Upload.__upload_options__(field, form_socket(), true)
+      socket = Phoenix.LiveView.allow_upload(form_socket(), :docs, accept: ~w(.pdf), max_entries: 2)
       evil = %Phoenix.LiveView.UploadEntry{upload_config: :docs, uuid: "u", client_name: "evil.html", client_size: 3}
       report = %{evil | client_name: "report.PDF"}
 
-      assert {:error, %{reason: :extension}, _socket} = config[:external].(evil, socket)
-      assert {:ok, %{uploader: "Fil", path: "u.pdf"}, _socket} = config[:external].(report, socket)
+      assert {:error, %{reason: :extension}, _socket} = external.(evil, socket)
+      assert {:ok, %{uploader: "Fil", path: "u.pdf"}, _socket} = external.(report, socket)
     end
-  end
-
-  defp direct_field do
-    DirectUpload.validate_config!(
-      {:docs, %{module: DirectUpload, label: "Docs", accept: ~w(.pdf), max_entries: 2, direct: true}},
-      ProductLive
-    )
-  end
-
-  defp direct_socket do
-    %Phoenix.LiveView.Socket{}
-    |> Phoenix.LiveView.allow_upload(:docs, accept: ~w(.pdf), max_entries: 2)
-    |> Phoenix.Component.assign(:item, %Product{})
   end
 
   defp png(name, content), do: %{name: name, content: content, type: "image/png"}
