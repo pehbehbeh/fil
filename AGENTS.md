@@ -64,13 +64,15 @@ The Hex package is `fil`.
   and renders in `Fil.LiveView.UploadField` (`@moduledoc false`): daisyUI classes by default, a class attribute per part
   that replaces its default, and every text of its own through `translate`. `Fil.Ecto.Ref` is the Ecto type, compiled
   only when the optional Ecto dependency is there. `Fil.Backpex.Upload` is a Backpex field, compiled only when the
-  optional `backpex` dependency is there; `Fil.Backpex.*` holds only Backpex integrations. Integrations take a disk as a
-  `%Fil.Disk{}`, a 0-arity function or an MFA and turn it into a disk with `Fil.Disk.resolve/1` each time they use it:
-  as a `disk:` option typed and documented by `Fil.Support.DiskOption` (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument
-  that may also be a `%Fil.Ref{}` for a directory (`Fil.LiveView`). Options that end up in compiled code, such as a
-  plug's or an Ecto field's, take a function only as a capture with its module (`:remote_fun`), because they can't hold
-  an anonymous function. `Fil.Ecto.Ref` takes no `%Fil.Disk{}` either, so no credentials end up in the beam. Shared
-  internal helpers go in `Fil.Support.*` (`@moduledoc false`).
+  optional `backpex` dependency is there; `Fil.Backpex.*` holds only Backpex integrations. It implements the upload
+  callbacks of `Backpex.Field` and works out the disk and single or multiple files from the schema type when Backpex
+  calls it, so it never overrides `validate_config!/2`. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function
+  or an MFA and turn it into a disk with `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and
+  documented by `Fil.Support.DiskOption` (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}`
+  for a directory (`Fil.LiveView`). Options that end up in compiled code, such as a plug's or an Ecto field's, take a
+  function only as a capture with its module (`:remote_fun`), because they can't hold an anonymous function.
+  `Fil.Ecto.Ref` takes no `%Fil.Disk{}` either, so no credentials end up in the beam. Shared internal helpers go in
+  `Fil.Support.*` (`@moduledoc false`).
 - **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
   `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
   the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never

@@ -90,13 +90,14 @@ defmodule Fil.BackpexTest.DirectUpload do
 
   use Backpex.Field, config_schema: Fil.Backpex.Upload.config_schema()
 
-  defoverridable validate_config!: 2
+  @impl Backpex.Field
+  def assign_uploads({name, _options} = field, socket) do
+    options =
+      field
+      |> Fil.Backpex.Upload.__upload_options__(socket, true)
+      |> Map.update!(:external, &report/1)
 
-  @doc false
-  def validate_config!(field, live_resource) do
-    field
-    |> Fil.Backpex.Upload.__validate_config__(live_resource, true)
-    |> Keyword.update!(:external, &report/1)
+    Backpex.Fields.Upload.assign_uploads({name, options}, socket)
   end
 
   defp report(external) do
@@ -114,7 +115,16 @@ defmodule Fil.BackpexTest.DirectUpload do
   defdelegate render_form(assigns), to: Fil.Backpex.Upload
 
   @impl Backpex.Field
-  defdelegate assign_uploads(field, socket), to: Fil.Backpex.Upload
+  defdelegate list_existing_files(field, item), to: Fil.Backpex.Upload
+
+  @impl Backpex.Field
+  defdelegate put_upload_change(field, socket, params, item, uploaded, removed, action), to: Fil.Backpex.Upload
+
+  @impl Backpex.Field
+  defdelegate consume_upload(field, socket, item, meta, entry), to: Fil.Backpex.Upload
+
+  @impl Backpex.Field
+  defdelegate remove_uploads(field, socket, item, removed), to: Fil.Backpex.Upload
 
   @impl Backpex.Field
   defdelegate before_changeset(changeset, attrs, metadata, repo, field, assigns), to: Fil.Backpex.Upload
@@ -146,8 +156,20 @@ defmodule Fil.BackpexTest.ProductLive do
     [
       name: %{module: Backpex.Fields.Text, label: "Name"},
       avatar: %{module: Fil.Backpex.Upload, label: "Avatar", accept: ~w(.png .jpg)},
-      photos: %{module: Fil.Backpex.Upload, label: "Photos", accept: ~w(.png), max_entries: 3, path: &photo_path/2},
-      docs: %{module: Fil.BackpexTest.DirectUpload, label: "Docs", accept: ~w(.pdf), max_entries: 2, direct: true},
+      photos: %{
+        module: Fil.Backpex.Upload,
+        label: "Photos",
+        accept: ~w(.png),
+        max_entries: 3,
+        path: &photo_path/2
+      },
+      docs: %{
+        module: Fil.BackpexTest.DirectUpload,
+        label: "Docs",
+        accept: ~w(.pdf),
+        max_entries: 2,
+        direct: true
+      },
       logo: %{
         module: Fil.Backpex.Upload,
         label: "Logo",

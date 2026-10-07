@@ -25,10 +25,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   size and type, and plugins see uploads as the `:signed_upload` op.
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
 - `Fil.Backpex.Upload` is a [Backpex](https://backpex.live) upload field for `Fil.Ecto.Ref` and
-  `{:array, Fil.Ecto.Ref}` fields. The schema gives it the disk, so a LiveResource needs no upload callbacks. It writes
-  the new files after the save, deletes the files the save drops, and refuses a file whose path has an extension that
-  `accept:` or `extensions:` doesn't allow before the record is saved. `direct: true` needs a Backpex release whose
-  upload field takes `upload_error:`. Backpex is a new optional dependency.
+  `{:array, Fil.Ecto.Ref}` fields. It implements Backpex's upload callbacks itself and gets the disk from the schema,
+  so a LiveResource gives it no callbacks. It writes the new files after the save, deletes the files the save drops,
+  and refuses a file whose path has an extension that `accept:` or `extensions:` doesn't allow before the record is
+  saved. `direct: true` needs a Backpex release whose upload field takes `upload_error:`. Backpex is a new optional
+  dependency.
   ([#29](https://github.com/pehbehbeh/fil/pull/29))
 
 ### Changed
