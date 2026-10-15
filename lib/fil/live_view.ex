@@ -131,9 +131,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
           external: Fil.LiveView.external(disk)
         )
 
-    It works on every disk that signs upload URLs: S3 with a presigned PUT, and a disk with `Fil.Plugin.URL` and a
-    `:secret` through `Fil.Plug` in your endpoint. Each URL is bound to the content type of the path, the size the
-    browser reported and `:if_exists` (see [Uploads](Fil.html#signed_url/1-uploads)). With the default
+    It works on every disk that signs uploads: S3 with a presigned PUT, and a disk with `Fil.Plugin.URL` and a
+    `:secret` through `Fil.Plug` in your endpoint. Each upload is bound to the content type of the path, the size the
+    browser reported and `:if_exists` (see [Binding](Fil.html#signed_upload/1-binding)). With the default
     `if_exists: :error`, a URL uploads one file once, and nobody who has it can replace the file after it was consumed.
     With `if_exists: :overwrite`, the URL writes the file again on every request until it expires.
 
@@ -314,8 +314,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
           external: Fil.LiveView.external(disk)
         )
 
-    For each file, the function builds its path with `:path`, checks its extension, and signs an upload URL for it
-    with `Fil.signed_url/3`, bound to the content type of the path, the size the browser reported and `:if_exists`.
+    For each file, the function builds its path with `:path`, checks its extension, and signs an upload for it with
+    `Fil.signed_upload/3`, bound to the content type of the path, the size the browser reported and `:if_exists`.
     The browser side is the `Fil` uploader (see [Direct uploads](#module-direct-uploads)). Consume the upload with the
     same disk as usual; the consume functions check the file at the signed path instead of writing it, and ignore their
     own `:path`, `:extensions` and `:if_exists`.
@@ -815,9 +815,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       signed_at = System.os_time(:second)
 
       signed =
-        with :ok <- check_extension(ref, opts[:extensions], :signed_url) do
-          Fil.signed_url(ref,
-            method: :put,
+        with :ok <- check_extension(ref, opts[:extensions], :signed_upload) do
+          Fil.signed_upload(ref,
             expires_in: opts[:expires_in],
             content_type: content_type,
             size: entry.client_size,
@@ -825,10 +824,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
           )
         end
 
-      with {:ok, url} <- signed do
-        if_none_match = if opts[:if_exists] == :error, do: [{"if-none-match", "*"}], else: []
-        headers = Map.new([{"content-type", content_type} | if_none_match])
-
+      with {:ok, %Fil.SignedUpload{url: url, headers: headers}} <- signed do
         {:ok, %{uploader: "Fil", url: url, path: ref.path, headers: headers, signed_at: signed_at}}
       end
     end

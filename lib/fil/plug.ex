@@ -72,7 +72,7 @@ if Code.ensure_loaded?(Plug) do
         plug Fil.Plug, at: "/storage/uploads", disk: &MyApp.Storage.uploads/0
 
     The `:base_url` of the disk's `Fil.Plugin.URL` is then `"http://localhost:4000/storage/uploads"`, and every URL
-    `Fil.signed_url/3` builds for it is served here.
+    `Fil.signed_url/3` and `Fil.signed_upload/3` build for it is served here.
 
     Requests pass through untouched when the disk doesn't sign URLs with `Fil.Plugin.URL` (and the plug isn't public).
     An S3 disk without it signs URLs that go to S3 directly, so the plug can stay in the endpoint when production uses
@@ -137,11 +137,12 @@ if Code.ensure_loaded?(Plug) do
         with signed URLs too, because the signature covers the method, the path and the query, not the headers.
         Offsets count bytes of the content as plugins return it, and the total in `content-range` is the size
         `Fil.stat/3` returns, so a plugin that changes the size of the content should change it in the stat too
-      * `PUT` on a URL signed for `:put` writes the request body, with the request's `content-type`, the same as a
-        presigned PUT on S3. The body is streamed into `Fil.write/4` as it's read, with the `content-length` as
-        `size:`. Plugins attached to the disk run as for any other write. A URL signed with `content_type:` or `size:`
-        takes only an upload with that `content-type` and `content-length`, and one signed with `if_exists: :error`
-        writes with it, so a second upload to the same path gets a `409` (see [Uploads](Fil.html#signed_url/1-uploads))
+      * `PUT` on a URL from `Fil.signed_upload/3` writes the request body, with the request's `content-type`, the same
+        as a presigned PUT on S3. The body is streamed into `Fil.write/4` as it's read, with the `content-length` as
+        `size:`. Plugins attached to the disk run as for any other write. An upload signed with `content_type:` or
+        `size:` takes only a request with that `content-type` and `content-length`, and one signed with
+        `if_exists: :error` writes with it, so a second upload to the same path gets a `409` (see
+        [Binding](Fil.html#signed_upload/1-binding))
       * a request that doesn't match its signature, or comes after the URL expired, gets a `403`, and so does an upload
         whose `content-type` or `content-length` isn't the one its URL was signed with
       * an upload larger than `:max_body_size` gets a `413`, and one whose body something else already read (see

@@ -300,32 +300,32 @@ defmodule Fil.Plugin.ValidationTest do
         |> Validation.attach(max_size: 10, content_types: ["image/png"], extensions: ["png"])
         |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
 
-      assert {:ok, _url} = Fil.signed_url(signing, "a.png", method: :put, size: 10, content_type: "image/png")
+      assert {:ok, _upload} = Fil.signed_upload(signing, "a.png", size: 10, content_type: "image/png")
 
-      assert {:error, %Fil.InvalidContentError{op: :signed_url, reason: {:too_large, 10}}} =
-               Fil.signed_url(signing, "a.png", method: :put, size: 11)
+      assert {:error, %Fil.InvalidContentError{op: :signed_upload, reason: {:too_large, 10}}} =
+               Fil.signed_upload(signing, "a.png", size: 11)
 
-      assert reason(Fil.signed_url(signing, "a.png", method: :put, content_type: "image/gif")) ==
+      assert reason(Fil.signed_upload(signing, "a.png", content_type: "image/gif")) ==
                {:content_type, "image/gif"}
 
-      assert reason(Fil.signed_url(signing, "a.gif", method: :put)) == {:extension, "gif"}
+      assert reason(Fil.signed_upload(signing, "a.gif")) == {:extension, "gif"}
       assert {:ok, _url} = Fil.signed_url(signing, "a.gif")
     end
 
     test "check: runs on upload URLs", %{disk: disk} do
       signing =
         disk
-        |> Validation.attach(check: fn op -> if op.name == :signed_url, do: {:error, :no_uploads}, else: :ok end)
+        |> Validation.attach(check: fn op -> if op.name == :signed_upload, do: {:error, :no_uploads}, else: :ok end)
         |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
 
-      assert reason(Fil.signed_url(signing, "a.png", method: :put)) == :no_uploads
+      assert reason(Fil.signed_upload(signing, "a.png")) == :no_uploads
       assert {:ok, _url} = Fil.signed_url(signing, "a.png")
     end
 
     test "a disk that can't sign upload URLs says so", %{disk: disk} do
       disk = Validation.attach(disk, content_types: ["image/png"])
 
-      assert {:error, %Fil.UnsupportedError{reason: :no_callback}} = Fil.signed_url(disk, "a.png", method: :put)
+      assert {:error, %Fil.UnsupportedError{reason: :no_callback}} = Fil.signed_upload(disk, "a.png")
     end
 
     test "a URL Fil.Plug serves needs nothing more, because its upload is checked", %{disk: disk} do
@@ -334,7 +334,7 @@ defmodule Fil.Plugin.ValidationTest do
         |> Validation.attach(max_size: 10, content_types: ["image/png"])
         |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
 
-      assert {:ok, _url} = Fil.signed_url(signing, "a.png", method: :put)
+      assert {:ok, _upload} = Fil.signed_upload(signing, "a.png")
     end
 
     test "a presigned upload is refused for what the storage can't check" do
@@ -343,34 +343,34 @@ defmodule Fil.Plugin.ValidationTest do
       at_least = s3(min_size: 1)
       named = s3(max_size: 10, extensions: ["png"])
 
-      assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: {:unchecked, :content_types}}} =
-               Fil.signed_url(typed, "a.png", method: :put, content_type: "image/png", size: 10)
+      assert {:error, %Fil.UnsupportedError{op: :signed_upload, reason: {:unchecked, :content_types}}} =
+               Fil.signed_upload(typed, "a.png", content_type: "image/png", size: 10)
 
       assert {:error, %Fil.UnsupportedError{reason: {:unchecked, :max_size}}} =
-               Fil.signed_url(limited, "a.png", method: :put)
+               Fil.signed_upload(limited, "a.png")
 
       assert {:error, %Fil.UnsupportedError{reason: {:unchecked, :min_size}}} =
-               Fil.signed_url(at_least, "a.png", method: :put)
+               Fil.signed_upload(at_least, "a.png")
 
-      assert {:ok, _url} = Fil.signed_url(named, "a.png", method: :put, size: 10)
+      assert {:ok, _upload} = Fil.signed_upload(named, "a.png", size: 10)
       assert {:ok, _url} = Fil.signed_url(typed, "a.png")
     end
 
     test "presigned_uploads: :check_declared takes the signed content type" do
       disk = s3(content_types: ["image/png"], presigned_uploads: :check_declared)
 
-      assert {:ok, _url} = Fil.signed_url(disk, "a.png", method: :put, content_type: "image/png")
+      assert {:ok, _upload} = Fil.signed_upload(disk, "a.png", content_type: "image/png")
 
-      assert reason(Fil.signed_url(disk, "a.png", method: :put, content_type: "text/html")) ==
+      assert reason(Fil.signed_upload(disk, "a.png", content_type: "text/html")) ==
                {:content_type, "text/html"}
 
       assert {:error, %Fil.UnsupportedError{reason: {:unchecked, :content_types}}} =
-               Fil.signed_url(disk, "a.png", method: :put)
+               Fil.signed_upload(disk, "a.png")
 
       limited = s3(max_size: 10, presigned_uploads: :check_declared)
 
       assert {:error, %Fil.UnsupportedError{reason: {:unchecked, :max_size}}} =
-               Fil.signed_url(limited, "a.png", method: :put)
+               Fil.signed_upload(limited, "a.png")
     end
   end
 

@@ -1590,7 +1590,7 @@ defmodule Fil.Adapter.S3Test do
 
     test "presigns a PUT differently" do
       assert {:ok, get} = Fil.signed_url(disk(), "upload.bin")
-      assert {:ok, put} = Fil.signed_url(disk(), "upload.bin", method: :put)
+      assert {:ok, %Fil.SignedUpload{url: put}} = Fil.signed_upload(disk(), "upload.bin")
 
       refute signature(get) == signature(put)
       assert query(get)["X-Amz-Expires"] == "900"
@@ -1607,13 +1607,13 @@ defmodule Fil.Adapter.S3Test do
       assert URI.decode_query(uri.query)["X-Amz-Security-Token"] == "SESSION"
     end
 
-    test "validates the expiry and the method" do
+    test "validates the expiry" do
       assert_raise ArgumentError, ~r/invalid value for :expires_in option/, fn ->
         Fil.signed_url(disk(), "cv.pdf", expires_in: 8 * 24 * 60 * 60)
       end
 
-      assert_raise ArgumentError, ~r/invalid value for :method option/, fn ->
-        Fil.signed_url(disk(), "cv.pdf", method: :delete)
+      assert_raise ArgumentError, ~r/invalid value for :expires_in option/, fn ->
+        Fil.signed_upload(disk(), "cv.pdf", expires_in: 8 * 24 * 60 * 60)
       end
     end
 
@@ -1622,6 +1622,9 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :missing_credentials}} =
                Fil.signed_url(disk, "cv.pdf")
+
+      assert {:error, %Fil.UnsupportedError{op: :signed_upload, reason: :missing_credentials}} =
+               Fil.signed_upload(disk, "cv.pdf")
     end
 
     test "signs the disposition as response-content-disposition" do
@@ -1671,10 +1674,13 @@ defmodule Fil.Adapter.S3Test do
     end
 
     test "signs an upload's content type, size and if_exists as headers" do
-      opts = [method: :put, content_type: "image/png", size: 48_213, if_exists: :error]
+      opts = [content_type: "image/png", size: 48_213, if_exists: :error]
 
-      assert {:ok, url} = Fil.signed_url(disk(), "avatars/7f3a.png", opts)
-      assert {:ok, plain} = Fil.signed_url(disk(), "avatars/7f3a.png", method: :put)
+      assert {:ok, %Fil.SignedUpload{method: :put, url: url, headers: upload_headers}} =
+               Fil.signed_upload(disk(), "avatars/7f3a.png", opts)
+
+      assert {:ok, %Fil.SignedUpload{url: plain, headers: %{}}} = Fil.signed_upload(disk(), "avatars/7f3a.png")
+      assert upload_headers == %{"content-type" => "image/png", "if-none-match" => "*"}
 
       query = query(url)
       assert query["X-Amz-SignedHeaders"] == "content-length;content-type;host;if-none-match"
@@ -1690,10 +1696,10 @@ defmodule Fil.Adapter.S3Test do
     end
 
     test "signs only the upload options it gets" do
-      assert {:ok, url} = Fil.signed_url(disk(), "a.png", method: :put, content_type: "image/png")
+      assert {:ok, %{url: url}} = Fil.signed_upload(disk(), "a.png", content_type: "image/png")
       assert query(url)["X-Amz-SignedHeaders"] == "content-type;host"
 
-      assert {:ok, url} = Fil.signed_url(disk(), "a.png", method: :put, if_exists: :overwrite)
+      assert {:ok, %{url: url}} = Fil.signed_upload(disk(), "a.png", if_exists: :overwrite)
       assert query(url)["X-Amz-SignedHeaders"] == "host"
     end
 

@@ -207,22 +207,32 @@ defmodule Fil.Adapter do
   @callback url(state(), path(), opts()) :: {:ok, String.t()} | error()
 
   @doc """
-  Builds a URL that grants temporary access to a file.
+  Builds a URL that downloads a file for a limited time.
 
   Optional. Adapters whose storage can't sign URLs leave it out, and `Fil.signed_url/2` then returns a
   `Fil.UnsupportedError`. `Fil.Plugin.URL` signs URLs for those disks, and `Fil.Plug` serves them.
 
-  `opts` has `:method`, `:expires_in` and `:query` as `Fil.signed_url/3` validated them, and for a download with
-  `disposition:`, `:disposition` as the finished `content-disposition` header value. The storage has to send that header
-  with the download, and the URL's signature has to cover it and the `:query` parameters. A request with another path,
-  method or parameter than the URL was signed for gets a status in the 4xx range, and an upload through it writes
-  nothing.
-
-  An upload URL may get `:content_type`, `:size` and `:if_exists`. The signature has to cover them, so the storage
-  refuses an upload with another `content-type` or `content-length`, and with `if_exists: :error` one that finds a file
-  at the path. The client sends the headers `Fil.signed_url/3` lists under Uploads.
+  `opts` has `:expires_in` and `:query` as `Fil.signed_url/3` validated them, and with `disposition:`, `:disposition`
+  as the finished `content-disposition` header value. The storage has to send that header with the download, and the
+  URL's signature has to cover it and the `:query` parameters. A request with another path, method or parameter than
+  the URL was signed for gets a status in the 4xx range. A storage that can't sign `:query` returns a
+  `Fil.UnsupportedError` when there is one.
   """
   @callback signed_url(state(), path(), opts()) :: {:ok, String.t()} | error()
+
+  @doc """
+  Signs an upload to a file: the request a client sends to store it, as a `Fil.SignedUpload`.
+
+  Optional, like `c:signed_url/3`: without it, `Fil.signed_upload/2` returns a `Fil.UnsupportedError`, and
+  `Fil.Plugin.URL` signs uploads for the disk instead.
+
+  `opts` has `:expires_in` and `:query`, as for `c:signed_url/3`, and may have `:content_type`, `:size` and
+  `:if_exists`. The headers of the result are the ones the client has to send: `content-type` for `:content_type`,
+  `if-none-match: *` for `if_exists: :error`, and any the storage needs. The storage refuses an upload with another
+  `content-type` or `content-length` where it can, and with `if_exists: :error` one that finds a file at the path. A
+  request with another path or method, or a changed parameter, writes nothing.
+  """
+  @callback signed_upload(state(), path(), opts()) :: {:ok, Fil.SignedUpload.t()} | error()
 
   @doc """
   Returns the address of the files: what decides which file a path names, such as the root directory, or the bucket and
@@ -234,5 +244,5 @@ defmodule Fil.Adapter do
   """
   @callback address(state()) :: term()
 
-  @optional_callbacks stream: 3, url: 3, signed_url: 3, address: 1
+  @optional_callbacks stream: 3, url: 3, signed_url: 3, signed_upload: 3, address: 1
 end

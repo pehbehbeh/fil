@@ -57,7 +57,7 @@ defmodule Fil.Plugin.URLTest do
 
     test "signs GET and PUT differently", %{disk: disk} do
       assert {:ok, get_url} = Fil.signed_url(disk, "a.txt")
-      assert {:ok, put_url} = Fil.signed_url(disk, "a.txt", method: :put)
+      assert {:ok, %{url: put_url}} = Fil.signed_upload(disk, "a.txt")
 
       assert get_url != put_url
     end
@@ -74,8 +74,9 @@ defmodule Fil.Plugin.URLTest do
     end
 
     test "signs an upload's content type, size and if_exists as query parameters", %{disk: disk} do
-      opts = [method: :put, content_type: "image/png", size: 48_213, if_exists: :error, query: [{"v", "2"}]]
-      assert {:ok, url} = Fil.signed_url(disk, "a.png", opts)
+      opts = [content_type: "image/png", size: 48_213, if_exists: :error, query: [{"v", "2"}]]
+      assert {:ok, %Fil.SignedUpload{url: url, headers: headers}} = Fil.signed_upload(disk, "a.png", opts)
+      assert headers == %{"content-type" => "image/png", "if-none-match" => "*"}
       %URI{path: path, query: query} = URI.parse(url)
 
       assert [
@@ -101,7 +102,7 @@ defmodule Fil.Plugin.URLTest do
     end
 
     test "leaves if_exists out of the URL unless it's :error", %{disk: disk} do
-      assert {:ok, url} = Fil.signed_url(disk, "a.png", method: :put, if_exists: :overwrite)
+      assert {:ok, %{url: url}} = Fil.signed_upload(disk, "a.png", if_exists: :overwrite)
 
       refute url =~ "if_exists"
     end

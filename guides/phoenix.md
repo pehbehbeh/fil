@@ -476,9 +476,9 @@ def mount(_params, _session, socket) do
 end
 ```
 
-For each file it builds the path, checks the extension as above, and signs an upload URL with `Fil.signed_url/3`. The
-URL is bound to the content type of the path, the size the browser reported and `if_exists: :error` (see
-[Uploads](Fil.html#signed_url/1-uploads)), so it uploads one file, once, and can't replace the file later. With
+For each file it builds the path, checks the extension as above, and signs an upload with `Fil.signed_upload/3`. The
+upload is bound to the content type of the path, the size the browser reported and `if_exists: :error` (see
+[Binding](Fil.html#signed_upload/1-binding)), so it uploads one file, once, and can't replace the file later. With
 `if_exists: :overwrite`, it writes the file again on every request until it expires, also after the consume. A refused
 extension shows up as `{:external_metadata_failure, %{reason: :extension}}` in `upload_errors/2`, any other error as
 `%{reason: :error}`, and the error itself goes to the log. A failed upload is LiveView's `:external_client_failure`.

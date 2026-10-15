@@ -111,9 +111,9 @@ defmodule Fil.Plugin.Validation do
 
   An upload through `Fil.Plug` (a disk with `Fil.Plugin.URL` and a `:secret`) is an ordinary write, and is checked
   like any other. A presigned PUT on S3 goes to the storage directly, so this plugin never sees its content. It checks
-  what it can when the URL is signed with `Fil.signed_url/3` and `method: :put`: `check:`, the extension, and the
-  signed `size:` and `content_type:`, which S3 enforces (see [Uploads](Fil.html#signed_url/1-uploads)). What it can't
-  check depends on `:presigned_uploads`:
+  what it can when the upload is signed with `Fil.signed_upload/3`: `check:`, the extension, and the signed `size:` and
+  `content_type:`, which S3 enforces (see [Binding](Fil.html#signed_upload/1-binding)). What it can't check depends on
+  `:presigned_uploads`:
 
     * `:refuse` (the default) refuses to sign the URL with a `Fil.UnsupportedError` when `content_types:` is set,
       because nobody checks the magic bytes, with `reason: {:unchecked, :content_types}`. So does a URL without `size:`
@@ -121,9 +121,9 @@ defmodule Fil.Plugin.Validation do
     * `:check_declared` takes the signed `content_type:` as the upload's type, without the magic bytes, and still
       refuses a URL without `content_type:` or `size:` when a rule needs it
 
-  Uploads through `Fil.LiveView.external/2` sign their URLs with `Fil.signed_url/3`, so the same applies to them. On a
-  disk that `Fil.Plug` serves, the URL is checked when it's signed only if this plugin is attached before
-  `Fil.Plugin.URL`, which answers `Fil.signed_url/3` without the plugins after it. The upload is checked either way.
+  Uploads through `Fil.LiveView.external/2` are signed with `Fil.signed_upload/3`, so the same applies to them. On a
+  disk that `Fil.Plug` serves, the upload is checked when it's signed only if this plugin is attached before
+  `Fil.Plugin.URL`, which answers `Fil.signed_upload/3` without the plugins after it. The upload is checked either way.
 
   ## Content checks of your own
 
@@ -152,14 +152,8 @@ defmodule Fil.Plugin.Validation do
 
   @doc false
   @spec call(Op.t(), (Op.t() -> Op.t()), keyword()) :: Op.t()
-  def call(%Op{name: name} = op, next, opts) when name in [:write, :cp, :rename, :signed_url] do
-    opts = NimbleOptions.validate!(opts, @schema)
-
-    if name == :signed_url and Op.get_option(op, :method) != :put do
-      next.(op)
-    else
-      validate(op, next, opts)
-    end
+  def call(%Op{name: name} = op, next, opts) when name in [:write, :cp, :rename, :signed_upload] do
+    validate(op, next, NimbleOptions.validate!(opts, @schema))
   end
 
   def call(op, next, _opts), do: next.(op)
@@ -193,8 +187,8 @@ defmodule Fil.Plugin.Validation do
   defp refuse(op, %{__exception__: true} = error), do: Op.put_result(op, {:error, error})
   defp refuse(op, reason), do: Op.put_result(op, {:error, %Fil.InvalidContentError{reason: reason}})
 
-  # A URL is refused only once it's signed, so a disk that can't sign upload URLs at all still says so.
-  defp check_signed(%Op{result: {:ok, _url}} = signed, %Op{name: :signed_url} = op, opts) do
+  # An upload is refused only once it's signed, so a disk that can't sign uploads at all still says so.
+  defp check_signed(%Op{result: {:ok, _upload}} = signed, %Op{name: :signed_upload} = op, opts) do
     case check_presigned(op, opts) do
       :ok -> signed
       {:error, error} -> refuse(signed, error)

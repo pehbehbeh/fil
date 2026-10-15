@@ -203,61 +203,69 @@ defmodule Fil do
 
   @url_schema NimbleOptions.new!([])
 
+  @expires_in_option [
+    expires_in: [
+      type: {:in, 1..(7 * 24 * 60 * 60)},
+      default: 900,
+      doc: "How long the URL stays valid, in seconds. At most 7 days (`604800`), the cap of S3."
+    ]
+  ]
+
+  @query_option [
+    query: [
+      type: {:list, {:tuple, [:string, :string]}},
+      default: [],
+      doc: """
+      Extra query parameters, e.g. `[{"trackingInfo", "42"}]`, for a page that reads them from its own URL. They're
+      signed with the URL, so they can't be changed or added afterwards. Names that signed URLs use themselves on some
+      disk raise on every disk: `expires`, `disposition`, `content_type`, `size`, `if_exists`, `signature`, and anything
+      starting with `X-Amz-` or `response-`.
+      """
+    ]
+  ]
+
   @signed_url_schema NimbleOptions.new!(
-                       method: [
-                         type: {:in, [:get, :put]},
-                         default: :get,
-                         doc: "`:get` for a download URL, `:put` for a direct upload."
-                       ],
-                       expires_in: [
-                         type: {:in, 1..(7 * 24 * 60 * 60)},
-                         default: 900,
-                         doc: "How long the URL stays valid, in seconds. At most 7 days (`604800`), the cap of S3."
-                       ],
-                       disposition: [
-                         type: {:or, [{:in, [:inline, :attachment]}, {:tuple, [{:in, [:attachment]}, :string]}]},
-                         doc: """
-                         The `content-disposition` of the download, for `method: :get` only. `:inline` lets the browser
-                         show the file, `:attachment` saves it under the file's name, and `{:attachment, filename}`
-                         under another name, which can be any UTF-8 string. Without it, S3 sends the disposition an
-                         object was uploaded with outside `Fil`, and the other disks send none.
-                         """
-                       ],
-                       content_type: [
-                         type: :string,
-                         doc: """
-                         The content type of the upload, for `method: :put` only. The client has to send it as the
-                         `content-type` header, and the file is stored with it. See Uploads below.
-                         """
-                       ],
-                       size: [
-                         type: :non_neg_integer,
-                         doc: """
-                         The size of the upload in bytes, for `method: :put` only. The request's `content-length` has
-                         to be the same. Browsers set it from the body.
-                         """
-                       ],
-                       if_exists: [
-                         type: {:in, [:error, :overwrite]},
-                         doc: """
-                         What an upload does if a file is already at the path, for `method: :put` only. With `:error`
-                         the client sends `if-none-match: *`, and an upload that finds a file there fails and leaves it
-                         alone, so the URL writes a file once and can't replace it later. Without it (or with
-                         `:overwrite`), an upload replaces the file.
-                         """
-                       ],
-                       query: [
-                         type: {:list, {:tuple, [:string, :string]}},
-                         default: [],
-                         doc: """
-                         Extra query parameters, e.g. `[{"trackingInfo", "42"}]`, for a page that reads them from its
-                         own URL. They're signed with the URL, so they can't be changed or added afterwards. Names that
-                         signed URLs use themselves on some disk raise on every disk: `expires`, `disposition`,
-                         `content_type`, `size`, `if_exists`, `signature`, and anything starting with `X-Amz-` or
-                         `response-`.
-                         """
-                       ]
+                       @expires_in_option ++
+                         [
+                           disposition: [
+                             type: {:or, [{:in, [:inline, :attachment]}, {:tuple, [{:in, [:attachment]}, :string]}]},
+                             doc: """
+                             The `content-disposition` of the download. `:inline` lets the browser show the file,
+                             `:attachment` saves it under the file's name, and `{:attachment, filename}` under another
+                             name, which can be any UTF-8 string. Without it, S3 sends the disposition an object was
+                             uploaded with outside `Fil`, and the other disks send none.
+                             """
+                           ]
+                         ] ++ @query_option
                      )
+
+  @signed_upload_schema NimbleOptions.new!(
+                          @expires_in_option ++
+                            [
+                              content_type: [
+                                type: :string,
+                                doc: """
+                                The content type of the upload. It goes into the `content-type` header the client sends,
+                                and the file is stored with it. See Binding below.
+                                """
+                              ],
+                              size: [
+                                type: :non_neg_integer,
+                                doc: """
+                                The size of the upload in bytes. The request's `content-length` has to be the same.
+                                Browsers set it from the body. See Binding below.
+                                """
+                              ],
+                              if_exists: [
+                                type: {:in, [:error, :overwrite]},
+                                doc: """
+                                What an upload does if a file is already at the path. With `:error`, an upload that
+                                finds a file there fails and leaves it alone, so the URL writes a file once and can't
+                                replace it later. Without it (or with `:overwrite`), an upload replaces the file.
+                                """
+                              ]
+                            ] ++ @query_option
+                        )
 
   ## ------------------------------------------------------------------
   ## Building
@@ -984,12 +992,12 @@ defmodule Fil do
   end
 
   @doc """
-  Builds a URL that grants temporary access to a file.
+  Builds a URL that downloads a file for a limited time.
 
   ## Options
 
-  A disk can set defaults for `:expires_in`, `:disposition` and `:if_exists` with the `:signed_url` option of
-  `Fil.disk/1`. The options of a call replace them.
+  A disk can set defaults for `:expires_in` and `:disposition` with the `:signed_url` option of `Fil.disk/1`. The
+  options of a call replace them.
 
   #{NimbleOptions.docs(@signed_url_schema)}
 
@@ -1016,34 +1024,13 @@ defmodule Fil do
       iex> disk = Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
       iex> {:error, %Fil.UnsupportedError{op: :signed_url, reason: :no_callback}} = Fil.signed_url(disk, "cv.pdf")
 
-  ## Uploads
-
-  A URL signed with `method: :put` takes a `PUT` with the file as its body. `:content_type`, `:size` and
-  `if_exists: :error` tie it to one upload, because the URL's signature covers them:
-
-      Fil.signed_url(disk, "avatars/7f3a.png",
-        method: :put,
-        content_type: "image/png",
-        size: 48_213,
-        if_exists: :error
-      )
-
-  The client then has to send these headers, on every disk:
-
-    * `content-type: image/png`
-    * `content-length: 48213`, which browsers set from the body (a script can't set it)
-    * `if-none-match: *`
-
-  A request with another content type or length is refused with a `403`, by S3 and by `Fil.Plug`. With
-  `if_exists: :error`, an upload to a path that has a file fails and leaves the file alone: S3 answers `412`,
-  `Fil.Plug` answers `409`. So the URL writes once, and nobody who has it can replace the file later. Some
-  S3-compatible servers ignore `if-none-match` (see `Fil.Adapter.S3`).
+  For uploads, see `signed_upload/3`.
   """
   @doc section: :operations
   @spec signed_url(Ref.t()) :: result(String.t())
   def signed_url(ref), do: signed_url(ref, [])
 
-  @doc "Builds a signed URL. See `signed_url/1`."
+  @doc "Builds a signed download URL. See `signed_url/1`."
   @doc section: :operations
   @spec signed_url(Disk.t(), Path.t()) :: result(String.t())
   @spec signed_url(Ref.t(), keyword()) :: result(String.t())
@@ -1052,12 +1039,11 @@ defmodule Fil do
   def signed_url(ref, opts) when is_list(opts) do
     opts =
       ref
-      |> signed_url_defaults(opts[:method])
+      |> signing_defaults(:signed_url)
       |> Keyword.merge(opts)
       |> validate!(@signed_url_schema)
 
     check_disposition!(opts)
-    check_upload_options!(opts)
     check_query!(opts[:query])
 
     # The file name for `disposition: :attachment` comes from the normalized path, so `docs/..` doesn't become `..`.
@@ -1066,11 +1052,85 @@ defmodule Fil do
     end
   end
 
-  @doc "Builds a signed URL. See `signed_url/1`."
+  @doc "Builds a signed download URL. See `signed_url/1`."
   @doc section: :operations
   @spec signed_url(Disk.t(), Path.t(), keyword()) :: result(String.t())
   def signed_url(%Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
     signed_url(Ref.new(disk, path), opts)
+  end
+
+  @doc """
+  Signs an upload to a file, for a client that sends the file to the storage itself, such as a browser.
+
+  Returns a `Fil.SignedUpload`: the method, the URL, and the headers the client has to send with the file as the body.
+  The headers differ between disks, so pass them on as they are.
+
+  ## Options
+
+  A disk can set defaults for `:expires_in` and `:if_exists` with the `:signed_upload` option of `Fil.disk/1`. The
+  options of a call replace them.
+
+  #{NimbleOptions.docs(@signed_upload_schema)}
+
+  ## Examples
+
+      Fil.signed_upload(disk, "avatars/7f3a.png", content_type: "image/png", size: 48_213, if_exists: :error)
+      #=> {:ok,
+      #=>  %Fil.SignedUpload{
+      #=>    method: :put,
+      #=>    url: "https://bucket.s3.eu-central-1.amazonaws.com/avatars/7f3a.png?X-Amz-Algorithm=...",
+      #=>    headers: %{"content-type" => "image/png", "if-none-match" => "*"}
+      #=>  }}
+
+  As with `signed_url/3`, local and memory disks need `Fil.Plugin.URL` with a `:secret`, and `Fil.Plug` takes the
+  uploads in your application:
+
+      iex> disk =
+      ...>   Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
+      ...>   |> Fil.Plugin.URL.attach(base_url: "http://localhost:4000/storage", secret: "secret")
+      iex> {:ok, upload} = Fil.signed_upload(disk, "a.png", content_type: "image/png")
+      iex> upload.headers
+      %{"content-type" => "image/png"}
+
+  ## Binding
+
+  `:content_type`, `:size` and `if_exists: :error` tie the URL to one upload. The client sends the content type as
+  `content-type` and the size as `content-length`, which browsers set from the body (a script can't set it), and
+  `if_exists: :error` as `if-none-match: *`. The URL's signature covers them on S3 and `Fil.Plug`, which refuse a
+  request with another content type or length with a `403`. With `if_exists: :error`, an upload to a path that has a
+  file fails and leaves the file alone: S3 answers `412`, `Fil.Plug` answers `409`. So the URL writes once, and nobody
+  who has it can replace the file later. Some S3-compatible servers ignore `if-none-match` (see `Fil.Adapter.S3`).
+  Check the file after the upload on storage that can't enforce all of them, as `Fil.LiveView` does.
+  """
+  @doc section: :operations
+  @spec signed_upload(Ref.t()) :: result(Fil.SignedUpload.t())
+  def signed_upload(ref), do: signed_upload(ref, [])
+
+  @doc "Signs an upload. See `signed_upload/1`."
+  @doc section: :operations
+  @spec signed_upload(Disk.t(), Path.t()) :: result(Fil.SignedUpload.t())
+  @spec signed_upload(Ref.t(), keyword()) :: result(Fil.SignedUpload.t())
+  def signed_upload(%Disk{} = disk, path) when is_binary(path), do: signed_upload(Ref.new(disk, path), [])
+
+  def signed_upload(ref, opts) when is_list(opts) do
+    opts =
+      ref
+      |> signing_defaults(:signed_upload)
+      |> Keyword.merge(opts)
+      |> validate!(@signed_upload_schema)
+
+    check_query!(opts[:query])
+
+    with {:ok, ref} <- resolve(ref, :signed_upload) do
+      run(ref, :signed_upload, opts)
+    end
+  end
+
+  @doc "Signs an upload. See `signed_upload/1`."
+  @doc section: :operations
+  @spec signed_upload(Disk.t(), Path.t(), keyword()) :: result(Fil.SignedUpload.t())
+  def signed_upload(%Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
+    signed_upload(Ref.new(disk, path), opts)
   end
 
   ## ------------------------------------------------------------------
@@ -1268,6 +1328,22 @@ defmodule Fil do
   @spec signed_url!(Disk.t(), Path.t(), keyword()) :: String.t()
   def signed_url!(a, b, c), do: unwrap!(signed_url(a, b, c))
 
+  @doc "Same as `signed_upload/1`, raising the error on failure."
+  @doc section: :bang
+  @spec signed_upload!(Ref.t()) :: Fil.SignedUpload.t()
+  def signed_upload!(ref), do: unwrap!(signed_upload(ref))
+
+  @doc "Same as `signed_upload/2`, raising the error on failure."
+  @doc section: :bang
+  @spec signed_upload!(Disk.t(), Path.t()) :: Fil.SignedUpload.t()
+  @spec signed_upload!(Ref.t(), keyword()) :: Fil.SignedUpload.t()
+  def signed_upload!(a, b), do: unwrap!(signed_upload(a, b))
+
+  @doc "Same as `signed_upload/3`, raising the error on failure."
+  @doc section: :bang
+  @spec signed_upload!(Disk.t(), Path.t(), keyword()) :: Fil.SignedUpload.t()
+  def signed_upload!(a, b, c), do: unwrap!(signed_upload(a, b, c))
+
   ## ------------------------------------------------------------------
   ## Dispatch
   ##
@@ -1360,27 +1436,14 @@ defmodule Fil do
       String.starts_with?(name, ["x-amz-", "response-"])
   end
 
-  defp check_upload_options!(opts) do
-    if opts[:method] == :get do
-      for name <- [:content_type, :size, :if_exists], Keyword.has_key?(opts, name) do
-        raise ArgumentError, "the #{inspect(name)} option only applies to uploads (method: :put)"
-      end
-    end
-
-    :ok
-  end
-
-  # The disk's `:signed_url` defaults that fit the method. A call's own options aren't filtered, so they still raise.
-  defp signed_url_defaults(%Ref{disk: %Disk{signed_url: defaults}}, :put), do: Keyword.delete(defaults, :disposition)
-  defp signed_url_defaults(%Ref{disk: %Disk{signed_url: defaults}}, _get), do: Keyword.delete(defaults, :if_exists)
-  defp signed_url_defaults(_not_a_ref, _method), do: []
+  # The disk's defaults for `:signed_url` or `:signed_upload`.
+  defp signing_defaults(%Ref{disk: %Disk{} = disk}, name), do: Map.fetch!(disk, name)
+  defp signing_defaults(_not_a_ref, _name), do: []
 
   defp check_disposition!(opts) do
-    case {opts[:disposition], opts[:method]} do
-      {nil, _method} -> :ok
-      {_disposition, :put} -> raise ArgumentError, "the :disposition option only applies to downloads (method: :get)"
-      {{:attachment, ""}, :get} -> raise ArgumentError, "the file name of the :disposition option can't be empty"
-      {_disposition, :get} -> :ok
+    case opts[:disposition] do
+      {:attachment, ""} -> raise ArgumentError, "the file name of the :disposition option can't be empty"
+      _disposition -> :ok
     end
   end
 

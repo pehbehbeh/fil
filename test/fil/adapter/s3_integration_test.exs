@@ -130,15 +130,15 @@ defmodule Fil.Adapter.S3IntegrationTest do
       assert {:ok, %{status: 200, body: "public"}} = get(url)
       assert {:ok, %{status: 403}} = get(String.replace(url, public_host, endpoint.host))
 
-      assert {:ok, put_url} = Fil.signed_url(public, "a b/ü.txt", method: :put)
+      assert {:ok, %{url: put_url}} = Fil.signed_upload(public, "a b/ü.txt")
       assert {:ok, %{status: 200}} = put(put_url, "changed")
       assert Fil.read(disk, "a b/ü.txt") == {:ok, "changed"}
     end
 
     test "presigns an upload bound to if-none-match, and answers 412 the second time", %{disk: disk} do
-      opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
-      assert {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
-      headers = [{"content-type", "image/png"}, {"if-none-match", "*"}]
+      opts = [content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
+      assert {:ok, %{url: url, headers: headers}} = Fil.signed_upload(disk, "avatars/a.png", opts)
+      headers = Map.to_list(headers)
 
       # The signature covers the header, so a request without it is refused.
       assert {:ok, %{status: 403}} = put(url, "png", List.keydelete(headers, "if-none-match", 0))

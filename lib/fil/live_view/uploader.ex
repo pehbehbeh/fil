@@ -12,7 +12,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     def uploader(assigns) do
       ~H"""
       <script :type={Phoenix.LiveView.ColocatedJS} name="Fil" key="uploaders">
-        // PUTs each file to the URL `Fil.LiveView.external/2` signed, with the headers the signature covers. XHR
+        // PUTs each file to the URL `Fil.LiveView.external/2` signed, with the headers `Fil.signed_upload/3` gave. XHR
         // instead of fetch, because only XHR reports upload progress. LiveView turns `entry.error()` into
         // `:external_client_failure`.
         export default function Fil(entries, onViewError) {

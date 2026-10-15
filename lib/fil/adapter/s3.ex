@@ -193,11 +193,15 @@ defmodule Fil.Adapter.S3 do
 
   ### `Fil.signed_url/3`
 
-    * Returns a presigned GET or PUT URL.
+    * Returns a presigned GET URL.
     * `disposition:` becomes `response-content-disposition`, and the `query:` parameters are added to the URL.
-    * For an upload, `content_type:`, `size:` and `if_exists: :error` are signed headers (`content-type`,
-      `content-length` and `if-none-match: *`). S3 refuses a PUT without them, or with other values, with a `403`, and
-      answers `412` when `if_exists: :error` finds an object.
+
+  ### `Fil.signed_upload/3`
+
+    * Returns a presigned PUT URL, with the `query:` parameters added to it.
+    * `content_type:`, `size:` and `if_exists: :error` are signed headers (`content-type`, `content-length` and
+      `if-none-match: *`). S3 refuses a PUT without them, or with other values, with a `403`, and answers `412` when
+      `if_exists: :error` finds an object.
 
   ### `Fil.Disk.same_storage?/2`
 
@@ -276,7 +280,7 @@ defmodule Fil.Adapter.S3 do
   | `NoSuchUpload`: an upload in parts was aborted from outside, by a lifecycle rule, say | `Fil.ConflictError` |
   | `BadDigest` | `Fil.ChecksumMismatchError` |
   | a body that doesn't match its stored checksum | `Fil.ChecksumMismatchError`, `reason: :checksum_mismatch` |
-  | a signed URL on a disk without credentials | `Fil.UnsupportedError`, `reason: :missing_credentials` |
+  | a signed URL or upload on a disk without credentials | `Fil.UnsupportedError`, `reason: :missing_credentials` |
   | `301`, or a `400` that gives another region | `Fil.ConfigurationError`, `reason: {:wrong_region, region}` |
   | `SlowDown`, `OperationAborted`, `InternalError`, `ServiceUnavailable` | `Fil.UnavailableError` |
   | `429`, `5xx` | `Fil.UnavailableError` |
@@ -770,15 +774,32 @@ defmodule Fil.Adapter.S3 do
   @impl Fil.Adapter
   def url(state, path, _opts), do: {:ok, object_url(state, key(state, path), [], public_base_url(state))}
 
+  # `Fil` has validated `:expires_in` (at most 7 days, the limit of S3) and built `:disposition`.
   @impl Fil.Adapter
   def signed_url(state, path, opts) do
-    # `Fil` has validated `:method` and `:expires_in` (at most 7 days, the limit of S3) and built `:disposition`.
-    if is_nil(state.access_key_id) or is_nil(state.secret_access_key) do
-      {:error, %Fil.UnsupportedError{reason: :missing_credentials}}
-    else
-      {:ok, presign(state, key(state, path), opts)}
+    with :ok <- check_credentials(state), do: {:ok, presign(state, key(state, path), :get, opts)}
+  end
+
+  # The headers the client sends are the signed ones but `content-length`, which a browser sets from the body.
+  @impl Fil.Adapter
+  def signed_upload(state, path, opts) do
+    with :ok <- check_credentials(state) do
+      url = presign(state, key(state, path), :put, opts)
+
+      headers =
+        opts
+        |> signed_upload_headers()
+        |> Map.new()
+        |> Map.delete("content-length")
+
+      {:ok, %Fil.SignedUpload{url: url, headers: headers}}
     end
   end
+
+  defp check_credentials(%__MODULE__{access_key_id: id, secret_access_key: secret}) when is_nil(id) or is_nil(secret),
+    do: {:error, %Fil.UnsupportedError{reason: :missing_credentials}}
+
+  defp check_credentials(_state), do: :ok
 
   ## ------------------------------------------------------------------
   ## Uploads in parts
@@ -1265,7 +1286,7 @@ defmodule Fil.Adapter.S3 do
   # It has no option for a session token, but it signs any extra query parameters, so the token goes in that way, and so
   # do the `response-content-disposition` S3 answers the download with and the caller's `:query`. An upload's
   # `:content_type`, `:size` and `if_exists: :error` become signed headers, which the client has to send as they are.
-  defp presign(state, key, opts) do
+  defp presign(state, key, method, opts) do
     query =
       Enum.reject(
         [
@@ -1282,7 +1303,7 @@ defmodule Fil.Adapter.S3 do
       region: state.region,
       service: :s3,
       datetime: DateTime.utc_now(),
-      method: Keyword.get(opts, :method, :get),
+      method: method,
       url: object_url(state, key, [], public_base_url(state)),
       expires: Keyword.get(opts, :expires_in, 900),
       headers: signed_upload_headers(opts),

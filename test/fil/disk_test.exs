@@ -6,17 +6,21 @@ defmodule Fil.DiskTest do
     def init(opts), do: {:ok, Map.new(opts)}
   end
 
-  describe "the :signed_url option" do
+  describe "the :signed_url and :signed_upload options" do
     setup do
       disk =
-        [adapter: Fil.Adapter.Memory, signed_url: [expires_in: 86_400, disposition: :attachment, if_exists: :error]]
+        [
+          adapter: Fil.Adapter.Memory,
+          signed_url: [expires_in: 86_400, disposition: :attachment],
+          signed_upload: [expires_in: 600, if_exists: :error]
+        ]
         |> Fil.disk()
         |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
 
       {:ok, disk: disk}
     end
 
-    test "sets the default options of signed_url/3", %{disk: disk} do
+    test "set the default options of signed_url/3", %{disk: disk} do
       query = signed_query(disk, "reports/q3.pdf")
 
       assert String.to_integer(query["expires"]) in expiry_range(86_400)
@@ -24,14 +28,18 @@ defmodule Fil.DiskTest do
       refute Map.has_key?(query, "if_exists")
     end
 
-    test "is replaced by the options of a call", %{disk: disk} do
+    test "are replaced by the options of a call", %{disk: disk} do
       query = signed_query(disk, "q3.pdf", expires_in: 60, disposition: :inline)
 
       assert String.to_integer(query["expires"]) in expiry_range(60)
       assert query["disposition"] == "inline"
+
+      refute disk
+             |> upload_query("q3.pdf", if_exists: :overwrite)
+             |> Map.has_key?("if_exists")
     end
 
-    test "applies to refs of the disk", %{disk: disk} do
+    test "apply to refs of the disk", %{disk: disk} do
       query =
         disk
         |> Fil.ref("q3.pdf")
@@ -40,30 +48,24 @@ defmodule Fil.DiskTest do
       assert query["disposition"] == ~s(attachment; filename="q3.pdf")
     end
 
-    test "leaves the disposition out of uploads", %{disk: disk} do
-      query = signed_query(disk, "q3.pdf", method: :put)
+    test "set the default options of signed_upload/3", %{disk: disk} do
+      query = upload_query(disk, "q3.pdf")
 
-      assert String.to_integer(query["expires"]) in expiry_range(86_400)
+      assert String.to_integer(query["expires"]) in expiry_range(600)
       assert query["if_exists"] == "error"
       refute Map.has_key?(query, "disposition")
     end
 
-    test "doesn't stop a call's disposition on an upload from raising", %{disk: disk} do
-      assert_raise ArgumentError, ~r/only applies to downloads/, fn ->
-        Fil.signed_url(disk, "q3.pdf", method: :put, disposition: :inline)
-      end
-    end
-
-    test "doesn't stop a call's if_exists on a download from raising", %{disk: disk} do
-      assert_raise ArgumentError, ~r/only applies to uploads/, fn ->
-        Fil.signed_url(disk, "q3.pdf", if_exists: :error)
-      end
-    end
-
-    test "raises on options a disk can't set" do
-      for signed_url <- [[method: :put], [disposition: {:attachment, "a.pdf"}], [query: []], [expires_in: 0]] do
+    test "raise on options a disk can't set" do
+      for signed_url <- [[if_exists: :error], [disposition: {:attachment, "a.pdf"}], [query: []], [expires_in: 0]] do
         assert_raise ArgumentError, ~r/signed_url/, fn ->
           Fil.disk(adapter: Fil.Adapter.Memory, signed_url: signed_url)
+        end
+      end
+
+      for signed_upload <- [[disposition: :inline], [content_type: "image/png"], [size: 1], [expires_in: 0]] do
+        assert_raise ArgumentError, ~r/signed_upload/, fn ->
+          Fil.disk(adapter: Fil.Adapter.Memory, signed_upload: signed_upload)
         end
       end
     end
@@ -109,6 +111,15 @@ defmodule Fil.DiskTest do
   defp signed_query(ref, opts \\ []) do
     ref
     |> Fil.signed_url!(opts)
+    |> URI.parse()
+    |> Map.fetch!(:query)
+    |> URI.decode_query()
+  end
+
+  defp upload_query(disk, path, opts \\ []) do
+    %Fil.SignedUpload{url: url} = Fil.signed_upload!(disk, path, opts)
+
+    url
     |> URI.parse()
     |> Map.fetch!(:query)
     |> URI.decode_query()

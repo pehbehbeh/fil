@@ -37,8 +37,8 @@ defmodule Fil.PlugTest do
     end
 
     test "a URL signed with if_exists: :error is a 409 the second time, with or without if-none-match", %{disk: disk} do
-      opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error]
-      {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
+      opts = [content_type: "image/png", size: 3, if_exists: :error]
+      {:ok, %{url: url}} = Fil.signed_upload(disk, "avatars/a.png", opts)
       headers = [{"content-type", "image/png"}, {"content-length", "3"}, {"if-none-match", "*"}]
 
       conn =
@@ -63,7 +63,7 @@ defmodule Fil.PlugTest do
     end
 
     test "an upload that doesn't match its URL is a 403 and writes nothing", %{disk: disk} do
-      {:ok, url} = Fil.signed_url(disk, "a.png", method: :put, content_type: "image/png", size: 3)
+      {:ok, %{url: url}} = Fil.signed_upload(disk, "a.png", content_type: "image/png", size: 3)
       headers = [{"content-type", "image/png"}, {"content-length", "3"}]
 
       for {headers, body} <- [
@@ -172,7 +172,7 @@ defmodule Fil.PlugTest do
             {%Fil.UnavailableError{reason: :timeout}, 503}
           ] do
         failing = failing_writes(disk, error)
-        {:ok, url} = Fil.signed_url(failing, "a.txt", method: :put)
+        {:ok, %{url: url}} = Fil.signed_upload(failing, "a.txt")
 
         assert request(:put, url, failing, "content").status == status
       end
@@ -191,7 +191,7 @@ defmodule Fil.PlugTest do
             |> next.()
           end)
 
-        {:ok, url} = Fil.signed_url(rejecting, "a.txt", method: :put)
+        {:ok, %{url: url}} = Fil.signed_upload(rejecting, "a.txt")
 
         for headers <- [[{"content-length", "7"}], []] do
           conn =
@@ -226,7 +226,7 @@ defmodule Fil.PlugTest do
     @tag :capture_log
     test "any other error is a 500 that keeps the details in the log", %{disk: disk} do
       failing = failing_writes(disk, %Fil.UnknownError{reason: "InvalidArgument"})
-      {:ok, url} = Fil.signed_url(failing, "a.txt", method: :put)
+      {:ok, %{url: url}} = Fil.signed_upload(failing, "a.txt")
 
       log =
         ExUnit.CaptureLog.capture_log(fn ->
@@ -254,7 +254,7 @@ defmodule Fil.PlugTest do
             next.(op)
         end)
 
-      {:ok, put_url} = Fil.signed_url(failing, "a.txt", method: :put)
+      {:ok, %{url: put_url}} = Fil.signed_upload(failing, "a.txt")
       {:ok, get_url} = Fil.signed_url(failing, "a.txt")
 
       log =
@@ -274,7 +274,7 @@ defmodule Fil.PlugTest do
 
   describe "upload size" do
     test "a declared size over :max_body_size is a 413 before anything is read", %{disk: disk} do
-      {:ok, url} = Fil.signed_url(disk, "big.bin", method: :put)
+      {:ok, %{url: url}} = Fil.signed_upload(disk, "big.bin")
 
       conn =
         url
@@ -287,7 +287,7 @@ defmodule Fil.PlugTest do
     end
 
     test "a body over :max_body_size without a declared size is a 413 too", %{disk: disk} do
-      {:ok, url} = Fil.signed_url(disk, "big.bin", method: :put)
+      {:ok, %{url: url}} = Fil.signed_upload(disk, "big.bin")
 
       assert (url
               |> put("0123456789")
@@ -297,7 +297,7 @@ defmodule Fil.PlugTest do
     end
 
     test "a body up to :max_body_size is written", %{disk: disk} do
-      {:ok, url} = Fil.signed_url(disk, "small.bin", method: :put)
+      {:ok, %{url: url}} = Fil.signed_upload(disk, "small.bin")
 
       assert (url
               |> put("01234", [{"content-length", "5"}])
@@ -307,7 +307,7 @@ defmodule Fil.PlugTest do
     end
 
     test "a body Plug.Parsers already read is a 400, not an empty file", %{disk: disk} do
-      {:ok, url} = Fil.signed_url(disk, "data.json", method: :put)
+      {:ok, %{url: url}} = Fil.signed_upload(disk, "data.json")
       parsers = Plug.Parsers.init(parsers: [:json], json_decoder: JSON, pass: ["*/*"])
 
       conn =
@@ -342,7 +342,7 @@ defmodule Fil.PlugTest do
         end)
 
       content = :crypto.strong_rand_bytes(2_500_000)
-      {:ok, url} = Fil.signed_url(recording, "big.bin", method: :put)
+      {:ok, %{url: url}} = Fil.signed_upload(recording, "big.bin")
 
       conn =
         url
@@ -358,7 +358,7 @@ defmodule Fil.PlugTest do
     end
 
     test "a body longer than its content-length is a 400", %{disk: disk} do
-      {:ok, url} = Fil.signed_url(disk, "a.txt", method: :put)
+      {:ok, %{url: url}} = Fil.signed_upload(disk, "a.txt")
 
       conn =
         url
@@ -832,7 +832,7 @@ defmodule Fil.PlugTest.OneDisk do
   def nope, do: :nope
 
   test "keeps the content type of the upload and of the disk", %{memory: disk} do
-    {:ok, put_url} = Fil.signed_url(disk, "data", method: :put)
+    {:ok, %{url: put_url}} = Fil.signed_upload(disk, "data")
 
     conn =
       :put
@@ -848,7 +848,7 @@ defmodule Fil.PlugTest.OneDisk do
   end
 
   test "a body over :max_body_size leaves nothing behind on a local disk", %{local: disk, tmp_dir: tmp_dir} do
-    {:ok, url} = Fil.signed_url(disk, "inbox/big.bin", method: :put)
+    {:ok, %{url: url}} = Fil.signed_upload(disk, "inbox/big.bin")
     body = :crypto.strong_rand_bytes(3_000_000)
 
     conn =
@@ -871,7 +871,7 @@ defmodule Fil.PlugTest.OneDisk do
         |> next.()
       end)
 
-    {:ok, url} = Fil.signed_url(rejecting, "inbox/big.bin", method: :put)
+    {:ok, %{url: url}} = Fil.signed_upload(rejecting, "inbox/big.bin")
 
     conn =
       url
@@ -888,7 +888,7 @@ defmodule Fil.PlugTest.OneDisk do
     end
 
     test "an upload over max_size is a 413, by its content-length or while it's read", %{validating: disk} do
-      {:ok, url} = Fil.signed_url(disk, "a.png", method: :put)
+      {:ok, %{url: url}} = Fil.signed_upload(disk, "a.png")
       png = <<0x89, "PNG\r\n", 0x1A, "\n">> <> :binary.copy(<<0>>, 2_000)
 
       for headers <- [[{"content-length", "2008"}], []] do
@@ -904,7 +904,7 @@ defmodule Fil.PlugTest.OneDisk do
     end
 
     test "a GIF sent as a PNG is a 415 and leaves nothing behind", %{validating: disk, tmp_dir: tmp_dir} do
-      {:ok, url} = Fil.signed_url(disk, "inbox/a.png", method: :put)
+      {:ok, %{url: url}} = Fil.signed_upload(disk, "inbox/a.png")
 
       conn =
         url
@@ -983,7 +983,7 @@ defmodule Fil.PlugTest.OneDisk do
     assert conn.resp_body == "%PDF"
     assert get_resp_header(conn, "content-type") == ["application/pdf"]
 
-    {:ok, put_url} = Fil.signed_url(disk, "inbox/new.bin", method: :put)
+    {:ok, %{url: put_url}} = Fil.signed_upload(disk, "inbox/new.bin")
     assert request(:put, put_url, disk, "uploaded").status == 200
     # Without a content-length, the upload is collected and signed with its hash. With one, it goes to S3 as it's read.
     assert_received {:put, "https://bucket.s3.us-east-1.amazonaws.com/inbox/new.bin", "uploaded", [hash]}
@@ -1099,7 +1099,7 @@ defmodule Fil.PlugTest.OneDisk do
       |> Fil.disk()
       |> URL.attach(base_url: @base_url, secret: "s3-secret")
 
-    {:ok, url} = Fil.signed_url(disk, "big.bin", method: :put)
+    {:ok, %{url: url}} = Fil.signed_upload(disk, "big.bin")
 
     # Without a content-length, the size is only known once the body has been read.
     conn =
@@ -1162,7 +1162,7 @@ defmodule Fil.PlugTest.OneDisk do
 
       assert public_request(:put, "/storage/new.txt", signing, "nope").status == 403
 
-      {:ok, put_url} = Fil.signed_url(signing, "new.txt", method: :put)
+      {:ok, %{url: put_url}} = Fil.signed_upload(signing, "new.txt")
       uri = URI.parse(put_url)
       assert public_request(:put, uri.path <> "?" <> uri.query, signing, "yes").status == 200
       assert Fil.read(signing, "new.txt") == {:ok, "yes"}

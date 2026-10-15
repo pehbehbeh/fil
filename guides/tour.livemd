@@ -198,9 +198,9 @@ served = Fil.Plugin.URL.attach(local, base_url: "http://localhost:4000/storage",
 
 {:ok, public_url} = Fil.url(served, "hello.txt")
 {:ok, download_url} = Fil.signed_url(served, "reports/q3.txt", expires_in: 900)
-{:ok, upload_url} = Fil.signed_url(served, "inbox/new.txt", method: :put)
+{:ok, upload} = Fil.signed_upload(served, "inbox/new.txt", content_type: "text/plain")
 
-[public_url, download_url, upload_url]
+[public_url, download_url, upload]
 ```
 
 The [installation guide](https://fil.hexdocs.pm/installation.html) shows how to mount `Fil.Plug`.

@@ -28,17 +28,18 @@ defmodule Fil.Plugin.URL do
       Fil.url(disk, "avatars/1.png")
       #=> {:ok, "http://localhost:4000/storage/uploads/avatars/1.png"}
 
-      Fil.signed_url(disk, "avatars/1.png", method: :put)
+      Fil.signed_url(disk, "avatars/1.png")
       #=> {:ok, "http://localhost:4000/storage/uploads/avatars/1.png?expires=...&signature=..."}
 
-  The plugin answers `Fil.url/2` and, with a `:secret`, `Fil.signed_url/3` itself, so the adapter never runs. That's how
-  local and memory disks get URLs, since there is no storage service that could build them. A public URL only works
-  where `Fil.Plug` serves the disk with `public: true` (or something else serves the files at `:base_url`).
+  The plugin answers `Fil.url/2` and, with a `:secret`, `Fil.signed_url/3` and `Fil.signed_upload/3` itself, so the
+  adapter never runs. That's how local and memory disks get URLs, since there is no storage service that could build
+  them. A public URL only works where `Fil.Plug` serves the disk with `public: true` (or something else serves the files
+  at `:base_url`).
 
   On an S3 disk, `:base_url` replaces the bucket URL in `Fil.url/2`, for a CDN in front of the bucket. Without a
-  `:secret`, S3 still presigns `Fil.signed_url/3` itself. With one, signed URLs go to your application, which then
-  streams the file through: useful when the bucket shouldn't be reachable from outside, but every download and upload
-  runs through your application.
+  `:secret`, S3 still presigns `Fil.signed_url/3` and `Fil.signed_upload/3` itself. With one, signed URLs go to your
+  application, which then streams the file through: useful when the bucket shouldn't be reachable from outside, but
+  every download and upload runs through your application.
 
   A signed URL is `:base_url`, the path, and the query parameters `expires` (Unix seconds), `disposition` (the
   `content-disposition` header value, only with `disposition:`), `content_type`, `size` and `if_exists=error` (only for
@@ -147,11 +148,36 @@ defmodule Fil.Plugin.URL do
     end
   end
 
+  def call(%Op{name: :signed_upload} = op, next, opts) do
+    opts = NimbleOptions.validate!(opts, @schema)
+
+    case opts[:secret] do
+      nil -> next.(op)
+      secret -> Op.put_result(op, signed_upload(op, opts[:base_url], secret))
+    end
+  end
+
   def call(op, next, _opts), do: next.(op)
 
   # `Fil` has validated `:expires_in` (at most 7 days).
   defp signed_url(op, base_url, secret) do
     with {:ok, path} <- normalize(op.path), do: {:ok, sign(base_url, secret, path, op.options)}
+  end
+
+  # `Fil.Plug` takes the `content-type` and `if_exists` from the signed URL, so the headers are only what a client
+  # sends to S3 too.
+  defp signed_upload(op, base_url, secret) do
+    with {:ok, path} <- normalize(op.path) do
+      url = sign(base_url, secret, path, [{:method, :put} | op.options])
+      {:ok, %Fil.SignedUpload{url: url, headers: upload_headers(op.options)}}
+    end
+  end
+
+  defp upload_headers(opts) do
+    content_type = for content_type <- List.wrap(opts[:content_type]), do: {"content-type", content_type}
+    if_none_match = if opts[:if_exists] == :error, do: [{"if-none-match", "*"}], else: []
+
+    Map.new(content_type ++ if_none_match)
   end
 
   # An earlier plugin may have rewritten the path, so it's checked again, like `Fil` does before the adapter.

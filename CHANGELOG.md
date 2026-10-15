@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `Fil.signed_upload/3` signs a direct upload and returns a `Fil.SignedUpload` with the method, the URL and the headers
+  the client has to send. The headers come from the disk, so a client passes them on as they are. Its options are those
+  of an upload URL before (`expires_in:`, `content_type:`, `size:`, `if_exists:` and `query:`), and `Fil.disk/1` takes
+  `signed_upload:` with defaults for `expires_in:` and `if_exists:`. Adapters sign uploads with the new optional
+  callback `c:Fil.Adapter.signed_upload/3`, and plugins see them as the `:signed_upload` op.
+
+### Changed
+
+- `Fil.signed_url/3` signs downloads only, and no longer takes `method:`, `content_type:`, `size:` or `if_exists:`.
+  Sign uploads with `Fil.signed_upload/3` instead. The `signed_url:` option of `Fil.disk/1` no longer takes
+  `if_exists:`, which moved to `signed_upload:`. `Fil.Plugin.Validation` checks uploads on the `:signed_upload` op.
+
 ## [0.2.0] - 2026-10-06
 
 ### Added

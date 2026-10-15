@@ -203,6 +203,21 @@ defmodule Fil.AdapterCase do
 
       defoverridable fil_other_disk: 1, fil_request: 4
 
+      # Sends a signed upload with the headers it lists, which `opts[:headers]` replace one by one.
+      defp upload_request(disk, %Fil.SignedUpload{} = upload, opts) do
+        extra =
+          opts
+          |> Keyword.get(:headers, [])
+          |> Map.new()
+
+        headers =
+          upload.headers
+          |> Map.merge(extra)
+          |> Enum.to_list()
+
+        fil_request(disk, upload.method, upload.url, Keyword.put(opts, :headers, headers))
+      end
+
       setup context do
         {:ok, disk: fil_disk(context), other_disk: fil_other_disk(context)}
       end
@@ -1350,7 +1365,7 @@ defmodule Fil.AdapterCase do
       test "signs download and upload URLs", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "signed/file.txt", "content")
         assert {:ok, get_url} = Fil.signed_url(disk, "signed/file.txt", expires_in: 300)
-        assert {:ok, put_url} = Fil.signed_url(disk, "signed/file.txt", method: :put)
+        assert {:ok, %{url: put_url}} = Fil.signed_upload(disk, "signed/file.txt")
 
         assert %URI{scheme: scheme, path: path} = URI.parse(get_url)
         assert scheme in ["http", "https"]
@@ -1382,13 +1397,17 @@ defmodule Fil.AdapterCase do
                |> Enum.any?(&String.contains?(&1, "attachment"))
 
         assert_raise ArgumentError, ~r/disposition/, fn ->
-          Fil.signed_url(disk, "cv.pdf", method: :put, disposition: :attachment)
+          Fil.signed_upload(disk, "cv.pdf", disposition: :attachment)
+        end
+
+        assert_raise ArgumentError, ~r/if_exists/, fn ->
+          Fil.signed_url(disk, "cv.pdf", if_exists: :error)
         end
       end
 
       test "signs extra query parameters into URLs", %{disk: disk} do
         assert {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}])
-        assert {:ok, put_url} = Fil.signed_url(disk, "index.html", method: :put, query: [{"trackingInfo", "7"}])
+        assert {:ok, %{url: put_url}} = Fil.signed_upload(disk, "index.html", query: [{"trackingInfo", "7"}])
 
         assert url
                |> URI.parse()
@@ -1403,20 +1422,24 @@ defmodule Fil.AdapterCase do
         end
       end
 
-      test "signs an upload's content type, size and if_exists into upload URLs", %{disk: disk} do
-        opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error]
+      test "signs an upload's content type and if_exists into its headers", %{disk: disk} do
+        opts = [content_type: "image/png", size: 3, if_exists: :error]
 
-        assert {:ok, plain} = Fil.signed_url(disk, "a.png", method: :put)
-        assert {:ok, bound} = Fil.signed_url(disk, "a.png", opts)
-        assert {:ok, other} = Fil.signed_url(disk, "a.png", Keyword.put(opts, :content_type, "text/html"))
+        assert {:ok, %Fil.SignedUpload{method: :put, url: url, headers: headers}} =
+                 Fil.signed_upload(disk, "a.png", opts)
 
-        assert [plain, bound, other]
-               |> Enum.map(&URI.parse(&1).query)
-               |> Enum.uniq()
-               |> length() == 3
+        assert headers["content-type"] == "image/png"
+        assert headers["if-none-match"] == "*"
+        refute Map.has_key?(headers, "content-length")
+        assert %URI{path: path} = URI.parse(url)
+        assert String.ends_with?(path, "/a.png")
+
+        assert {:ok, %Fil.SignedUpload{headers: plain}} = Fil.signed_upload(disk, "a.png")
+        refute Map.has_key?(plain, "content-type")
+        refute Map.has_key?(plain, "if-none-match")
 
         for {name, value} <- [content_type: "image/png", size: 3, if_exists: :error] do
-          assert_raise ArgumentError, ~r/only applies to uploads/, fn ->
+          assert_raise ArgumentError, ~r/unknown options/, fn ->
             Fil.signed_url(disk, "a.png", [{name, value}])
           end
         end
@@ -1447,10 +1470,10 @@ defmodule Fil.AdapterCase do
         assert {206, _headers, "789"} = fil_request(disk, :get, url, headers: [{"range", "bytes=-3"}])
       end
 
-      test "a signed URL uploads a file", %{disk: disk} do
-        assert {:ok, url} = Fil.signed_url(disk, "inbox/new.txt", method: :put, expires_in: 60)
+      test "a signed upload uploads a file", %{disk: disk} do
+        assert {:ok, upload} = Fil.signed_upload(disk, "inbox/new.txt", expires_in: 60)
 
-        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "uploaded")
+        assert {status, _headers, _body} = upload_request(disk, upload, body: "uploaded")
         assert status in 200..299
         assert Fil.read(disk, "inbox/new.txt") == {:ok, "uploaded"}
       end
@@ -1496,29 +1519,36 @@ defmodule Fil.AdapterCase do
         assert status in 400..499
       end
 
-      test "an upload URL bound to its content type, size and if_exists writes the file once", %{disk: disk} do
-        opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
-        assert {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
-        headers = [{"content-type", "image/png"}, {"if-none-match", "*"}]
-        other_type = List.keyreplace(headers, "content-type", 0, {"content-type", "text/html"})
+      test "a signed upload with if_exists: :error writes the file once", %{disk: disk} do
+        opts = [content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
+        assert {:ok, upload} = Fil.signed_upload(disk, "avatars/a.png", opts)
 
-        # Another content type or size is refused.
-        for {headers, body} <- [{other_type, "png"}, {headers, "pngs"}] do
-          assert {status, _headers, _body} = fil_request(disk, :put, url, body: body, headers: headers)
-          assert status in 400..499
-        end
-
-        refute Fil.exists?(disk, "avatars/a.png")
-
-        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "png", headers: headers)
+        assert {status, _headers, _body} = upload_request(disk, upload, body: "png")
         assert status in 200..299
         assert {:ok, %Fil.Stat{size: 3, content_type: content_type}} = Fil.stat(disk, "avatars/a.png")
         assert content_type in ["image/png", nil]
 
         # S3 answers 412, Fil.Plug 409.
-        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "new", headers: headers)
+        assert {status, _headers, _body} = upload_request(disk, upload, body: "new")
         assert status in 400..499
         assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
+      end
+
+      # S3 and Fil.Plug refuse both, Azure takes them (see the adapters' own tests).
+      test "a signed upload with another content type or size than it was signed for", %{disk: disk} do
+        opts = [content_type: "image/png", size: 3, expires_in: 60]
+
+        for {path, headers, body} <- [{"a.png", [{"content-type", "text/html"}], "png"}, {"b.png", [], "pngs"}] do
+          assert {:ok, upload} = Fil.signed_upload(disk, path, opts)
+          assert {status, _headers, _body} = upload_request(disk, upload, body: body, headers: headers)
+
+          if status in 200..299 do
+            assert Fil.read(disk, path) == {:ok, body}
+          else
+            assert status in 400..499
+            refute Fil.exists?(disk, path)
+          end
+        end
       end
 
       ## ----------------------------------------------------------------
