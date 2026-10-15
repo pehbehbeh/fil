@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Checks that every entry under `## [Unreleased]` in CHANGELOG.md links to the pull request that made the change, such
-# as `([#1](https://github.com/pehbehbeh/fil/pull/1))` at its end. CI and bin/release run it. See "Releasing" in
+# as `([#1](https://github.com/pehbehbeh/fil/pull/1))` at its end. CI and bin/release run it. See "Changelog" in
 # AGENTS.md.
 #
 #   bin/check-changelog [FILE]

@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     # `v[0-9]*` are maintenance branches for backports. bin/release checks the CI run of the commit it releases, so it
-    # needs CI on every branch it releases from (see "Releasing" in AGENTS.md).
+    # needs CI on every branch it releases from (see the backports in its header).
     branches: [main, "v[0-9]*"]
   pull_request:
 

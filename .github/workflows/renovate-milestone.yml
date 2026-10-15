@@ -1,7 +1,7 @@
 name: Renovate milestone
 
 # Puts each new Renovate pull request into the open milestone with the lowest version, the next release (see
-# "Milestones" in AGENTS.md). Renovate itself only takes a fixed milestone number.
+# "Milestones" in bin/release). Renovate itself only takes a fixed milestone number.
 on:
   pull_request:
     types: [opened, reopened]

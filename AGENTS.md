@@ -114,9 +114,9 @@ docker compose up -d        # RustFS (S3, verifies SigV4)
 mix test.integration        # runs the @tag :integration suites against the compose.yml services
 mix format                  # 120 columns, Quokka plugin
 mix credo                   # strict, every check enabled (see .credo.exs)
-bin/check-changelog         # every entry under Unreleased links to its pull request (see Releasing)
+bin/check-changelog         # every entry under Unreleased links to its pull request (see Changelog)
 bin/check-notebooks         # runs every guides/*.livemd against this checkout (see Etiquette)
-bin/release 0.2.0           # releases main to Hex (see Releasing)
+bin/release 0.2.0           # releases main to Hex (see its header)
 ```
 
 ## CI
@@ -138,54 +138,22 @@ on `main` requires, so the ruleset stays the same when the matrix changes. A new
 Pull requests are merged with a merge commit (squash and rebase merging are off), so the commits of a branch stay as
 they are and `git log --first-parent main` shows one line per pull request.
 
-## Releasing
+## Changelog
 
-Development is trunk-based: `main` is the only long-lived branch, a release is a commit plus a tag on it, and `v0.N`
-maintenance branches exist only once an older line needs a backport. `bin/release` does a release from your machine:
+`CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first, one entry per
+user-visible change under `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, added under
+`## [Unreleased]` in the same pull request as the change. Entries describe the difference from the last release: a
+change to something that's new in the same release updates that feature's entry, adding its pull request's link,
+instead of getting an entry of its own. User-visible changes always go through a pull request; direct pushes to `main`
+are only for changes without an entry. Each entry ends with an inline link to its pull request, such as
+`([#1](https://github.com/pehbehbeh/fil/pull/1))`, or `([#1](...), [#4](...))` for several. Add it in a commit once
+`gh pr create` has returned the number: issues and pull requests share their numbers, so don't guess it. Inline,
+because the GitHub release gets only the section, without the link definitions at the end. `bin/check-changelog`
+enforces it for the entries under Unreleased, in CI and in `bin/release`. Released sections are headed
+`## [0.2.0] - 2026-10-01`. `bin/release` keeps the link definitions at the end, which compare each version with the one
+before. The file is in the Hex package and a Guides tab on HexDocs, so each published version includes its changelog.
 
-```sh
-bin/release 0.2.0
-```
-
-It checks that `main` is clean, in sync with `origin` and has a green CI run, refuses a version that is tagged or on
-Hex, and a changelog without entries under Unreleased or with an entry that doesn't link to its pull request, and asks
-before releasing while the milestone `v0.2.0` has open issues or pull requests. Then it bumps `@version` in `mix.exs`,
-renames `## [Unreleased]` in `CHANGELOG.md` to `## [0.2.0] - date` and adds its compare link, sets every
-`{:fil, "~> X.Y"}` in `README.md`, `guides/` and `lib/` to `"~> 0.2"` (for a new minor version only, not for a patch or
-a pre-release), commits "Release v0.2.0", tags `v0.2.0`, runs `mix hex.publish` (package and docs, with your own Hex
-login and 2FA), commits a fresh `## [Unreleased]` heading, pushes branch and tag, creates the GitHub release from the
-changelog section and closes the milestone. So examples in the docs name a dependency as `{:fil, "~> X.Y"}`. Nothing
-is pushed before Hex accepted the package, and on failure the script prints how to undo the local commits. The release
-commits go to `main` directly, which the ruleset allows only for repository admins (its bypass list).
-
-- **Changelog:** `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first,
-  one entry per user-visible change under `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, added
-  under `## [Unreleased]` in the same pull request as the change. Entries describe the difference from the last release:
-  a change to something that's new in the same release updates that feature's entry, adding its pull request's link,
-  instead of getting an entry of its own. User-visible changes always go through a pull request; direct pushes to `main`
-  are only for changes without an entry. Each entry ends with an inline link to its pull request, such as
-  `([#1](https://github.com/pehbehbeh/fil/pull/1))`, or `([#1](...), [#4](...))` for several. Add it in a commit once
-  `gh pr create` has returned the number: issues and pull requests share their numbers, so don't guess it. Inline,
-  because the GitHub release gets only the section, without the link definitions at the end. `bin/check-changelog`
-  enforces it for the entries under Unreleased, in CI and in `bin/release`. Released sections are headed
-  `## [0.2.0] - 2026-10-01`. `bin/release` keeps the link definitions at the end, which compare each version with the
-  one before. The file is in the Hex package and a Guides tab on HexDocs, so each published version includes its
-  changelog.
-- **Milestones:** one per planned release, named after its tag (`v0.2.0`), with the issues and pull requests meant to
-  ship in it. Issues without a milestone are the backlog, and a patch release needs no milestone. Before a release,
-  close what's left in the milestone or move it to the next one. `.github/workflows/renovate-milestone.yml` puts every
-  new Renovate pull request into the open milestone with the lowest version.
-- **Hotfix:** a normal pull request to `main`, then `bin/release 0.2.1`.
-- **Backport** to an older line: `git checkout -b v0.1 v0.1.0`, cherry-pick the fix with its changelog entry under a new
-  `## [Unreleased]`, push the branch, then `bin/release 0.1.1` on it. The entry keeps the link to the pull request that
-  made the fix on `main`. A `v0.N` branch keeps its own changelog and is never merged anywhere; `main` may note the
-  backport in the current section. `v0.1.0` still has the old changelog format, so a `v0.1` branch first cherry-picks
-  the commit "Follow Keep a Changelog 1.1.0".
-- **Bad release:** `mix hex.retire fil 0.2.0 security --message "..."` warns users on `mix deps.get`, and the changelog
-  heading becomes `## [0.2.0] - 2026-10-01 [YANKED]`. A version can't be replaced, so the fix is the next patch
-  version.
-
-The testing conventions are in `test/CLAUDE.md`.
+Releases, milestones and backports are in the header of `bin/release`, the testing conventions in `test/CLAUDE.md`.
 
 ## Etiquette
 
