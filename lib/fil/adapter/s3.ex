@@ -295,6 +295,7 @@ defmodule Fil.Adapter.S3 do
   alias Fil.Support.ByteRange
   alias Fil.Support.Checksum
   alias Fil.Support.Content
+  alias Fil.Support.Download
   alias Fil.Support.Parts
   alias Fil.Support.Relay
   alias Fil.Support.XML
@@ -499,8 +500,9 @@ defmodule Fil.Adapter.S3 do
 
     with {:ok, check} <- check,
          {range, size} <- download_range(content_length(response), ByteRange.from_options(opts)) do
-      start = fn -> start_download(state, key, check, range) end
-      {:ok, Stream.resource(start, &next_chunk/1, &stop_download/1), size}
+      get = &get_into(state, key, check, range, &1)
+      # The label shows in `:observer` and crash reports. The key names the file, and nothing else goes in.
+      {:ok, Download.stream({__MODULE__, :stream, key}, get, check, &verify_download!/2), size}
     else
       :empty -> {:ok, [], 0}
       {:error, error} -> {:error, error}
@@ -547,61 +549,10 @@ defmodule Fil.Adapter.S3 do
     %{algorithm: algorithm, checksum: Checksum.init_parts(algorithm, part_size), composite: composite}
   end
 
-  defp start_download(state, key, check, range) do
-    reader = self()
-    ref = make_ref()
-    # `$callers` lets the download find what the reader was allowed, such as a `Req.Test` stub.
-    callers = [reader | Process.get(:"$callers", [])]
-
-    {pid, monitor} =
-      spawn_monitor(fn ->
-        # The label shows in `:observer` and crash reports. The key names the file, and nothing else goes in.
-        Process.set_label({__MODULE__, :stream, key})
-        Process.put(:"$callers", callers)
-        relay = %Relay{to: reader, ref: ref, monitor: Process.monitor(reader)}
-        send(reader, {ref, :done, get_into(state, key, check, range, relay)})
-      end)
-
-    %{pid: pid, monitor: monitor, ref: ref, check: check}
-  end
-
-  defp next_chunk(%{pid: pid, monitor: monitor, ref: ref} = download) do
-    receive do
-      {^ref, :data, chunk} ->
-        send(pid, {ref, :more})
-        {[chunk], put_chunk(download, chunk)}
-
-      {^ref, :done, result} ->
-        finish_download!(download, result)
-
-      {:DOWN, ^monitor, :process, ^pid, reason} ->
-        crashed!(reason)
-    end
-  end
-
-  defp put_chunk(%{check: nil} = download, _chunk), do: download
-
-  defp put_chunk(%{check: check} = download, chunk) do
-    %{download | check: %{check | checksum: Checksum.update(check.checksum, chunk)}}
-  end
-
-  defp finish_download!(download, {:ok, headers}) do
-    verify_download!(download, headers)
-    {:halt, download}
-  end
-
-  defp finish_download!(_download, {:error, error}), do: raise(error)
-
-  # The download process only ends before it's done if it crashed, for example on bad `:req_options`.
-  defp crashed!({%{__exception__: true} = exception, stacktrace}), do: reraise(exception, stacktrace)
-  defp crashed!(reason), do: exit(reason)
-
   # Compared with the checksum the GetObject returned, which belongs to the content that was downloaded. An object
   # replaced since the HeadObject may have none for this algorithm, or parts of another size, and is then read without
   # a check, like `read/3`.
-  defp verify_download!(%{check: nil}, _headers), do: :ok
-
-  defp verify_download!(%{check: check}, headers) do
+  defp verify_download!(check, headers) do
     case downloaded_checksum(check, headers) do
       nil ->
         :ok
@@ -617,26 +568,6 @@ defmodule Fil.Adapter.S3 do
 
   defp downloaded_checksum(%{algorithm: algorithm, composite: composite}, headers) do
     if header(headers, checksum_header(algorithm)) == composite, do: composite
-  end
-
-  # Runs when the stream is done, halted early or raised. Stopping the download closes its connection. A chunk it sent
-  # meanwhile arrives before the `:DOWN` of a new monitor, so it's dropped once that's in.
-  defp stop_download(%{pid: pid, monitor: monitor, ref: ref}) do
-    Process.demonitor(monitor, [:flush])
-    stopped = Process.monitor(pid)
-    Process.exit(pid, :kill)
-
-    receive do
-      {:DOWN, ^stopped, :process, ^pid, _reason} -> flush_download(ref)
-    end
-  end
-
-  defp flush_download(ref) do
-    receive do
-      {^ref, _tag, _value} -> flush_download(ref)
-    after
-      0 -> :ok
-    end
   end
 
   @impl Fil.Adapter
@@ -1068,7 +999,8 @@ defmodule Fil.Adapter.S3 do
   # The guard crashes only on a bug, such as bad `:req_options`, which the writer then raises.
   defp call_guard(guard, message) do
     case ask_guard(guard, message) do
-      {:down, reason} -> crashed!(reason)
+      {:down, {%{__exception__: true} = exception, stacktrace}} -> reraise(exception, stacktrace)
+      {:down, reason} -> exit(reason)
       reply -> reply
     end
   end

@@ -219,7 +219,8 @@ defmodule Fil do
       Extra query parameters, e.g. `[{"trackingInfo", "42"}]`, for a page that reads them from its own URL. They're
       signed with the URL, so they can't be changed or added afterwards. Names that signed URLs use themselves on some
       disk raise on every disk: `expires`, `disposition`, `content_type`, `size`, `if_exists`, `signature`, and anything
-      starting with `X-Amz-` or `response-`.
+      starting with `X-Amz-` or `response-`. Azure can't sign them, so `Fil.Adapter.AzureBlob` returns a
+      `Fil.UnsupportedError`.
       """
     ]
   ]
@@ -232,8 +233,8 @@ defmodule Fil do
                              doc: """
                              The `content-disposition` of the download. `:inline` lets the browser show the file,
                              `:attachment` saves it under the file's name, and `{:attachment, filename}` under another
-                             name, which can be any UTF-8 string. Without it, S3 sends the disposition an object was
-                             uploaded with outside `Fil`, and the other disks send none.
+                             name, which can be any UTF-8 string. Without it, S3 and Azure send the disposition a file
+                             was uploaded with outside `Fil`, and the other disks send none.
                              """
                            ]
                          ] ++ @query_option
@@ -1100,7 +1101,8 @@ defmodule Fil do
   request with another content type or length with a `403`. With `if_exists: :error`, an upload to a path that has a
   file fails and leaves the file alone: S3 answers `412`, `Fil.Plug` answers `409`. So the URL writes once, and nobody
   who has it can replace the file later. Some S3-compatible servers ignore `if-none-match` (see `Fil.Adapter.S3`).
-  Check the file after the upload on storage that can't enforce all of them, as `Fil.LiveView` does.
+  Azure can't bind the content type and the size (see `Fil.Adapter.AzureBlob`), so check the file after the upload on
+  storage that can't enforce all of them, as `Fil.LiveView` does.
   """
   @doc section: :operations
   @spec signed_upload(Ref.t()) :: result(Fil.SignedUpload.t())

@@ -100,17 +100,18 @@ The Hex package is `fil`.
   tags, so never maintain function lists by hand.
 - **HTTP:** cloud adapters call Req directly, with a `req_options:` adapter option that's merged into every request.
   The adapter always sets `retry: false` and `raw: true`, so user options can't change the storage semantics. Req signs
-  requests (its `aws_sigv4:` option), presigned URLs use the private `Req.Utils.aws_sigv4_url/1` (Req is deliberately
-  not pinned for it; if a release drops it, presigning crashes), and XML is parsed with OTP's `:xmerl_sax_parser`.
-  There's no HTTP client behaviour. Bodiless requests send `body: nil`, never `""`: Req 0.8.0-rc.0 turns a GET with a
-  body into a POST.
+  S3 requests (its `aws_sigv4:` option), presigned URLs use the private `Req.Utils.aws_sigv4_url/1` (Req is deliberately
+  not pinned for it; if a release drops it, presigning crashes), and XML is parsed with OTP's `:xmerl_sax_parser`. Req
+  has no Azure signing, so `Fil.Support.AzureSigning` builds Shared Key signatures and service SAS tokens as pure
+  functions. Downloads that stream run through `Fil.Support.Download`, shared by the cloud adapters. There's no HTTP
+  client behaviour. Bodiless requests send `body: nil`, never `""`: Req 0.8.0-rc.0 turns a GET with a body into a POST.
 
 ## Commands
 
 ```sh
 mix deps.get
 mix test                    # unit tests only (no network)
-docker compose up -d        # RustFS (S3, verifies SigV4)
+docker compose up -d        # RustFS (S3, verifies SigV4) and Azurite (Azure Blob, verifies Shared Key and SAS)
 mix test.integration        # runs the @tag :integration suites against the compose.yml services
 mix format                  # 120 columns, Quokka plugin
 mix credo                   # strict, every check enabled (see .credo.exs)
@@ -124,9 +125,9 @@ bin/release 0.2.0           # releases main to Hex (see its header)
 `.github/workflows/ci.yml` checks formatting, `mix credo`, `mix docs --warnings-as-errors` and `bin/check-changelog` on
 the latest Elixir, and runs `mix test` on every supported Elixir minor version (1.18 and later), each with the newest
 OTP it supports. Fil supports the last three OTP releases, the ones OTP still maintains (27, 28 and 29 now), and the
-matrix covers each of them. The integration suite runs once, on the latest Elixir, against RustFS started from
-`compose.yml`. The notebooks job runs `bin/check-notebooks` on the latest Elixir. When `elixir:` in `mix.exs` changes or
-a new OTP release comes out, update the matrix.
+matrix covers each of them. The integration suites run once, on the latest Elixir, against RustFS and Azurite started
+from `compose.yml`. The notebooks job runs `bin/check-notebooks` on the latest Elixir. When `elixir:` in `mix.exs`
+changes or a new OTP release comes out, update the matrix.
 
 The checks job also compiles `fil` without its optional dependencies (`mix compile --no-optional-deps` in its own build
 path), so a module that uses Plug, Vix, Kino or Phoenix LiveView without a compile guard (`if Code.ensure_loaded?(...)`)

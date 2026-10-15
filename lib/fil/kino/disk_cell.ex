@@ -2,7 +2,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
   defmodule Fil.Kino.DiskCell do
     @moduledoc false
 
-    # The "Fil disk" smart cell: a form that generates the `Fil.disk/1` call for a Local, S3 or Memory disk.
+    # The "Fil disk" smart cell: a form that generates the `Fil.disk/1` call for a Local, S3, Azure Blob or Memory disk.
     # `Fil.Application` registers it when Kino is there. Secrets are names of Livebook secrets, without the `LB_` prefix
     # Livebook puts in front of them in the environment.
 
@@ -10,14 +10,23 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     use Kino.JS.Live
     use Kino.SmartCell, name: "Fil disk"
 
-    @adapters %{"local" => Fil.Adapter.Local, "s3" => Fil.Adapter.S3, "memory" => Fil.Adapter.Memory}
+    @adapters %{
+      "local" => Fil.Adapter.Local,
+      "s3" => Fil.Adapter.S3,
+      "azure_blob" => Fil.Adapter.AzureBlob,
+      "memory" => Fil.Adapter.Memory
+    }
 
     @s3_fields ~w(bucket region endpoint path_style access_key_id_secret secret_access_key_secret session_token_secret)
 
     # The options the text fields become, in the order of the generated code.
     @s3_options ~w(bucket region root endpoint)a
 
-    @text_fields ~w(root bucket region endpoint access_key_id_secret secret_access_key_secret session_token_secret)
+    # Azure's endpoint is a field of its own, because S3's switches path-style URLs with it.
+    @azure_fields ~w(account container blob_endpoint account_key_secret)
+
+    @text_fields ~w(root bucket region endpoint access_key_id_secret secret_access_key_secret session_token_secret) ++
+                   @azure_fields
 
     @impl Kino.JS.Live
     def init(attrs, ctx) do
@@ -86,9 +95,13 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       fields = ctx.assigns.fields
 
       keys =
-        if fields["adapter"] == "s3", do: ["variable", "adapter", "root" | @s3_fields], else: ~w(variable adapter root)
+        case fields["adapter"] do
+          "s3" -> @s3_fields
+          "azure_blob" -> @azure_fields
+          _other -> []
+        end
 
-      Map.take(fields, keys)
+      Map.take(fields, ~w(variable adapter root) ++ keys)
     end
 
     @impl Kino.SmartCell
@@ -119,6 +132,16 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         secret(:access_key_id, attrs["access_key_id_secret"]),
         secret(:secret_access_key, attrs["secret_access_key_secret"]),
         secret(:session_token, attrs["session_token_secret"])
+      ])
+    end
+
+    defp options(%{"adapter" => "azure_blob"} = attrs) do
+      endpoint = if present?(attrs["blob_endpoint"]), do: [endpoint: attrs["blob_endpoint"]], else: []
+
+      Enum.concat([
+        strings(attrs, [:account, :container, :root]),
+        endpoint,
+        secret(:account_key, attrs["account_key_secret"])
       ])
     end
 

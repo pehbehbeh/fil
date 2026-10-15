@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Fil.Adapter.AzureBlob` stores files in Azure Blob Storage and Azurite, signed with the account key (Shared Key) or
+  sent with a SAS token. Streams without a size are uploaded in blocks and committed at the end, `checksum:` is stored
+  as blob metadata, and `Fil.signed_url/3` and `Fil.signed_upload/3` return service SAS URLs. A SAS can't bind the
+  content type, the size or extra query parameters, so `query:` returns a `Fil.UnsupportedError`, and
+  `Fil.LiveView` checks the content type of a direct upload when it's consumed. The Livebook smart cell builds Azure
+  disks too.
 - `Fil.signed_upload/3` signs a direct upload and returns a `Fil.SignedUpload` with the method, the URL and the headers
   the client has to send. The headers come from the disk, so a client passes them on as they are. Its options are those
   of an upload URL before (`expires_in:`, `content_type:`, `size:`, `if_exists:` and `query:`), and `Fil.disk/1` takes

@@ -45,20 +45,7 @@ defmodule Fil.Adapter.S3IntegrationTest do
   end
 
   # Sends the requests of the conformance suite's signed URL tests to RustFS.
-  def fil_request(_disk, method, url, opts) do
-    {:ok, response} =
-      Req.request(
-        method: method,
-        url: url,
-        body: Keyword.get(opts, :body),
-        headers: Keyword.get(opts, :headers, []),
-        retry: false,
-        raw: true
-      )
-
-    headers = for {name, values} <- response.headers, value <- values, do: {name, value}
-    {response.status, headers, response.body}
-  end
+  defdelegate fil_request(disk, method, url, opts), to: Fil.AdapterCase, as: :req_request
 
   # The test's own root in the run's bucket. It's derived from the test name, because the conformance suite calls
   # `fil_disk/1` in its `setup` and again in a test, and both calls have to return the same disk.
@@ -133,6 +120,15 @@ defmodule Fil.Adapter.S3IntegrationTest do
       assert {:ok, %{url: put_url}} = Fil.signed_upload(public, "a b/ü.txt")
       assert {:ok, %{status: 200}} = put(put_url, "changed")
       assert Fil.read(disk, "a b/ü.txt") == {:ok, "changed"}
+    end
+
+    # Azure doesn't take a range from the end, so it's no test of the conformance suite.
+    test "a presigned URL downloads the end of a file", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "digits.txt", "0123456789")
+      assert {:ok, url} = Fil.signed_url(disk, "digits.txt", expires_in: 60)
+
+      assert {:ok, %{status: 206, body: "789"}} =
+               Req.request(method: :get, url: url, headers: [{"range", "bytes=-3"}], retry: false, raw: true)
     end
 
     test "presigns an upload bound to if-none-match, and answers 412 the second time", %{disk: disk} do

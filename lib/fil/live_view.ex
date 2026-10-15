@@ -761,7 +761,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
       with {:ok, stat} <- Fil.stat(ref),
            :ok <- check_regular(ref, stat.type),
-           :ok <- check_uploaded(ref, stat.mtime, signed_at) do
+           :ok <- check_uploaded(ref, stat.mtime, signed_at),
+           :ok <- check_content_type(ref, stat.content_type) do
         check_size(ref, stat.size, opts[:max_file_size])
       end
     end
@@ -799,6 +800,25 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     end
 
     defp check_uploaded(_ref, nil, _signed_at), do: :ok
+
+    # The upload was signed with the content type of the path, which not every storage enforces (Azure doesn't). A
+    # storage that stores no content type has nothing to check.
+    defp check_content_type(_ref, nil), do: :ok
+
+    defp check_content_type(ref, content_type) do
+      stored =
+        content_type
+        |> String.split(";")
+        |> hd()
+        |> String.trim()
+        |> String.downcase()
+
+      if stored == MIME.from_path(ref.path) do
+        :ok
+      else
+        {:error, %Fil.InvalidRequestError{reason: :content_type, op: :stat, path: ref.path, disk: ref.disk}}
+      end
+    end
 
     defp check_size(ref, size, max_file_size) when is_integer(max_file_size) and size > max_file_size do
       {:error, %Fil.InvalidRequestError{reason: :too_large, op: :stat, path: ref.path, disk: ref.disk}}

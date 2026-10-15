@@ -1,7 +1,8 @@
 # Installation
 
 This guide sets up `Fil` in an application with two disks, `uploads` and `backups`. They're local directories in
-development, in memory in tests and S3 buckets in production.
+development, in memory in tests and S3 buckets in production. For Azure Blob Storage, use `Fil.Adapter.AzureBlob` in
+production instead, with the options its page lists.
 
 > #### Info {: .info}
 >

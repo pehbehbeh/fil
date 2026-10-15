@@ -1,11 +1,11 @@
-# The S3 emulator for Fil's integration tests.
+# The emulators for Fil's integration tests: RustFS for S3, Azurite for Azure Blob Storage.
 #
-#     docker compose up -d          # start it
-#     mix test.integration          # run the suite against it
-#     docker compose down -v        # stop it and delete the data
+#     docker compose up -d          # start them
+#     mix test.integration          # run the suites against them
+#     docker compose down -v        # stop them and delete the data
 #
-# The suite creates its own bucket per run, gives each test a root of its own in it and removes the bucket at the end,
-# so the container can keep running between runs.
+# Each suite creates its own bucket or container per run, gives each test a root of its own in it and removes it at the
+# end, so the containers can keep running between runs.
 
 services:
   rustfs:
@@ -16,3 +16,12 @@ services:
       RUSTFS_SECRET_KEY: filsecretkey
     ports:
       - "9000:9000"
+  azurite:
+    # A double-quoted string can break its line with a backslash, which keeps the image within 120 columns.
+    image: "mcr.microsoft.com/azure-storage/azurite:3.37.0\
+      @sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5"
+    # Only the blob service, with the well-known `devstoreaccount1` key `Fil.Emulator` signs with. Azurite verifies
+    # Shared Key and SAS signatures, so the suite also tests the signing. `--inMemoryPersistence` keeps no data on disk.
+    command: azurite-blob --blobHost 0.0.0.0 --inMemoryPersistence
+    ports:
+      - "10000:10000"

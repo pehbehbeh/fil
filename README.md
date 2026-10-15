@@ -51,8 +51,9 @@ To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html)
 
 ## Features and goals
 
-- **One API for many kinds of storage.** Local disk, S3 (and S3-compatible stores) and an in-memory disk for async
-  tests, with the same behaviour on every adapter. `cp` and `rename` work across disks.
+- **One API for many kinds of storage.** Local disk, S3 (and S3-compatible stores),
+  [Azure Blob Storage](https://fil.hexdocs.pm/Fil.Adapter.AzureBlob.html) and an in-memory disk for async tests, with
+  the same behaviour on every adapter. `cp` and `rename` work across disks.
 - **Just values.** A disk is a plain value: no application config, no registry, nothing to supervise. It works in a
   script or a Livebook with `Mix.install/1`.
 - **Pluggable.** Anything that isn't about where files are stored is a [plugin](https://fil.hexdocs.pm/plugins.html),
@@ -69,7 +70,7 @@ To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html)
   - Ecto: [`Fil.Ecto.Ref`](https://fil.hexdocs.pm/Fil.Ecto.Ref.html) stores refs in Ecto schemas.
   - Livebook: [`Fil.Kino`](https://fil.hexdocs.pm/Fil.Kino.html) browses a disk, uploads files to it, and adds a smart
     cell that builds one.
-- **URLs on every disk.** Public and signed GET and PUT URLs, from S3 itself or from
+- **URLs on every disk.** Public and signed GET and PUT URLs, from S3 and Azure themselves or from
   [`Fil.Plugin.URL`](https://fil.hexdocs.pm/Fil.Plugin.URL.html) and `Fil.Plug`.
 - **Safe by default.** Paths can't climb out of the disk root, `if_exists: :error` never replaces a file, and S3
   verifies checksums.
@@ -289,8 +290,8 @@ report = Fil.tmp("report.pdf")
 
 ## Development
 
-`mix test` runs the unit tests, which need no network. The integration tests run the conformance suite against RustFS,
-started with Docker Compose:
+`mix test` runs the unit tests, which need no network. The integration tests run the conformance suite against RustFS
+(S3) and Azurite (Azure Blob Storage), started with Docker Compose:
 
 ```bash
 docker compose up -d
@@ -298,7 +299,8 @@ mix test.integration
 ```
 
 `FIL_S3_ENDPOINT`, `FIL_S3_ACCESS_KEY_ID`, `FIL_S3_SECRET_ACCESS_KEY` and `FIL_S3_REGION` point the integration tests
-at another S3 endpoint.
+at another S3 endpoint, and `FIL_AZURE_BLOB_ENDPOINT`, `FIL_AZURE_BLOB_ACCOUNT` and `FIL_AZURE_BLOB_ACCOUNT_KEY` at
+another Azure account.
 
 ## Acknowledgments
 

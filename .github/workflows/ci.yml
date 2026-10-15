@@ -82,7 +82,7 @@ jobs:
       - run: mix test
 
   integration:
-    name: Integration (RustFS)
+    name: Integration (RustFS, Azurite)
     runs-on: ubuntu-26.04
     env:
       MIX_ENV: test
@@ -104,7 +104,7 @@ jobs:
       # compose.yml instead of a service container, so CI and local runs use the same image and settings.
       - run: docker compose up -d
 
-      # The container is up before RustFS answers S3 requests, so wait for an HTTP response.
+      # The containers are up before the emulators answer requests, so wait for an HTTP response from each.
       - name: Wait for RustFS
         run: |
           for _ in $(seq 1 60); do
@@ -114,12 +114,21 @@ jobs:
           echo "RustFS didn't answer within 60 seconds"
           exit 1
 
+      - name: Wait for Azurite
+        run: |
+          for _ in $(seq 1 60); do
+            curl -s -o /dev/null http://127.0.0.1:10000 && exit 0
+            sleep 1
+          done
+          echo "Azurite didn't answer within 60 seconds"
+          exit 1
+
       - run: mix deps.get
       - run: mix test.integration
 
-      - name: RustFS logs
+      - name: Emulator logs
         if: failure()
-        run: docker compose logs rustfs
+        run: docker compose logs rustfs azurite
 
   # Runs every guides/*.livemd against this checkout. The notebooks install their dependencies with `Mix.install/2`,
   # which resolves them from Hex instead of mix.lock, so they don't share a cache with the jobs above.

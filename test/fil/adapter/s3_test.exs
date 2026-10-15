@@ -1,5 +1,6 @@
 defmodule Fil.Adapter.S3Test do
   alias Fil.Adapter.S3
+  alias Fil.ReqStub
 
   use ExUnit.Case, async: true
 
@@ -2253,81 +2254,15 @@ defmodule Fil.Adapter.S3Test do
   end
 
   ## ------------------------------------------------------------------
-  ## Stubbed requests
-  ##
-  ## Every disk in this module sends its requests to the `Req.Test` stub named after the module, so no request reaches
-  ## the network. `stub/1` expects one request per response, in order, and `Req.Test.verify_on_exit!/1` checks that
-  ## every response was used. Req runs the stub after all its own request steps, and the stub messages the test each
-  ## `Plug.Conn` it gets (the body read into `conn.assigns.body`), so the tests check what the adapter sent. It sends to
-  ## the pid `stub/1` bound, not `self()`, so a request from another process still reaches the test.
+  ## Stubbed requests (see `Fil.ReqStub`)
   ## ------------------------------------------------------------------
 
-  defp req_options, do: [plug: {Req.Test, __MODULE__}]
-
-  # Starts over: the responses of the previous `stub/1` must all have been used, and its requests are dropped.
-  defp stub(responses) do
-    Req.Test.verify!(__MODULE__)
-    _previous = requests()
-    test = self()
-
-    for response <- responses, do: Req.Test.expect(__MODULE__, &respond(&1, response, test))
-  end
-
-  # The request also notes the label of the process that sent it (`:undefined` for none).
-  defp respond(conn, response, test) do
-    {:ok, body, conn} = read_body(conn)
-
-    request =
-      conn
-      |> assign(:body, body)
-      |> assign(:label, :proc_lib.get_label(self()))
-
-    send(test, {__MODULE__, request})
-    reply(conn, response)
-  end
-
-  defp reply(conn, {:error, reason}), do: Req.Test.transport_error(conn, reason)
-
-  # A list body is sent in chunks, so a download gets them one by one.
-  defp reply(conn, %{status: status, body: chunks, headers: headers}) when is_list(chunks) do
-    conn =
-      conn
-      |> merge_resp_headers(headers)
-      |> send_chunked(status)
-
-    Enum.reduce(chunks, conn, fn chunk, conn ->
-      {:ok, conn} = chunk(conn, chunk)
-      conn
-    end)
-  end
-
-  defp reply(conn, %{status: status, body: body, headers: headers}) do
-    conn
-    |> merge_resp_headers(headers)
-    |> send_resp(status, body)
-  end
-
-  defp response(status, body \\ "", headers \\ []), do: %{status: status, body: body, headers: headers}
-
-  # The requests since the last `stub/1`, oldest first. Reading them takes them out of the mailbox.
-  defp requests(received \\ []) do
-    receive do
-      {__MODULE__, request} -> requests([request | received])
-    after
-      0 -> Enum.reverse(received)
-    end
-  end
-
-  defp request! do
-    case requests() do
-      [request] -> request
-      other -> flunk("expected exactly one request, got #{length(other)}")
-    end
-  end
-
-  defp header(request, name) do
-    request
-    |> get_req_header(name)
-    |> List.first()
-  end
+  defp req_options, do: ReqStub.req_options(__MODULE__)
+  defp stub(responses), do: ReqStub.stub(__MODULE__, responses)
+  defp respond(conn, response, test), do: ReqStub.respond(conn, response, __MODULE__, test)
+  defp reply(conn, response), do: ReqStub.reply(conn, response)
+  defp response(status, body \\ "", headers \\ []), do: ReqStub.response(status, body, headers)
+  defp requests, do: ReqStub.requests(__MODULE__)
+  defp request!, do: ReqStub.request!(__MODULE__)
+  defp header(request, name), do: ReqStub.header(request, name)
 end
