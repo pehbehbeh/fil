@@ -9,6 +9,21 @@ defmodule Fil.Adapter.LocalTest do
     |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
   end
 
+  describe "stream/2" do
+    test "reads the file in chunks of 64 KiB, also a part of it", %{disk: disk} do
+      content = :crypto.strong_rand_bytes(200_000)
+      assert {:ok, _} = Fil.write(disk, "big.bin", content)
+
+      assert disk
+             |> Fil.stream!("big.bin")
+             |> Enum.map(&byte_size/1) == [65_536, 65_536, 65_536, 3_392]
+
+      part = Fil.stream!(disk, "big.bin", offset: 1_000, length: 140_000)
+      assert Enum.map(part, &byte_size/1) == [65_536, 65_536, 8_928]
+      assert Enum.join(part) == binary_part(content, 1_000, 140_000)
+    end
+  end
+
   describe "same storage" do
     test "compares the expanded root" do
       relative = Fil.disk(adapter: Local, root: "priv/storage")

@@ -13,6 +13,16 @@ defmodule Fil.Adapter.MemoryTest do
     |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
   end
 
+  describe "stream/2" do
+    test "cuts the stored content into chunks of 64 KiB", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "big.bin", :binary.copy("a", 70_000))
+
+      assert disk
+             |> Fil.stream!("big.bin")
+             |> Enum.map(&byte_size/1) == [65_536, 4_464]
+    end
+  end
+
   describe "init/1" do
     test "normalizes the root" do
       assert {:ok, %Memory{prefix: ""}} = Memory.init([])
