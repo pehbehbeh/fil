@@ -103,8 +103,10 @@ The Hex package is `fil`.
   S3 requests (its `aws_sigv4:` option), presigned URLs use the private `Req.Utils.aws_sigv4_url/1` (Req is deliberately
   not pinned for it; if a release drops it, presigning crashes), and XML is parsed with OTP's `:xmerl_sax_parser`. Req
   has no Azure signing, so `Fil.Support.AzureSigning` builds Shared Key signatures and service SAS tokens as pure
-  functions. Downloads that stream run through `Fil.Support.Download`, shared by the cloud adapters. There's no HTTP
-  client behaviour. Bodiless requests send `body: nil`, never `""`: Req 0.8.0-rc.0 turns a GET with a body into a POST.
+  functions. The cloud adapters share `Fil.Support.Download` for streamed downloads and `Fil.Support.ObjectStore` for
+  the rest object stores have in common (names and prefixes, listings, request errors, response values), so a new
+  cloud adapter starts from those. There's no HTTP client behaviour. Bodiless requests send `body: nil`, never `""`:
+  Req 0.8.0-rc.0 turns a GET with a body into a POST.
 
 ## Commands
 

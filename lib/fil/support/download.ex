@@ -23,6 +23,29 @@ defmodule Fil.Support.Download do
     Stream.resource(fn -> start(label, get, check, verify) end, &next_chunk/1, &stop/1)
   end
 
+  @doc """
+  The range of a download and the size of its stream, from the size the storage reported and the requested range. A
+  range is clamped to the size, so the stream knows its size, and an empty range is `:empty` and downloads nothing
+  (storage answers it with `416`). Without a size, the range stays as it is and the size is unknown.
+
+      iex> Fil.Support.Download.range(10, {2, 100})
+      {{2, 8}, 8}
+      iex> Fil.Support.Download.range(10, {10, nil})
+      :empty
+
+  """
+  @spec range(non_neg_integer() | nil, Fil.Support.ByteRange.t() | nil) ::
+          {Fil.Support.ByteRange.t() | nil, non_neg_integer() | nil} | :empty
+  def range(size, nil), do: {nil, size}
+  def range(nil, range), do: {range, nil}
+
+  def range(size, range) do
+    case Fil.Support.ByteRange.clamp(range, size) do
+      {_start, 0} -> :empty
+      {start, count} -> {{start, count}, count}
+    end
+  end
+
   defp start(label, get, check, verify) do
     reader = self()
     ref = make_ref()

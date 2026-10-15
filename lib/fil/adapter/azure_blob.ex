@@ -267,6 +267,7 @@ defmodule Fil.Adapter.AzureBlob do
   alias Fil.Support.Relay
   alias Fil.Support.XML
 
+  import Fil.Support.ObjectStore, except: [request: 1]
   import Fil.Support.Timestamps
   import Fil.Support.URL
 
@@ -440,8 +441,10 @@ defmodule Fil.Adapter.AzureBlob do
 
   defp download(state, key, response, opts) do
     check = if Keyword.get(opts, :verify_checksum, false), do: download_check(response.headers)
+    size = content_length(response)
+    range = ByteRange.from_options(opts)
 
-    case download_range(content_length(response), ByteRange.from_options(opts)) do
+    case Download.range(size, range) do
       :empty ->
         {:ok, [], 0}
 
@@ -449,18 +452,6 @@ defmodule Fil.Adapter.AzureBlob do
         get = &get_into(state, key, range, &1)
         # The label shows in `:observer` and crash reports. The key names the file, and nothing else goes in.
         {:ok, Download.stream({__MODULE__, :stream, key}, get, check, &verify_download!/2), size}
-    end
-  end
-
-  # The range is clamped to the size Get Blob Properties found, so the stream knows its size, and an empty range
-  # downloads nothing (Azure would answer it with `416`).
-  defp download_range(size, nil), do: {nil, size}
-  defp download_range(nil, range), do: {range, nil}
-
-  defp download_range(size, range) do
-    case ByteRange.clamp(range, size) do
-      {_start, 0} -> :empty
-      {start, count} -> {{start, count}, count}
     end
   end
 
@@ -507,10 +498,6 @@ defmodule Fil.Adapter.AzureBlob do
       {:error, reason} -> {:error, reason}
     end
   end
-
-  # A missing file is fine for an idempotent delete, a missing container isn't.
-  defp missing_is_ok(%Fil.NotFoundError{}), do: :ok
-  defp missing_is_ok(error), do: {:error, error}
 
   @impl Fil.Adapter
   def stat(_state, ".", _opts), do: {:ok, %Stat{type: :directory}}
@@ -584,27 +571,6 @@ defmodule Fil.Adapter.AzureBlob do
     end
   end
 
-  # Without a delimiter, Azure returns only blobs, so a subtree's directories are the parents of its blobs. A blob whose
-  # name ends in `/` is a directory marker (an empty "folder" made by a tool), listed as the directory it stands for.
-  # With a delimiter, a directory of a hierarchical namespace is a blob and a prefix at once, and listed once.
-  defp subtree(listed, _prefix, "/"), do: Enum.uniq_by(listed, &elem(&1, 0))
-
-  defp subtree(listed, prefix, nil) do
-    {markers, files} = Enum.split_with(listed, fn {_path, stat} -> stat.type == :directory end)
-
-    marker_paths = Enum.map(markers, fn {path, _stat} -> String.trim_trailing(path, "/") end)
-    file_paths = Enum.map(files, &elem(&1, 0))
-
-    directories =
-      (file_paths ++ marker_paths)
-      |> Fil.Support.Path.parents(prefix)
-      |> Kernel.++(marker_paths)
-      |> Enum.uniq()
-      |> Enum.map(&{&1, %Stat{type: :directory}})
-
-    files ++ directories
-  end
-
   @impl Fil.Adapter
   def cp(state, src, dest, opts) do
     headers = put_if_exists([{"x-ms-copy-source", copy_source(state, src)}, {"content-length", "0"}], opts)
@@ -634,10 +600,6 @@ defmodule Fil.Adapter.AzureBlob do
 
   defp copied(_state, _dest, status), do: {:error, %Fil.UnknownError{reason: {:copy_status, status}}}
 
-  # `If-None-Match` is about the destination, so a copy that found it already there fails with its path.
-  defp existing_dest({:error, %Fil.AlreadyExistsError{} = error}, dest), do: {:error, %{error | path: dest}}
-  defp existing_dest(result, _dest), do: result
-
   # A move onto itself is a copy onto itself, which keeps the file (or finds it there with `if_exists: :error`), without
   # the Delete Blob that would remove it.
   @impl Fil.Adapter
@@ -656,17 +618,8 @@ defmodule Fil.Adapter.AzureBlob do
       |> Enum.reject(&folder?(metadata(&1, "hdi_isfolder")))
       |> Enum.map(&relative(state, XML.text(&1, "Name")))
       |> Enum.filter(&under_prefix?(&1, prefix))
-      |> delete_each(state, opts)
+      |> delete_each(&rm(state, &1, opts))
     end
-  end
-
-  defp delete_each(paths, state, opts) do
-    Enum.reduce_while(paths, {:ok, 0}, fn path, {:ok, count} ->
-      case rm(state, path, opts) do
-        :ok -> {:cont, {:ok, count + 1}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
   end
 
   @impl Fil.Adapter
@@ -759,15 +712,7 @@ defmodule Fil.Adapter.AzureBlob do
   # the content is read inside `Fil.Op`, where a raised `Fil` error would count as the source's. A full block always
   # has more content behind it, so the last block a stream can have is refused before it's uploaded.
   defp next_block(state, block, upload) do
-    result =
-      if length(upload.blocks) + 1 >= state.max_blocks,
-        do: {:error, %Fil.InvalidRequestError{reason: :too_many_parts}},
-        else: put_block(state, block, upload)
-
-    case result do
-      {:ok, upload} -> {:cont, upload}
-      {:error, error} -> {:halt, {:error, error}}
-    end
+    next_part(length(upload.blocks), state.max_blocks, fn -> put_block(state, block, upload) end)
   end
 
   defp finish_upload({:halted, {:error, error}}, _state, _opts), do: {:error, error}
@@ -788,18 +733,9 @@ defmodule Fil.Adapter.AzureBlob do
 
   # A block is invisible until the blocks are committed, so a block that failed with `Fil.UnavailableError` is sent once
   # more, a second later (`ServerBusy` and `503` are unavailable too).
-  defp send_block(state, key, id, block, retries \\ 1) do
+  defp send_block(state, key, id, block) do
     params = [{"comp", "block"}, {"blockid", id}]
-    headers = [length_header(block)]
-
-    case put(state, key, headers, block, params) do
-      {:error, %Fil.UnavailableError{}} when retries > 0 ->
-        Process.sleep(state.retry_delay)
-        send_block(state, key, id, block, retries - 1)
-
-      result ->
-        result
-    end
+    retry_unavailable(fn -> put(state, key, [length_header(block)], block, params) end, state.retry_delay)
   end
 
   # The content type, the checksum and `if_exists: :error` go with the commit, which is what creates the blob.
@@ -872,29 +808,7 @@ defmodule Fil.Adapter.AzureBlob do
     |> Enum.to_list()
   end
 
-  # The root is stored as a name prefix: `""` for the container root, otherwise the normalized root with a trailing
-  # slash.
-  defp parse_root(root) do
-    case Fil.Support.Path.normalize(root) do
-      {:ok, "."} -> {:ok, ""}
-      {:ok, path} -> {:ok, path <> "/"}
-      {:error, :ebadpath} -> {:error, {:invalid_option, {:root, root}}}
-    end
-  end
-
   defp default_endpoint(account), do: "https://#{account}.blob.core.windows.net"
-
-  defp parse_endpoint(_name, nil), do: {:ok, nil}
-
-  defp parse_endpoint(name, endpoint) do
-    case URI.parse(endpoint) do
-      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
-        {:ok, String.trim_trailing(endpoint, "/")}
-
-      _other ->
-        {:error, {:invalid_option, {name, endpoint}}}
-    end
-  end
 
   defp length_header(content) do
     length =
@@ -909,14 +823,6 @@ defmodule Fil.Adapter.AzureBlob do
     case Keyword.get(opts, :content_type) do
       nil -> []
       content_type -> [{name, content_type}]
-    end
-  end
-
-  # Azure creates a blob only if none exists when the request has `If-None-Match: *`.
-  defp put_if_exists(headers, opts) do
-    case Keyword.get(opts, :if_exists, :overwrite) do
-      :overwrite -> headers
-      :error -> [{"if-none-match", "*"} | headers]
     end
   end
 
@@ -939,13 +845,7 @@ defmodule Fil.Adapter.AzureBlob do
         raw: true
       )
 
-    # Every status, 5xx included, comes back as a response and is mapped by the caller. Only a failed connection is an
-    # error here.
-    case Req.request(options) do
-      {:ok, response} -> {:ok, response}
-      {:error, %Req.TransportError{reason: reason}} -> {:error, %Fil.UnavailableError{reason: reason}}
-      {:error, exception} -> {:error, %Fil.UnavailableError{reason: exception}}
-    end
+    Fil.Support.ObjectStore.request(options)
   end
 
   defp request_headers(state, method, url, params, headers) do
@@ -981,25 +881,6 @@ defmodule Fil.Adapter.AzureBlob do
   # carries the token.
   defp copy_source(state, src),
     do: blob_url(container_url(state.endpoint, state), key(state, src), state.sas_token || [])
-
-  ## ------------------------------------------------------------------
-  ## Names and prefixes
-  ## ------------------------------------------------------------------
-
-  # Paths are relative to the disk root, names are relative to the container. `state.prefix` is `""` or ends in `/`.
-  defp key(state, "."), do: state.prefix
-  defp key(state, path), do: state.prefix <> path
-
-  defp list_prefix(state, "."), do: state.prefix
-  defp list_prefix(state, path), do: state.prefix <> path <> "/"
-
-  defp base_prefix(state, "."), do: state.prefix
-  defp base_prefix(state, path), do: state.prefix <> path
-
-  defp relative(state, name), do: String.replace_prefix(name, state.prefix, "")
-
-  defp under_prefix?(_name, "."), do: true
-  defp under_prefix?(name, prefix), do: name == prefix or String.starts_with?(name, prefix <> "/")
 
   ## ------------------------------------------------------------------
   ## Listing
@@ -1046,13 +927,6 @@ defmodule Fil.Adapter.AzureBlob do
       {:ok, %{status: 200, body: body}} -> parse_xml(body)
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp parse_xml(body) do
-    case XML.parse(body) do
-      {:ok, element} -> {:ok, element}
-      {:error, :invalid_xml} -> {:error, %Fil.UnavailableError{reason: :invalid_xml}}
     end
   end
 
@@ -1158,38 +1032,4 @@ defmodule Fil.Adapter.AzureBlob do
   defp status_error(412), do: Fil.AlreadyExistsError
   defp status_error(status) when status == 429 or status >= 500, do: Fil.UnavailableError
   defp status_error(_status), do: Fil.UnknownError
-
-  defp error_code(body) when is_binary(body) do
-    case XML.parse(body) do
-      {:ok, element} -> XML.text(element, "Code")
-      {:error, :invalid_xml} -> nil
-    end
-  end
-
-  defp error_code(_body), do: nil
-
-  ## ------------------------------------------------------------------
-  ## Response values
-  ## ------------------------------------------------------------------
-
-  # Req returns headers as a map of lowercase names to lists of values.
-  defp header(headers, name) do
-    headers
-    |> Map.get(name, [])
-    |> List.first()
-  end
-
-  defp content_length(%{headers: headers}), do: integer(header(headers, "content-length"))
-
-  defp integer(nil), do: nil
-
-  defp integer(value) do
-    case Integer.parse(value) do
-      {integer, _rest} -> integer
-      :error -> nil
-    end
-  end
-
-  defp unquote_etag(nil), do: nil
-  defp unquote_etag(etag), do: String.trim(etag, "\"")
 end

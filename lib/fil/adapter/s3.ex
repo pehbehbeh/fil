@@ -300,6 +300,7 @@ defmodule Fil.Adapter.S3 do
   alias Fil.Support.Relay
   alias Fil.Support.XML
 
+  import Fil.Support.ObjectStore, except: [request: 1]
   import Fil.Support.Timestamps
   import Fil.Support.URL
 
@@ -498,8 +499,11 @@ defmodule Fil.Adapter.S3 do
   defp download(state, key, response, verify?, opts) do
     check = if verify?, do: download_check(state, key, response), else: {:ok, nil}
 
+    size = content_length(response)
+    range = ByteRange.from_options(opts)
+
     with {:ok, check} <- check,
-         {range, size} <- download_range(content_length(response), ByteRange.from_options(opts)) do
+         {range, size} <- Download.range(size, range) do
       get = &get_into(state, key, check, range, &1)
       # The label shows in `:observer` and crash reports. The key names the file, and nothing else goes in.
       {:ok, Download.stream({__MODULE__, :stream, key}, get, check, &verify_download!/2), size}
@@ -508,21 +512,6 @@ defmodule Fil.Adapter.S3 do
       {:error, error} -> {:error, error}
     end
   end
-
-  # The range of the download and the size of the stream. A range is clamped to the size the HeadObject found, so the
-  # stream knows its size, and an empty range downloads nothing (S3 would answer it with `416`). A HeadObject without a
-  # size leaves the range as it is, and the size unknown.
-  defp download_range(size, nil), do: {nil, size}
-  defp download_range(nil, range), do: {range, nil}
-
-  defp download_range(size, range) do
-    case ByteRange.clamp(range, size) do
-      {_start, 0} -> :empty
-      {start, count} -> {{start, count}, count}
-    end
-  end
-
-  defp content_length(%{headers: headers}), do: integer(header(headers, "content-length"))
 
   # What the download computes as it goes, from the checksum the HeadObject found: the checksum of the whole object,
   # or a composite one, whose parts it then needs the size of. `nil` for none, or one that can't be checked.
@@ -580,10 +569,6 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  # A missing file is fine for an idempotent delete, a missing bucket isn't.
-  defp missing_is_ok(%Fil.NotFoundError{}), do: :ok
-  defp missing_is_ok(error), do: {:error, error}
-
   @impl Fil.Adapter
   def stat(_state, ".", _opts), do: {:ok, %Stat{type: :directory}}
 
@@ -622,25 +607,6 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
-  # Without a delimiter S3 returns only objects, so a subtree's directories are the parents of its keys. A key ending in
-  # `/` is a directory marker (an empty "folder" made in a console), listed as the directory it stands for.
-  defp subtree(listed, _prefix, "/"), do: listed
-
-  defp subtree(listed, prefix, nil) do
-    {markers, files} = Enum.split_with(listed, fn {path, _stat} -> String.ends_with?(path, "/") end)
-    marker_paths = Enum.map(markers, fn {path, _stat} -> String.trim_trailing(path, "/") end)
-
-    file_paths = Enum.map(files, &elem(&1, 0))
-    parents = Fil.Support.Path.parents(file_paths ++ marker_paths, prefix)
-
-    directories =
-      (parents ++ marker_paths)
-      |> Enum.uniq()
-      |> Enum.map(&{&1, %Stat{type: :directory}})
-
-    files ++ directories
-  end
-
   @impl Fil.Adapter
   def cp(state, src, dest, opts) do
     headers = put_if_exists([{"x-amz-copy-source", copy_source(state, src)}], opts)
@@ -655,10 +621,6 @@ defmodule Fil.Adapter.S3 do
 
     existing_dest(result, dest)
   end
-
-  # `If-None-Match` is about the destination, so a copy that found it already there fails with its path.
-  defp existing_dest({:error, %Fil.AlreadyExistsError{} = error}, dest), do: {:error, %{error | path: dest}}
-  defp existing_dest(result, _dest), do: result
 
   # AWS answers a missing source with `404 NoSuchKey`, but some S3-compatible servers (SeaweedFS) send a plain 400, so
   # an unexplained 400 is checked against the source. So is `InvalidRequest`, which doesn't say much more.
@@ -689,17 +651,8 @@ defmodule Fil.Adapter.S3 do
       contents
       |> Enum.map(&relative(state, XML.text(&1, "Key")))
       |> Enum.filter(&under_prefix?(&1, prefix))
-      |> delete_each(state, opts)
+      |> delete_each(&rm(state, &1, opts))
     end
-  end
-
-  defp delete_each(paths, state, opts) do
-    Enum.reduce_while(paths, {:ok, 0}, fn path, {:ok, count} ->
-      case rm(state, path, opts) do
-        :ok -> {:cont, {:ok, count + 1}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
   end
 
   @impl Fil.Adapter
@@ -784,15 +737,7 @@ defmodule Fil.Adapter.S3 do
   # content is read inside `Fil.Op`, where a raised `Fil` error would count as the source's. A full part always has
   # more content behind it, so the last part a stream can have is refused before it's uploaded.
   defp next_part(state, part, upload, opts) do
-    result =
-      if upload.number + 1 >= state.max_parts,
-        do: {:error, %Fil.InvalidRequestError{reason: :too_many_parts}},
-        else: upload_part(state, part, upload, opts)
-
-    case result do
-      {:ok, upload} -> {:cont, upload}
-      {:error, error} -> {:halt, {:error, error}}
-    end
+    next_part(upload.number, state.max_parts, fn -> upload_part(state, part, upload, opts) end)
   end
 
   defp finish_upload({:halted, {:error, error}}, _state, _opts), do: {:error, error}
@@ -838,24 +783,19 @@ defmodule Fil.Adapter.S3 do
   # A part is in memory and invisible until the upload completes, so a part that failed with `Fil.UnavailableError` is
   # sent once more, a second later (`SlowDown` and `503` are unavailable too). The ETag goes into the completion as S3
   # sent it, quotes included.
-  defp send_part(state, upload, number, part, headers, retries \\ 1) do
+  defp send_part(state, upload, number, part, headers) do
     params = [{"partNumber", number}, {"uploadId", upload.id}]
 
-    result =
-      case request(state, :put, upload.key, params: params, headers: headers, body: part) do
-        {:ok, %{status: 200} = response} -> etag(response.headers)
-        {:ok, response} -> {:error, error(response)}
-        {:error, reason} -> {:error, reason}
-      end
-
-    case result do
-      {:error, %Fil.UnavailableError{}} when retries > 0 ->
-        Process.sleep(state.retry_delay)
-        send_part(state, upload, number, part, headers, retries - 1)
-
-      result ->
-        result
-    end
+    retry_unavailable(
+      fn ->
+        case request(state, :put, upload.key, params: params, headers: headers, body: part) do
+          {:ok, %{status: 200} = response} -> etag(response.headers)
+          {:ok, response} -> {:error, error(response)}
+          {:error, reason} -> {:error, reason}
+        end
+      end,
+      state.retry_delay
+    )
   end
 
   defp etag(headers) do
@@ -1033,39 +973,10 @@ defmodule Fil.Adapter.S3 do
   ## Options
   ## ------------------------------------------------------------------
 
-  # The root is stored as a key prefix: `""` for the bucket root, otherwise the normalized root with a trailing slash.
-  defp parse_root(root) do
-    case Fil.Support.Path.normalize(root) do
-      {:ok, "."} -> {:ok, ""}
-      {:ok, path} -> {:ok, path <> "/"}
-      {:error, :ebadpath} -> {:error, {:invalid_option, {:root, root}}}
-    end
-  end
-
-  defp parse_endpoint(_name, nil), do: {:ok, nil}
-
-  defp parse_endpoint(name, endpoint) do
-    case URI.parse(endpoint) do
-      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
-        {:ok, String.trim_trailing(endpoint, "/")}
-
-      _other ->
-        {:error, {:invalid_option, {name, endpoint}}}
-    end
-  end
-
   defp content_type_header(opts) do
     case Keyword.get(opts, :content_type) do
       nil -> []
       content_type -> [{"content-type", content_type}]
-    end
-  end
-
-  # S3 creates an object only if none exists when the request has `If-None-Match: *`.
-  defp put_if_exists(headers, opts) do
-    case Keyword.get(opts, :if_exists, :overwrite) do
-      :overwrite -> headers
-      :error -> [{"if-none-match", "*"} | headers]
     end
   end
 
@@ -1192,13 +1103,7 @@ defmodule Fil.Adapter.S3 do
         raw: true
       )
 
-    # Every status, 5xx included, comes back as a response and is mapped by the caller. Only a failed connection is an
-    # error here.
-    case Req.request(options) do
-      {:ok, response} -> {:ok, response}
-      {:error, %Req.TransportError{reason: reason}} -> {:error, %Fil.UnavailableError{reason: reason}}
-      {:error, exception} -> {:error, %Fil.UnavailableError{reason: exception}}
-    end
+    Fil.Support.ObjectStore.request(options)
   end
 
   # Req signs every request with SigV4 when the disk has credentials. Without them, requests go out unsigned, which is
@@ -1292,25 +1197,6 @@ defmodule Fil.Adapter.S3 do
   end
 
   ## ------------------------------------------------------------------
-  ## Keys and prefixes
-  ## ------------------------------------------------------------------
-
-  # Paths are relative to the disk root, keys are relative to the bucket. `state.prefix` is `""` or ends in `/`.
-  defp key(state, "."), do: state.prefix
-  defp key(state, path), do: state.prefix <> path
-
-  defp list_prefix(state, "."), do: state.prefix
-  defp list_prefix(state, path), do: state.prefix <> path <> "/"
-
-  defp base_prefix(state, "."), do: state.prefix
-  defp base_prefix(state, path), do: state.prefix <> path
-
-  defp relative(state, key), do: String.replace_prefix(key, state.prefix, "")
-
-  defp under_prefix?(_key, "."), do: true
-  defp under_prefix?(key, prefix), do: key == prefix or String.starts_with?(key, prefix <> "/")
-
-  ## ------------------------------------------------------------------
   ## Listing
   ## ------------------------------------------------------------------
 
@@ -1353,13 +1239,6 @@ defmodule Fil.Adapter.S3 do
     )
   end
 
-  defp parse_xml(body) do
-    case XML.parse(body) do
-      {:ok, element} -> {:ok, element}
-      {:error, :invalid_xml} -> {:error, %Fil.UnavailableError{reason: :invalid_xml}}
-    end
-  end
-
   defp next_token(result) do
     if XML.text(result, "IsTruncated") == "true", do: XML.text(result, "NextContinuationToken")
   end
@@ -1370,15 +1249,23 @@ defmodule Fil.Adapter.S3 do
     String.ends_with?(prefix, "/") and XML.text(contents, "Key") == prefix
   end
 
+  # A key ending in `/` is a directory marker (an empty "folder" made in a console), listed as the directory it stands
+  # for.
   defp object_listing(state, contents) do
-    stat = %Stat{
-      size: integer(XML.text(contents, "Size")),
-      type: :regular,
-      mtime: parse_iso8601(XML.text(contents, "LastModified")),
-      etag: unquote_etag(XML.text(contents, "ETag"))
-    }
+    path = relative(state, XML.text(contents, "Key"))
 
-    {relative(state, XML.text(contents, "Key")), stat}
+    if String.ends_with?(path, "/") do
+      {String.trim_trailing(path, "/"), %Stat{type: :directory}}
+    else
+      stat = %Stat{
+        size: integer(XML.text(contents, "Size")),
+        type: :regular,
+        mtime: parse_iso8601(XML.text(contents, "LastModified")),
+        etag: unquote_etag(XML.text(contents, "ETag"))
+      }
+
+      {path, stat}
+    end
   end
 
   defp prefix_listing(state, common_prefix) do
@@ -1469,36 +1356,4 @@ defmodule Fil.Adapter.S3 do
   defp status_error(_status, _code), do: Fil.UnknownError
 
   defp bucket_region(%{headers: headers}), do: header(headers, "x-amz-bucket-region")
-
-  defp error_code(body) when is_binary(body) do
-    case XML.parse(body) do
-      {:ok, element} -> XML.text(element, "Code")
-      {:error, :invalid_xml} -> nil
-    end
-  end
-
-  defp error_code(_body), do: nil
-
-  ## ------------------------------------------------------------------
-  ## Response values
-  ## ------------------------------------------------------------------
-
-  # Req returns headers as a map of lowercase names to lists of values.
-  defp header(headers, name) do
-    headers
-    |> Map.get(name, [])
-    |> List.first()
-  end
-
-  defp integer(nil), do: nil
-
-  defp integer(value) do
-    case Integer.parse(value) do
-      {integer, _rest} -> integer
-      :error -> nil
-    end
-  end
-
-  defp unquote_etag(nil), do: nil
-  defp unquote_etag(etag), do: String.trim(etag, "\"")
 end
