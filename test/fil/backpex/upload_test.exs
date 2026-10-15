@@ -13,6 +13,9 @@ defmodule Fil.Backpex.UploadTest.Migration do
       add(:docs, {:array, :string}, null: false, default: [])
       add(:logo, :text)
     end
+
+    # A save that fails after the files were stored, on a name that's taken.
+    create(unique_index(:products, [:name]))
   end
 end
 
@@ -128,32 +131,13 @@ defmodule Fil.Backpex.UploadTest do
       end
     end
 
-    test "allows direct: true only when Backpex has the upload_error/4 callback" do
-      field = field(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true})
-
-      options = Fil.Backpex.Upload.__upload_options__(field, form_socket(), true)
-      assert is_function(options.external, 2)
-
-      assert_raise ArgumentError, ~r/can't use direct: true, because this Backpex version has no upload_error\/4/, fn ->
-        Fil.Backpex.Upload.__upload_options__(field, form_socket(), false)
-      end
-    end
-
-    test "detects the upload_error/4 callback in the installed Backpex" do
-      options = %{accept: ~w(.pdf), max_entries: 2, direct: true}
-
-      if function_exported?(Backpex.Fields.Upload, :upload_error, 4) do
-        assert is_function(allowed(:docs, options).external, 2)
-      else
-        assert_raise ArgumentError, ~r/has no upload_error\/4 callback/, fn -> allowed(:docs, options) end
-      end
+    test "signs uploads with direct: true" do
+      assert is_function(allowed(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true}).external, 2)
     end
 
     test "refuses direct: true with if_exists: :overwrite" do
-      field = field(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true, if_exists: :overwrite})
-
       assert_raise ArgumentError, ~r/can't use direct: true with if_exists: :overwrite/, fn ->
-        Fil.Backpex.Upload.__upload_options__(field, form_socket(), true)
+        allowed(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true, if_exists: :overwrite})
       end
     end
 
@@ -230,9 +214,9 @@ defmodule Fil.Backpex.UploadTest do
       |> render_upload("a.png")
 
       html = save(view, %{name: "Chair"})
-      assert html =~ "Remove the files that can&#39;t be uploaded"
+      assert html =~ "remove the files that can&#39;t be uploaded"
 
-      # Backpex shows the reason through `upload_error/4`, and the changeset error doesn't repeat it.
+      # Backpex shows the reason through `upload_error/4` once, at the upload.
       assert html
              |> String.split("You can upload at most 3 file(s)")
              |> length() == 2
@@ -240,17 +224,28 @@ defmodule Fil.Backpex.UploadTest do
       assert Repo.all(Product) == []
     end
 
-    test "logs a failed write, and the record keeps the ref", %{conn: conn} do
+    test "refuses the save when a file can't be written", %{conn: conn} do
       Storage.fail_writes()
       {:ok, view, _html} = live(conn, "/admin/products/new")
       upload(view, :photos, [png("a.png", "photo a")])
 
-      log = capture_log(fn -> assert {:error, {:live_redirect, _to}} = save(view, %{name: "Chair"}) end)
+      log = capture_log(fn -> assert save(view, %{name: "Chair"}) =~ "file could not be stored" end)
 
-      assert log =~ "Fil.Backpex.Upload, field :photos: could not store an upload"
-      [product] = Repo.all(Product)
-      assert [photo] = product.photos
-      refute Fil.exists?(photo)
+      assert log =~ "Upload field :photos could not store a file"
+      assert Repo.all(Product) == []
+    end
+
+    test "deletes the written files when the save fails, and writes them again on the next save", %{conn: conn} = ctx do
+      Repo.insert!(%Product{name: "Chair"})
+      {:ok, view, _html} = live(conn, "/admin/products/new")
+      upload(view, :photos, [png("a.png", "photo a")])
+
+      assert save(view, %{name: "Chair"}) =~ "has already been taken"
+      assert {:ok, []} = Fil.ls(ctx.disk, "products/new")
+
+      assert {:error, {:live_redirect, _to}} = save(view, %{name: "Table"})
+      assert %Product{photos: [photo]} = Repo.get_by!(Product, name: "Table")
+      assert Fil.read!(photo) == "photo a"
     end
   end
 
@@ -310,15 +305,15 @@ defmodule Fil.Backpex.UploadTest do
       assert {:ok, []} = Fil.ls(context.disk, "products")
     end
 
-    test "keeps the replaced avatar when the new one isn't written", %{conn: conn} = context do
+    test "keeps the record and its files when the new avatar isn't written", %{conn: conn} = context do
       {:ok, view, _html} = live(conn, "/admin/products/#{context.product.id}/edit")
       upload(view, :avatar, [png("new.png", "new avatar")])
       Storage.fail_writes()
 
-      log = capture_log(fn -> assert {:error, {:live_redirect, _to}} = save(view, %{name: "Chair"}) end)
+      log = capture_log(fn -> assert save(view, %{name: "Chair"}) =~ "file could not be stored" end)
 
-      assert log =~ "could not store an upload"
-      assert log =~ ~s(kept ["old/avatar.png"])
+      assert log =~ "Upload field :avatar could not store a file"
+      assert %Product{avatar: %Fil.Ref{path: "old/avatar.png"}} = Repo.get!(Product, context.product.id)
       assert Fil.read!(context.avatar) == "old avatar"
     end
 
@@ -347,7 +342,7 @@ defmodule Fil.Backpex.UploadTest do
       render_upload(input, "d.png", 50)
       html = save(view, %{name: "Chair"})
 
-      assert html =~ "The file couldn&#39;t be uploaded"
+      assert html =~ "remove the files that can&#39;t be uploaded"
       assert [%Fil.Ref{path: "old/a.png"}, %Fil.Ref{path: "old/b.png"}] = Repo.get!(Product, context.product.id).photos
       assert {:ok, []} = Fil.ls(context.disk, "products")
     end
@@ -428,15 +423,14 @@ defmodule Fil.Backpex.UploadTest do
       assert Fil.read!(doc) == "PDF"
     end
 
-    test "logs a file the browser never uploaded, and the record keeps the ref", %{conn: conn} do
+    test "refuses the save with a file the browser never uploaded", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/admin/products/new")
       upload(view, :docs, [%{name: "a.pdf", content: "PDF", type: "application/pdf"}])
 
-      log = capture_log(fn -> assert {:error, {:live_redirect, _to}} = save(view, %{name: "Chair"}) end)
+      log = capture_log(fn -> assert save(view, %{name: "Chair"}) =~ "file could not be stored" end)
 
-      assert log =~ "Fil.Backpex.Upload, field :docs: could not store an upload"
-      assert [%Product{docs: [doc]}] = Repo.all(Product)
-      refute Fil.exists?(doc)
+      assert log =~ "Upload field :docs could not store a file"
+      assert Repo.all(Product) == []
     end
 
     test "shows Fil's text for an upload the field refused to sign", %{conn: conn} do
@@ -452,7 +446,7 @@ defmodule Fil.Backpex.UploadTest do
 
     test "refuses a path with another extension when it signs the URL" do
       field = field(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true})
-      %{external: external} = Fil.Backpex.Upload.__upload_options__(field, form_socket(), true)
+      %{external: external} = Fil.Backpex.Upload.__upload_options__(field, form_socket())
       socket = Phoenix.LiveView.allow_upload(form_socket(), :docs, accept: ~w(.pdf), max_entries: 2)
       evil = %Phoenix.LiveView.UploadEntry{upload_config: :docs, uuid: "u", client_name: "evil.html", client_size: 3}
       report = %{evil | client_name: "report.PDF"}

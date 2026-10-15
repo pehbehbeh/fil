@@ -624,8 +624,9 @@ def fields do
 end
 ```
 
-The field stores the new files after the save and deletes the ones the save drops. `Fil.Backpex.Upload` has the
-details: paths, direct uploads, deleting a record's files, and what Backpex's save order means for a failed write.
+The field stores the new files before the save, deletes them again when the save fails, and deletes the ones a
+successful save drops. `Fil.Backpex.Upload` has the details: paths, direct uploads, deleting a record's files, and
+errors.
 
 ## Showing stored files
 

@@ -106,9 +106,9 @@ if Code.ensure_loaded?(Backpex.Field) do
 
     The field implements the upload callbacks of `Backpex.Field` and reads the disk and the number of files from the
     schema each time Backpex calls it. Each new file goes into the record as the ref of
-    `Fil.LiveView.entry_ref/3`, and is written with `Fil.LiveView.store_entry/4` once the record is saved (with
+    `Fil.LiveView.entry_ref/3`, and is written with `Fil.LiveView.store_entry/4` before Backpex saves the record (with
     `direct: true` the browser has written it already, see [Direct uploads](#module-direct-uploads)). The files the
-    save drops are deleted then. It renders as `Backpex.Fields.Upload` does, with Backpex's drop zone, buttons and
+    save drops are deleted after it. It renders as `Backpex.Fields.Upload` does, with Backpex's drop zone, buttons and
     texts, and Backpex's general field options (`label`, `help_text`, `only` and the others in `Backpex.Field`) work as
     on any field.
 
@@ -118,22 +118,22 @@ if Code.ensure_loaded?(Backpex.Field) do
     A single file is replaced by uploading a new one: the stored file stays in the list until the record is saved, and
     the save deletes it. Its remove button clears the field.
 
-    Needs Backpex 0.22.0 or later, whose `Backpex.Field` has the upload callbacks (`consume_upload/5` and the others),
-    an optional dependency of `Fil`, and an adapter with a `:schema` such as `Backpex.Adapters.Ecto`.
+    Needs a Backpex version that stores the files before the save and has the `c:Backpex.Field.discard_uploads/4`
+    callback ([naymspace/backpex#2355](https://github.com/naymspace/backpex/pull/2355), in no release yet), an optional
+    dependency of `Fil`, and an adapter with a `:schema` such as `Backpex.Adapters.Ecto`.
 
     ## Paths
 
     `:path` builds the path of each file, by default with `Fil.LiveView.filename/1`: the entry's UUID and its
-    extension. The field calls it for each form change, for the ref in the record and for the write after the save, so
-    it has to return the same path each time. Build it from `entry.uuid` and values that don't change while the form is
-    open. With 2 arities, it gets the form's assigns too:
+    extension. The field calls it for each form change, for the ref in the record and for the write before the save,
+    so it has to return the same path each time. Build it from `entry.uuid` and values that don't change while the
+    form is open. With 2 arities, it gets the form's assigns too:
 
         path: &"products/\#{&2.current_user.id}/\#{Fil.LiveView.filename(&1)}"
 
     Read only `assigns.item` and what the `on_mount` hooks of the live session assign, such as `current_user`, never
     `changeset` or `form`. `assigns.item` is the record as it was loaded, without the form's changes, and on the new
-    page an empty struct whose id is `nil`. When the path a file was written to isn't in the saved record, the field
-    logs an error.
+    page an empty struct whose id is `nil`.
 
     Paths by the record's id need the id, which a new record gets only from the insert. Move its files in the
     LiveResource's `c:Backpex.LiveResource.on_item_created/2`, which runs after they're written:
@@ -190,18 +190,12 @@ if Code.ensure_loaded?(Backpex.Field) do
     error in the form or at the field, the uploaded files stay on the disk without a record, and a new submit uploads
     them again under new paths. The [Phoenix guide](phoenix.md#files-nobody-consumes) shows how to clean those up.
 
-    `direct: true` needs the `c:Backpex.Field.upload_error/4` callback, which gives the form the text of each upload
-    error. The field implements it with the texts of `Fil.LiveView.upload_error/2`. No Backpex release has the callback
-    yet ([naymspace/backpex#2348](https://github.com/naymspace/backpex/pull/2348) adds it). Backpex releases without
-    it, 0.22.0 and earlier, crash the form when a direct upload fails or is refused, because they have no text for those
-    errors, so `direct: true` raises there.
-
     ## Deleting files
 
     After a save, the field deletes the files the saved record no longer has, which `Fil.Ecto.Ref.removed/2` returns:
-    those removed with the remove button, and a single file replaced by a new one. When a new file of the saved record
-    isn't on the disk, because its write failed, the field keeps the old files and logs an error. A failed delete is
-    logged as a warning, and the file stays on the disk.
+    those removed with the remove button, and a single file replaced by a new one. When the save fails after the new
+    files were written, the field deletes those again (`c:Backpex.Field.discard_uploads/4`). A failed delete is logged
+    as a warning, and the file stays on the disk.
 
     The field compares the saved record with the record as the form loaded it. When two people edit the same record at
     once, one save can delete a file the other one keeps, unless the changeset function uses
@@ -227,25 +221,25 @@ if Code.ensure_loaded?(Backpex.Field) do
 
     ## Errors
 
-    An upload error keeps the record from being saved, and shows at the field with Fil's texts from
-    `Fil.LiveView.upload_error/2`, as `{msgid, bindings}` for the `error_translator_function` in Backpex's config:
+    A file LiveView refused, as too large, not accepted or one too many, shows its error at the file or below the
+    upload, with Fil's text from `Fil.LiveView.upload_error/2` through `c:Backpex.Field.upload_error/4`. Backpex refuses
+    the save until it's cancelled, and while a file isn't uploaded yet, which only a modified client sends.
 
-      * a file LiveView refused, as too large, not accepted or one too many, until it's cancelled. Backpex shows the
-        error at the file or below the upload too, with the text of `c:Backpex.Field.upload_error/4` (its own text on
-        releases without the callback)
+    These errors keep the record from being saved too, and show at the field with Fil's texts, as `{msgid, bindings}`
+    for the `error_translator_function` in Backpex's config:
+
       * a file whose path has an extension `:extensions` doesn't allow
       * in an array field, a new file whose path another new or kept file has
-      * a file that isn't uploaded yet when the form is saved, which only a modified client sends
 
     The number of files a record keeps is the changeset's job: `Ecto.Changeset.validate_length/3` on an array field
     counts the kept and the new files, as soon as a file is picked, and blocks the save before the field writes
     anything (with `direct: true`, the browser has uploaded them already). `:max_entries` is LiveView's limit for one
     upload.
 
-    Backpex saves the record first and writes the files after, outside the transaction, and ignores what the write
-    returns. So a failed write, because the storage is down, a stable path without `if_exists: :overwrite` or a direct
-    upload the browser never finished, leaves the record with a ref to a missing file. The field logs the error, keeps
-    the files the save replaced, and Backpex shows its success message anyway.
+    A file that can't be written, because the storage is down, a stable path without `if_exists: :overwrite` or a
+    direct upload the browser never finished, refuses the save. Backpex logs the error and shows it at the field, the
+    files written before it are deleted, and the form keeps its entries, so the next save writes them again. A record
+    never points at a file that wasn't written.
 
     ## Not supported
 
@@ -267,23 +261,14 @@ if Code.ensure_loaded?(Backpex.Field) do
 
     require Logger
 
-    # Whether `Backpex.Field` has the `upload_error/4` callback, which `Backpex.Fields.Upload` implements and calls on
-    # the field's module for the text of an upload error. Without it, Backpex crashes the form on the errors of external
-    # uploads, so `direct: true` needs it.
-    @upload_error? Code.ensure_loaded?(Backpex.Fields.Upload) and
-                     function_exported?(Backpex.Fields.Upload, :upload_error, 4)
-
     @impl Backpex.Field
     defdelegate render_value(assigns), to: Backpex.Fields.Upload
 
     @impl Backpex.Field
     defdelegate render_form(assigns), to: Backpex.Fields.Upload
 
-    # The text of an upload error in the form, next to the file or below the upload, with Fil's texts. `@impl` only
-    # where `Backpex.Field` has the callback, because it warns for a function that isn't one.
-    @doc false
-    if @upload_error?, do: @impl(Backpex.Field)
-
+    # The text of an upload error in the form, next to the file or below the upload, with Fil's texts.
+    @impl Backpex.Field
     def upload_error(_field, error, upload, _assigns) do
       error
       |> Fil.LiveView.upload_error(upload)
@@ -292,16 +277,15 @@ if Code.ensure_loaded?(Backpex.Field) do
 
     @impl Backpex.Field
     def assign_uploads({name, _options} = field, socket) do
-      options = __upload_options__(field, socket, @upload_error?)
+      options = __upload_options__(field, socket)
       Backpex.Fields.Upload.assign_uploads({name, options}, socket)
     end
 
     # The options `Backpex.Fields.Upload.assign_uploads/2` passes to `allow_upload/3`, with what the field derives from
     # the schema: `accept` from the extensions, `max_entries` for a single file, `external` for direct uploads. The
-    # checks need the schema too, so a field with invalid options raises when its form opens. `upload_error?` says
-    # whether Backpex has the `upload_error/4` callback; the tests pass `false` to test the check.
+    # checks need the schema too, so a field with invalid options raises when its form opens.
     @doc false
-    def __upload_options__({name, options} = field, socket, upload_error?) do
+    def __upload_options__({name, options} = field, socket) do
       # Resource actions build their forms from fields Backpex never validates.
       if socket.assigns[:action_type] == :resource do
         raise ArgumentError,
@@ -311,7 +295,7 @@ if Code.ensure_loaded?(Backpex.Field) do
 
       live_resource = socket.assigns.live_resource
       conf = conf!(field, live_resource)
-      check_options!(conf, options, live_resource, upload_error?)
+      check_options!(conf, options, live_resource)
 
       # `allow_upload/3` gets `external:` only when the key is there.
       external = if conf.direct?, do: %{external: &external(conf, &1, &2)}, else: %{}
@@ -327,33 +311,29 @@ if Code.ensure_loaded?(Backpex.Field) do
 
     # The value for the changeset: the kept refs and those of the new entries. LiveView's `uploaded_entries/2`, which
     # Backpex passes as the 5th argument, returns each list reversed, so the entries come from the upload instead, in
-    # the order of the file input: valid ones, and only done ones on save. A new file replaces a single one.
-    # On save, an entry that isn't done can only come from a modified client, because LiveView's client uploads every
-    # file before it submits. Its file can't be consumed, so the marker makes `before_changeset/6` refuse the save.
+    # the order of the file input. Backpex refuses a save while an entry isn't done or was refused, so all valid entries
+    # count. A new file replaces a single one.
     @impl Backpex.Field
-    def put_upload_change(field, socket, params, item, _uploaded, removed_paths, action) do
+    def put_upload_change(field, socket, params, item, _uploaded, removed_paths, _action) do
       conf = conf!(field, socket.assigns.live_resource)
 
-      entries =
-        socket.assigns
-        |> upload_entries(conf)
-        |> Enum.filter(& &1.valid?)
-
-      {done, in_progress} = Enum.split_with(entries, &(action == :validate or &1.done?))
-      new = Enum.map(done, &entry_ref(conf, &1, socket.assigns))
+      new =
+        for entry <- upload_entries(socket.assigns, conf), entry.valid? do
+          entry_ref(conf, entry, socket.assigns)
+        end
 
       kept =
         item
         |> refs(conf.name)
         |> Enum.reject(&(&1.path in removed_paths))
 
-      params = Map.put(params, Atom.to_string(conf.name), value(conf, kept, new))
-
-      if in_progress == [], do: params, else: Map.put(params, in_progress_key(conf), "true")
+      Map.put(params, Atom.to_string(conf.name), value(conf, kept, new))
     end
 
+    # Runs before the save. An error refuses it: Backpex logs the error, shows it at the field, deletes the files stored
+    # before it with `discard_uploads/4` and keeps the entries for the next save.
     @impl Backpex.Field
-    def consume_upload(field, socket, item, meta, entry) do
+    def consume_upload(field, socket, _item, meta, entry) do
       conf = conf!(field, socket.assigns.live_resource)
       upload = socket.assigns.uploads[conf.upload_key]
 
@@ -364,49 +344,28 @@ if Code.ensure_loaded?(Backpex.Field) do
         max_file_size: upload.max_file_size
       ]
 
-      case Fil.LiveView.store_entry(conf.disk, meta, entry, opts) do
-        {:ok, stored} ->
-          check_saved(conf, stored, item)
-          {:ok, stored}
-
-        {:error, error} ->
-          Logger.error(log_prefix(conf) <> "could not store an upload: " <> Exception.message(error))
-          {:postpone, error}
-      end
+      Fil.LiveView.store_entry(conf.disk, meta, entry, opts)
     end
 
-    # `removed_paths` are the paths of the remove buttons, but a new file also replaces a single one, so the field
-    # compares the record the form loaded with the saved one. If a new file isn't on the disk, its write failed, and
-    # the files it replaced are kept.
+    # Runs after a successful save. `removed_paths` are the paths of the remove buttons, but a new file also replaces a
+    # single one, so the field compares the record the form loaded with the saved one.
     @impl Backpex.Field
     def remove_uploads(field, socket, item, _removed_paths) do
       conf = conf!(field, socket.assigns.live_resource)
-      loaded = socket.assigns.item
       saved = Map.get(item, conf.name)
 
-      removed =
-        loaded
-        |> Ecto.Changeset.change(%{conf.name => saved})
-        |> Fil.Ecto.Ref.removed(conf.name)
+      socket.assigns.item
+      |> Ecto.Changeset.change(%{conf.name => saved})
+      |> Fil.Ecto.Ref.removed(conf.name)
+      |> Enum.each(&rm(conf, &1))
+    end
 
-      if removed != [] do
-        case missing_files(conf, loaded, item) do
-          [] ->
-            Enum.each(removed, &rm(conf, &1))
-
-          missing ->
-            removed_paths = Enum.map(removed, & &1.path)
-            missing_paths = Enum.map(missing, & &1.path)
-
-            Logger.error(
-              log_prefix(conf) <>
-                "kept #{inspect(removed_paths)}, because the saved record has files that aren't on the disk: " <>
-                inspect(missing_paths)
-            )
-        end
-      end
-
-      :ok
+    # Runs when the save fails after `consume_upload/5` stored the files: `stored` are the refs it returned. Backpex
+    # doesn't pass direct uploads, whose entries the next save stores again.
+    @impl Backpex.Field
+    def discard_uploads(field, socket, _item, stored) do
+      conf = conf!(field, socket.assigns.live_resource)
+      Enum.each(stored, &rm(conf, &1))
     end
 
     # Puts the value `put_upload_change/7` built into the changeset, and the errors of the upload. Runs before the
@@ -417,7 +376,7 @@ if Code.ensure_loaded?(Backpex.Field) do
 
       changeset
       |> put_value(attrs, conf)
-      |> add_upload_errors(conf, attrs, assigns)
+      |> add_upload_errors(conf, assigns)
     end
 
     # What the callbacks need: the schema's disk and cardinality, and the field's own options.
@@ -471,10 +430,10 @@ if Code.ensure_loaded?(Backpex.Field) do
         )
     end
 
-    defp check_options!(conf, validated, live_resource, upload_error?) do
+    defp check_options!(conf, validated, live_resource) do
       error =
         max_entries_error(conf.multiple?, validated[:max_entries]) || option_error(conf, validated) ||
-          direct_error(conf, upload_error?)
+          direct_error(conf)
 
       if error, do: raise_config!(conf.name, live_resource, error)
     end
@@ -495,19 +454,12 @@ if Code.ensure_loaded?(Backpex.Field) do
       end
     end
 
-    defp direct_error(%{direct?: false}, _upload_error?), do: nil
-
-    defp direct_error(%{if_exists: :overwrite}, _upload_error?) do
+    defp direct_error(%{direct?: true, if_exists: :overwrite}) do
       "can't use direct: true with if_exists: :overwrite, because the browser would replace the stored file before " <>
         "the record is saved"
     end
 
-    defp direct_error(_conf, false) do
-      "can't use direct: true, because this Backpex version has no upload_error/4 callback in Backpex.Field, and " <>
-        "crashes the form on errors of direct uploads"
-    end
-
-    defp direct_error(_conf, true), do: nil
+    defp direct_error(_conf), do: nil
 
     defp raise_config!(name, live_resource, message) do
       raise ArgumentError, "Fil.Backpex.Upload field #{inspect(name)} in #{inspect(live_resource)} #{message}"
@@ -515,27 +467,6 @@ if Code.ensure_loaded?(Backpex.Field) do
 
     defp value(%{multiple?: true}, kept, new), do: kept ++ new
     defp value(%{multiple?: false}, kept, new), do: List.last(new) || List.first(kept)
-
-    defp in_progress_key(conf), do: "_fil_in_progress_#{conf.name}"
-
-    defp check_saved(conf, stored, item) do
-      if stored.path not in paths(item, conf.name) do
-        Logger.error(
-          log_prefix(conf) <>
-            "stored #{inspect(stored.path)}, which the saved record doesn't have. The :path function has to " <>
-            "return the same path each time"
-        )
-      end
-    end
-
-    # The new files of the saved record that aren't on the disk.
-    defp missing_files(conf, loaded, saved) do
-      loaded_paths = paths(loaded, conf.name)
-
-      saved
-      |> refs(conf.name)
-      |> Enum.reject(&(&1.path in loaded_paths or Fil.exists?(&1)))
-    end
 
     defp rm(conf, file) do
       case Fil.rm(file) do
@@ -564,19 +495,15 @@ if Code.ensure_loaded?(Backpex.Field) do
     defp value?(value, true) when is_list(value), do: Enum.all?(value, &match?(%Fil.Ref{}, &1))
     defp value?(_value, _multiple?), do: false
 
-    # The errors LiveView gave the upload and its entries, an entry that isn't done on save, the extension check of
-    # each valid entry's path, and paths that repeat. They keep the record from being saved until the entry is
-    # cancelled.
-    defp add_upload_errors(changeset, conf, attrs, assigns) do
+    # The extension check of each valid entry's path, and paths that repeat. They keep the record from being saved until
+    # the entry is cancelled. Backpex refuses the save itself while LiveView refused an entry or one isn't done.
+    defp add_upload_errors(changeset, conf, assigns) do
       case assigns[:uploads][conf.upload_key] do
         nil ->
           changeset
 
         upload ->
-          errors =
-            refused_errors(upload) ++
-              in_progress_errors(upload, conf, attrs) ++
-              extension_errors(upload, conf, assigns) ++ path_errors(upload, conf, assigns)
+          errors = extension_errors(upload, conf, assigns) ++ path_errors(upload, conf, assigns)
 
           errors
           |> Enum.uniq()
@@ -584,27 +511,6 @@ if Code.ensure_loaded?(Backpex.Field) do
             Ecto.Changeset.add_error(changeset, conf.name, message, keys)
           end)
       end
-    end
-
-    # With `upload_error/4`, Backpex shows Fil's text of each refusal at the file or below the upload, so the changeset
-    # gets one text that only asks to remove them, instead of the same text a second time.
-    defp refused_errors(upload) do
-      refused =
-        for {_ref, error} <- upload.errors do
-          field_error(error, upload, :upload)
-        end
-
-      cond do
-        refused != [] and @upload_error? -> [{"Remove the files that can't be uploaded", validation: :upload}]
-        refused != [] -> refused
-        # An invalid entry without an error of its own, which LiveView doesn't leave, but it must not be saved either.
-        Enum.any?(upload.entries, &(not &1.valid?)) -> [field_error(:invalid, upload, :upload)]
-        true -> []
-      end
-    end
-
-    defp in_progress_errors(upload, conf, attrs) do
-      if Map.has_key?(attrs, in_progress_key(conf)), do: [field_error(:in_progress, upload, :upload)], else: []
     end
 
     # A path of the field's own can give two new files, or a new and a kept file, the same path in an array field.

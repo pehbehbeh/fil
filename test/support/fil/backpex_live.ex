@@ -58,6 +58,7 @@ defmodule Fil.BackpexTest.Product do
     |> cast(attrs, [:name])
     |> validate_required([:name])
     |> validate_length(:photos, max: 3)
+    |> unique_constraint(:name)
   end
 end
 
@@ -93,7 +94,7 @@ defmodule Fil.BackpexTest.DirectUpload do
   def assign_uploads({name, _options} = field, socket) do
     options =
       field
-      |> Fil.Backpex.Upload.__upload_options__(socket, true)
+      |> Fil.Backpex.Upload.__upload_options__(socket)
       |> Map.update!(:external, &report/1)
 
     Backpex.Fields.Upload.assign_uploads({name, options}, socket)
@@ -127,6 +128,9 @@ defmodule Fil.BackpexTest.DirectUpload do
 
   @impl Backpex.Field
   defdelegate remove_uploads(field, socket, item, removed), to: Fil.Backpex.Upload
+
+  @impl Backpex.Field
+  defdelegate discard_uploads(field, socket, item, stored), to: Fil.Backpex.Upload
 
   @impl Backpex.Field
   defdelegate before_changeset(changeset, attrs, metadata, repo, field, assigns), to: Fil.Backpex.Upload
