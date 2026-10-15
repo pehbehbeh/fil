@@ -162,12 +162,15 @@ defmodule Fil.PluginsTest do
     test "an error a plugin builds gets the context it left out", %{disk: disk} do
       disk =
         Fil.attach(disk, :read_only, fn
-          %Op{name: :write} = op, _next, _opts -> Op.put_result(op, {:error, %Fil.UnsupportedError{reason: :read_only}})
-          op, next, _opts -> next.(op)
+          %Op{name: :write} = op, _next, _opts ->
+            Op.put_result(op, {:error, %Fil.AccessDeniedError{reason: :read_only}})
+
+          op, next, _opts ->
+            next.(op)
         end)
 
       assert {:error, error} = Fil.write(disk, "a.txt", "content")
-      assert error == %Fil.UnsupportedError{op: :write, path: "a.txt", disk: disk, reason: :read_only}
+      assert error == %Fil.AccessDeniedError{op: :write, path: "a.txt", disk: disk, reason: :read_only}
     end
 
     test "a plugin may return its own exception", %{disk: disk} do

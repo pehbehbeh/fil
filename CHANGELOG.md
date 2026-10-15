@@ -24,8 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `c:Fil.Adapter.signed_upload/3` and say with `c:Fil.Adapter.binds_uploads?/1` whether the storage enforces the signed
   size and type, and plugins see uploads as the `:signed_upload` op.
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
-- `Fil.Plugin.ReadOnly` refuses writes, deletes, copies and moves within the disk, and signed uploads with
-  `Fil.AccessDeniedError` and `reason: :read_only`. Reads, listings and URLs pass, and a copy to another disk works.
+- `Fil.Plugin.ReadOnly` lets reads, listings and URLs pass and refuses every other operation (writes, deletes, copies
+  and moves within the disk, signed uploads) with `Fil.AccessDeniedError` and `reason: :read_only`. A copy to another
+  disk works.
 
 ### Changed
 

@@ -1,5 +1,6 @@
 defmodule Fil.Plugin.ReadOnlyTest do
   alias Fil.Adapter.Memory
+  alias Fil.AdapterCase
   alias Fil.Plugin.ReadOnly
 
   use ExUnit.Case, async: true
@@ -24,7 +25,7 @@ defmodule Fil.Plugin.ReadOnlyTest do
            |> read_only?()
 
     assert Fil.read(disk, "notes.txt") == {:ok, "keep"}
-    assert Fil.exists?(disk, "new.txt") == false
+    refute Fil.exists?(disk, "new.txt")
   end
 
   test "refuses deletes, also of a missing file", %{disk: disk} do
@@ -55,22 +56,26 @@ defmodule Fil.Plugin.ReadOnlyTest do
     assert {:ok, [%Fil.Ref{path: "notes.txt"}]} = Fil.ls(disk, ".")
   end
 
-  test "refuses copies from another disk and leaves the source of a move", %{disk: disk} do
+  test "refuses copies from another disk", %{disk: disk} do
     other = Fil.disk(adapter: Memory, root: "other")
     Fil.write!(other, "incoming.txt", "new")
+    incoming = Fil.ref(other, "incoming.txt")
+
+    assert {:error, error} = Fil.cp(incoming, Fil.ref(disk, "incoming.txt"))
+
+    assert %Fil.AccessDeniedError{op: :cp, path: "incoming.txt", disk: ^disk, reason: :read_only} = error
+    refute Fil.exists?(disk, "incoming.txt")
+  end
+
+  test "refuses moves off the disk on the delete, after the copy", %{disk: disk} do
+    other = Fil.disk(adapter: Memory, root: "other")
     notes = Fil.ref(disk, "notes.txt")
 
-    assert other
-           |> Fil.ref("incoming.txt")
-           |> Fil.cp(Fil.ref(disk, "incoming.txt"))
-           |> read_only?()
+    assert {:error, error} = Fil.rename(notes, Fil.ref(other, "moved.txt"))
 
-    assert notes
-           |> Fil.rename(Fil.ref(other, "notes.txt"))
-           |> read_only?()
-
+    assert %Fil.AccessDeniedError{op: :rename, path: "notes.txt", disk: ^disk, reason: :read_only} = error
     assert Fil.read(notes) == {:ok, "keep"}
-    assert Fil.read(other, "notes.txt") == {:ok, "keep"}
+    assert Fil.read(other, "moved.txt") == {:ok, "keep"}
   end
 
   test "copies to another disk", %{disk: disk} do
@@ -84,14 +89,32 @@ defmodule Fil.Plugin.ReadOnlyTest do
     assert Fil.read(copy) == {:ok, "keep"}
   end
 
-  test "refuses signed uploads", %{disk: disk} do
-    disk = Fil.Plugin.URL.attach(disk, base_url: "https://files.example.com", secret: String.duplicate("s", 32))
+  test "refuses signed uploads and passes URLs", %{disk: disk} do
+    disk = Fil.Plugin.URL.attach(disk, base_url: "http://localhost/storage", secret: "secret")
 
     assert disk
            |> Fil.signed_upload("upload.txt")
            |> read_only?()
 
+    assert {:ok, _url} = Fil.url(disk, "notes.txt")
     assert {:ok, _url} = Fil.signed_url(disk, "notes.txt")
+  end
+
+  test "after Fil.Plugin.URL, signs an upload whose write it refuses", %{writable: writable} do
+    disk =
+      writable
+      |> Fil.Plugin.URL.attach(base_url: "http://localhost/storage", secret: "secret")
+      |> ReadOnly.attach()
+
+    assert {:ok, upload} = Fil.signed_upload(disk, "upload.txt")
+
+    headers = Enum.to_list(upload.headers)
+
+    assert {status, _headers, _body} =
+             AdapterCase.plug_request(disk, upload.method, upload.url, body: "x", headers: headers)
+
+    assert status in 400..499
+    refute Fil.exists?(writable, "upload.txt")
   end
 
   test "lets reads, streams, stats and listings through", %{disk: disk} do

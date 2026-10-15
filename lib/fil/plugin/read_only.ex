@@ -2,7 +2,7 @@ defmodule Fil.Plugin.ReadOnly do
   @schema NimbleOptions.new!([])
 
   @moduledoc """
-  Refuses every operation that changes the disk, so its files can be read but not written, copied onto, moved or
+  Refuses every call that would change the disk, so its files can be read but not written, copied onto, moved or
   deleted.
 
       archive =
@@ -12,13 +12,13 @@ defmodule Fil.Plugin.ReadOnly do
       Fil.write(archive, "2025/report.pdf", pdf)
       #=> {:error, %Fil.AccessDeniedError{reason: :read_only}}
 
-  A refused call returns `Fil.AccessDeniedError` with `reason: :read_only`, and the adapter never runs. That covers
-  `Fil.write/4`, `Fil.rm/2`, `Fil.rm_rf/2`, a copy or a move within the disk, and `Fil.signed_upload/3`, on every
-  adapter. `Fil.rm/2` is refused even for a missing file, so the answer doesn't depend on what's stored.
+  Reads, streams, `Fil.stat/2`, listings, `Fil.url/2` and `Fil.signed_url/3` pass. Every other operation returns
+  `Fil.AccessDeniedError` with `reason: :read_only`, and the adapter never runs: `Fil.write/4`, `Fil.rm/2`,
+  `Fil.rm_rf/2`, a copy or a move within the disk, `Fil.signed_upload/3`, and any operation `Fil` adds later.
+  `Fil.rm/2` is refused even for a missing file, so the answer doesn't depend on what's stored.
 
-  Reads, streams, `Fil.stat/2`, listings and URLs pass. A copy to another disk reads this one and writes the other, so
-  it works. A copy from another disk fails on the write, and a move off this disk fails on the delete after the copy,
-  so the copy stays on the other disk.
+  A copy to another disk reads this one and writes the other, so it works. A copy from another disk fails on the
+  write. A move off this disk fails on the delete, after the copy (see `Fil.rename/2`).
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> Fil.write!(disk, "notes.txt", "keep")
@@ -28,11 +28,17 @@ defmodule Fil.Plugin.ReadOnly do
       {:ok, "keep"}
 
   The plugin takes no options.
+
+  ## Order
+
+  Attach this plugin before the others (first in `plugins:`), so it sees every call. `Fil.Plugin.URL` answers
+  `Fil.signed_upload/3` without the plugins after it, so with `Fil.Plugin.URL` first, the disk signs an upload URL, and
+  the upload fails when `Fil.Plug` writes it. Nothing is stored either way.
   """
 
   alias Fil.Op
 
-  @refused [:write, :rm, :rm_rf, :cp, :rename, :signed_upload]
+  @allowed [:read, :stat, :ls, :url, :signed_url]
 
   @doc """
   Attaches the plugin to `disk` under the name `Fil.Plugin.ReadOnly`.
@@ -49,10 +55,10 @@ defmodule Fil.Plugin.ReadOnly do
   def call(%Op{name: name} = op, next, opts) do
     NimbleOptions.validate!(opts, @schema)
 
-    if name in @refused do
-      Op.put_result(op, {:error, %Fil.AccessDeniedError{reason: :read_only}})
-    else
+    if name in @allowed do
       next.(op)
+    else
+      Op.put_result(op, {:error, %Fil.AccessDeniedError{reason: :read_only}})
     end
   end
 end
