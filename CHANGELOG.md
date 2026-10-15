@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `c:Fil.Adapter.signed_upload/3` and say with `c:Fil.Adapter.binds_uploads?/1` whether the storage enforces the signed
   size and type, and plugins see uploads as the `:signed_upload` op.
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
+- `Fil.Adapter.Null` is a disk that stores nothing: writes succeed and drop the content, and every file is missing.
+  It's for dry runs, environments with storage turned off and tests that don't read files back. It reads a stream to
+  the end, so a failing stream or a plugin that refuses the content still fails the write.
+  ([#46](https://github.com/pehbehbeh/fil/pull/46))
 
 ### Changed
 
