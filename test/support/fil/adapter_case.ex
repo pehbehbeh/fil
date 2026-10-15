@@ -375,7 +375,8 @@ defmodule Fil.AdapterCase do
         assert {:ok, stream} = Fil.stream(disk, "big.bin")
         chunks = Enum.to_list(stream)
 
-        assert length(chunks) > 1
+        # How many chunks depends on the storage: a cloud adapter passes on what the connection delivers, which can be
+        # the whole file. The adapters that choose their chunk size test it on their own.
         assert Enum.all?(chunks, &(is_binary(&1) and &1 != ""))
         assert IO.iodata_to_binary(chunks) == content
 
