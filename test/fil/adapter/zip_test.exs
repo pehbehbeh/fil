@@ -385,8 +385,10 @@ defmodule Fil.Adapter.ZipTest do
         |> Fil.stream!("zeros.bin")
         |> Enum.map(&byte_size/1)
 
+      # zlib's buffer size is up to the OTP release (16 KiB on OTP 29), so the test only checks that the entry isn't
+      # inflated in one piece.
       assert Enum.sum(sizes) == 4_000_000
-      assert Enum.max(sizes) <= 16_384
+      assert Enum.max(sizes) <= 400_000
     end
   end
 
