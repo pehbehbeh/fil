@@ -1,8 +1,7 @@
 # Installation
 
 This guide sets up `Fil` in an application with two disks, `uploads` and `backups`. They're local directories in
-development, in memory in tests and S3 buckets in production. For Azure Blob Storage, use `Fil.Adapter.AzureBlob` in
-production instead, with the options its page lists.
+development, in memory in tests and S3 buckets or Azure Blob Storage containers in production.
 
 > #### Info {: .info}
 >
@@ -127,8 +126,26 @@ if config_env() == :prod do
 end
 ```
 
-`Fil.Adapter.S3` lists every option. Keep the disks out of `config/config.exs`: `Config` merges keyword lists, so a
-`root:` set there would end up in the S3 options too, and `Fil.disk/1` raises on options the adapter doesn't know.
+With Azure Blob Storage, each disk is a container of one storage account:
+
+```elixir
+# config/runtime.exs
+if config_env() == :prod do
+  azure = [
+    adapter: Fil.Adapter.AzureBlob,
+    account: "myapp",
+    account_key: System.fetch_env!("AZURE_STORAGE_KEY")
+  ]
+
+  config :my_app, MyApp.Storage,
+    uploads: azure ++ [container: "uploads"],
+    backups: azure ++ [container: "backups"]
+end
+```
+
+`Fil.Adapter.S3` and `Fil.Adapter.AzureBlob` list every option, such as a SAS token in place of the account key. Keep
+the disks out of `config/config.exs`: `Config` merges keyword lists, so a `root:` set there would end up in the
+production options too, and `Fil.disk/1` raises on options the adapter doesn't know.
 
 ## Signed URLs
 
@@ -140,10 +157,10 @@ Fil.signed_url(disk, "avatars/1.png", expires_in: 300)
 Fil.signed_upload(disk, "avatars/2.png", content_type: "image/png", expires_in: 300)
 ```
 
-S3 signs its own URLs. Local and memory disks can't, so `Fil.Plugin.URL` signs them and `Fil.Plug` serves them from
-your application. Production doesn't need the plugin, so it goes into the development and test config. Each entry
-under `plugins:` names the plugin's callback and its options, and `Fil.disk/1` attaches them before the storage module
-attaches its own:
+S3 and Azure sign their own URLs. Local and memory disks can't, so `Fil.Plugin.URL` signs them and `Fil.Plug` serves
+them from your application. Production doesn't need the plugin, so it goes into the development and test config. Each
+entry under `plugins:` names the plugin's callback and its options, and `Fil.disk/1` attaches them before the storage
+module attaches its own:
 
 ```elixir
 # config/dev.exs
@@ -175,7 +192,7 @@ uploads: [
 ]
 ```
 
-In production, `uploads` has no `Fil.Plugin.URL`, so its URLs go to S3 and the plug lets every request pass.
+In production, `uploads` has no `Fil.Plugin.URL`, so its URLs go to S3 or Azure and the plug lets every request pass.
 `Fil.Plug` also serves public files without a signature, see its documentation.
 
 ## Uploads and temporary files
@@ -260,4 +277,4 @@ Fil.Adapter.Memory.allow(self(), MyApp.Thumbnailer)
 ```
 
 The adapters differ only in edge cases, listed under Operations on each adapter's page (`Fil.Adapter.Memory` for the
-tests, `Fil.Adapter.S3` for production).
+tests, `Fil.Adapter.S3` or `Fil.Adapter.AzureBlob` for production).
