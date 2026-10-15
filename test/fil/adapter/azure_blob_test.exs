@@ -303,7 +303,7 @@ defmodule Fil.Adapter.AzureBlobTest do
       assert {:ok, stream} = Fil.stream(disk(), "a.txt")
       assert [%{method: "HEAD"}] = requests()
 
-      assert Enum.join(stream) == "content"
+      assert Enum.to_list(stream) == ["con", "tent"]
       assert [%{method: "GET", assigns: %{label: {AzureBlob, :stream, "a.txt"}}}] = requests()
     end
 
