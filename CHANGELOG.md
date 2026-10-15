@@ -24,6 +24,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `c:Fil.Adapter.signed_upload/3` and say with `c:Fil.Adapter.binds_uploads?/1` whether the storage enforces the signed
   size and type, and plugins see uploads as the `:signed_upload` op.
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
+- `Fil.Backpex.Upload` is a [Backpex](https://backpex.live) upload field for `Fil.Ecto.Ref` and
+  `{:array, Fil.Ecto.Ref}` fields. It implements Backpex's upload callbacks itself and gets the disk from the schema,
+  so a LiveResource gives it no callbacks. It writes the new files before the save, so a record never points at a
+  file that wasn't written, deletes them again when the save fails, deletes the files a successful save drops, and
+  refuses a file whose path has an extension that `accept:` or `extensions:` doesn't allow before the record is saved.
+  It needs a Backpex version that stores files before the save
+  ([naymspace/backpex#2355](https://github.com/naymspace/backpex/pull/2355), in no release yet). Backpex is a new
+  optional dependency.
+  ([#29](https://github.com/pehbehbeh/fil/pull/29))
 
 ### Changed
 
