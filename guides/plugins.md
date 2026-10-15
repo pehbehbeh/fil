@@ -24,6 +24,7 @@ Fil.read(disk, "hello.txt")
   * `Fil.Plugin.URL`: builds URLs for any disk, served by `Fil.Plug` from your application
   * `Fil.Plugin.Thumbnails`: writes resized copies of images next to them, with the optional Vix dependency
   * `Fil.Plugin.Validation`: refuses writes by size, by content type (from the magic bytes) or by extension
+  * `Fil.Plugin.ReadOnly`: refuses every call that would change the disk
 
 ## The callback
 

@@ -29,7 +29,8 @@ defmodule Fil.AccessDeniedError do
   The storage refused access. Fix the permissions or the credentials.
 
   Adapters return it for missing file permissions, a read-only filesystem, and credentials or a bucket policy that
-  don't allow the operation.
+  don't allow the operation. `Fil.Plugin.ReadOnly` returns it with `reason: :read_only` for every call that would change
+  its disk.
   """
 
   defexception [:op, :path, :disk, :reason]
