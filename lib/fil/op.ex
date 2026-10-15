@@ -7,8 +7,8 @@ defmodule Fil.Op do
   duration includes the plugins.
 
     * `:disk`: the `Fil.Disk` the operation runs on
-    * `:name`: the operation, `:read`, `:write`, `:stat`, `:ls`, `:rm`, `:rm_rf`, `:cp`, `:rename`, `:url` or
-      `:signed_url`
+    * `:name`: the operation, `:read`, `:write`, `:stat`, `:ls`, `:rm`, `:rm_rf`, `:cp`, `:rename`, `:url`,
+      `:signed_url` or `:signed_upload`
     * `:path`: the normalized path, relative to the disk root
     * `:dest`: the destination path of a `:cp` or `:rename` on the same disk, `nil` otherwise
     * `:content`: the content of a `:write`, `nil` otherwise: iodata, or a stream of it. Change it with
@@ -37,7 +37,7 @@ defmodule Fil.Op do
   @enforce_keys [:disk, :name, :path]
   defstruct [:disk, :name, :path, :dest, :content, :result, streaming: false, options: [], private: %{}]
 
-  @type name :: :read | :write | :stat | :ls | :rm | :rm_rf | :cp | :rename | :url | :signed_url
+  @type name :: :read | :write | :stat | :ls | :rm | :rm_rf | :cp | :rename | :url | :signed_url | :signed_upload
 
   @type t :: %__MODULE__{
           disk: Disk.t(),
@@ -618,8 +618,8 @@ defmodule Fil.Op do
     apply(module, name, [state, op.path, op.dest, op.options])
   end
 
-  # URLs are optional callbacks. An adapter without one leaves it to a plugin.
-  defp call_adapter(%__MODULE__{name: name} = op, module, state) when name in [:url, :signed_url] do
+  # URLs and uploads are optional callbacks. An adapter without one leaves it to a plugin.
+  defp call_adapter(%__MODULE__{name: name} = op, module, state) when name in [:url, :signed_url, :signed_upload] do
     if Code.ensure_loaded?(module) and function_exported?(module, name, 3) do
       apply(module, name, [state, op.path, op.options])
     else

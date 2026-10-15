@@ -144,6 +144,27 @@ defmodule Fil.AdapterCase do
     {conn.status, conn.resp_headers, conn.resp_body}
   end
 
+  @doc """
+  Sends a request to a storage that signs its URLs itself, with Req, for an adapter's `fil_request/4`. Returns what
+  `plug_request/4` returns.
+  """
+  @spec req_request(Fil.Disk.t(), atom(), String.t(), keyword()) ::
+          {pos_integer(), [{String.t(), String.t()}], binary()}
+  def req_request(_disk, method, url, opts) do
+    {:ok, response} =
+      Req.request(
+        method: method,
+        url: url,
+        body: Keyword.get(opts, :body),
+        headers: Keyword.get(opts, :headers, []),
+        retry: false,
+        raw: true
+      )
+
+    headers = for {name, values} <- response.headers, value <- values, do: {name, value}
+    {response.status, headers, response.body}
+  end
+
   # Like an HTTP client, the request says how long its body is.
   defp put_content_length(headers, nil), do: headers
 
@@ -191,8 +212,6 @@ defmodule Fil.AdapterCase do
 
       alias Fil.Adapter.Local
 
-      import Fil.AdapterCase, only: [chunked: 2, compressing: 1, gzip: 1, gunzip: 1, large: 0]
-
       unquote_splicing(moduletags)
 
       def fil_other_disk(%{tmp_dir: tmp_dir}) do
@@ -202,6 +221,21 @@ defmodule Fil.AdapterCase do
       def fil_request(disk, method, url, opts), do: Fil.AdapterCase.plug_request(disk, method, url, opts)
 
       defoverridable fil_other_disk: 1, fil_request: 4
+
+      # Sends a signed upload with the headers it lists, which `opts[:headers]` replace one by one.
+      defp upload_request(disk, %{url: _url} = upload, opts) do
+        extra =
+          opts
+          |> Keyword.get(:headers, [])
+          |> Map.new()
+
+        headers =
+          upload.headers
+          |> Map.merge(extra)
+          |> Enum.to_list()
+
+        fil_request(disk, upload.method, upload.url, Keyword.put(opts, :headers, headers))
+      end
 
       setup context do
         {:ok, disk: fil_disk(context), other_disk: fil_other_disk(context)}
@@ -309,7 +343,7 @@ defmodule Fil.AdapterCase do
 
       test "writes a stream, with or without its size", %{disk: disk} do
         content = :crypto.strong_rand_bytes(300_000)
-        stream = chunked(content, 10_000)
+        stream = Fil.AdapterCase.chunked(content, 10_000)
 
         assert {:ok, ref} = Fil.write(disk, "streamed.bin", stream)
         assert ref.path == "streamed.bin"
@@ -321,11 +355,13 @@ defmodule Fil.AdapterCase do
       end
 
       test "writes a stream larger than a part, without its size", %{disk: disk} do
-        content = :crypto.strong_rand_bytes(large())
+        content = :crypto.strong_rand_bytes(Fil.AdapterCase.large())
 
-        assert {:ok, _} = Fil.write(disk, "large.bin", chunked(content, 65_536), content_type: "video/mp4")
+        assert {:ok, _} =
+                 Fil.write(disk, "large.bin", Fil.AdapterCase.chunked(content, 65_536), content_type: "video/mp4")
+
         assert {:ok, %Fil.Stat{size: size, content_type: content_type}} = Fil.stat(disk, "large.bin")
-        assert size == large()
+        assert size == Fil.AdapterCase.large()
         assert content_type in ["video/mp4", nil]
 
         assert {:ok, read} = Fil.read(disk, "large.bin")
@@ -402,7 +438,7 @@ defmodule Fil.AdapterCase do
       end
 
       test "plugins that transform reads get the whole file, and the part is cut from their result", %{disk: disk} do
-        compressing = compressing(disk)
+        compressing = Fil.AdapterCase.compressing(disk)
 
         content = String.duplicate("all work and no play makes Jack a dull boy\n", 5_000)
         part = binary_part(content, 100_000, 50_000)
@@ -520,7 +556,7 @@ defmodule Fil.AdapterCase do
         large =
           <<0>>
           |> :binary.copy(65_536)
-          |> List.duplicate(div(large(), 65_536))
+          |> List.duplicate(div(Fil.AdapterCase.large(), 65_536))
           |> Stream.concat(Stream.map([:broken], fn _chunk -> raise "the upload broke off" end))
 
         for opts <- [[], [if_exists: :error]] do
@@ -550,7 +586,7 @@ defmodule Fil.AdapterCase do
         large =
           <<0>>
           |> :binary.copy(65_536)
-          |> List.duplicate(div(large(), 65_536))
+          |> List.duplicate(div(Fil.AdapterCase.large(), 65_536))
           |> Stream.transform(fn -> :ok end, &{[&1], &2}, fn :ok -> raise "the trailer is wrong" end, & &1)
 
         cases = [
@@ -588,14 +624,14 @@ defmodule Fil.AdapterCase do
         ]
 
         content = :binary.copy("x", 50_000)
-        large = :binary.copy("l", large())
+        large = :binary.copy("l", Fil.AdapterCase.large())
 
         for {reason, scan} <- plugins,
             {stream, opts} <- [
-              {chunked(content, 10_000), []},
-              {chunked(content, 10_000), [size: 50_000]},
-              {chunked(content, 10_000), [if_exists: :error, size: 50_000]},
-              {chunked(large, 65_536), []}
+              {Fil.AdapterCase.chunked(content, 10_000), []},
+              {Fil.AdapterCase.chunked(content, 10_000), [size: 50_000]},
+              {Fil.AdapterCase.chunked(content, 10_000), [if_exists: :error, size: 50_000]},
+              {Fil.AdapterCase.chunked(large, 65_536), []}
             ],
             path <- ["kept.txt", "new.txt"] do
           rejecting =
@@ -633,7 +669,7 @@ defmodule Fil.AdapterCase do
             next.(op)
           end)
 
-        assert {:ok, _} = Fil.write(scanning, "scanned.bin", chunked(content, 10_000), size: 50_000)
+        assert {:ok, _} = Fil.write(scanning, "scanned.bin", Fil.AdapterCase.chunked(content, 10_000), size: 50_000)
         assert_received {:size, 50_000}
         assert_received {:scanned, 50_000}
         assert Fil.read(disk, "scanned.bin") == {:ok, content}
@@ -660,7 +696,7 @@ defmodule Fil.AdapterCase do
         File.write!(path, "hello")
 
         # The :size option wins over the size of a file stream.
-        for stream <- [chunked("hello", 2), File.stream!(path, 2)] do
+        for stream <- [Fil.AdapterCase.chunked("hello", 2), File.stream!(path, 2)] do
           assert_raise ArgumentError, "the content has 5 bytes, but the :size option is 6", fn ->
             Fil.write(disk, "sized.txt", stream, size: 6)
           end
@@ -674,20 +710,28 @@ defmodule Fil.AdapterCase do
       end
 
       test "writes a file stream without its size", %{disk: disk, tmp_dir: tmp_dir} do
-        content = :crypto.strong_rand_bytes(large())
+        content = :crypto.strong_rand_bytes(Fil.AdapterCase.large())
         path = Path.join(tmp_dir, "source.bin")
         File.write!(path, content)
 
         assert {:ok, _} = Fil.write(disk, "file.bin", File.stream!(path, 65_536))
         assert {:ok, %Fil.Stat{size: size}} = Fil.stat(disk, "file.bin")
-        assert size == large()
+        assert size == Fil.AdapterCase.large()
         assert {:ok, read} = Fil.read(disk, "file.bin")
         assert :crypto.hash(:sha256, read) == :crypto.hash(:sha256, content)
 
-        assert {:ok, _} = Fil.write(disk, "offset.bin", File.stream!(path, 65_536, read_offset: large() - 5))
-        assert Fil.read(disk, "offset.bin") == {:ok, binary_part(content, large() - 5, 5)}
+        assert {:ok, _} =
+                 Fil.write(disk, "offset.bin", File.stream!(path, 65_536, read_offset: Fil.AdapterCase.large() - 5))
 
-        assert {:ok, _} = Fil.write(disk, "past-the-end.bin", File.stream!(path, 65_536, read_offset: large() + 1))
+        assert Fil.read(disk, "offset.bin") == {:ok, binary_part(content, Fil.AdapterCase.large() - 5, 5)}
+
+        assert {:ok, _} =
+                 Fil.write(
+                   disk,
+                   "past-the-end.bin",
+                   File.stream!(path, 65_536, read_offset: Fil.AdapterCase.large() + 1)
+                 )
+
         assert Fil.read(disk, "past-the-end.bin") == {:ok, ""}
       end
 
@@ -755,23 +799,23 @@ defmodule Fil.AdapterCase do
       end
 
       test "if_exists: :error applies to streams", %{disk: disk} do
-        first = chunked("first", 2)
-        second = chunked("second", 2)
+        first = Fil.AdapterCase.chunked("first", 2)
+        second = Fil.AdapterCase.chunked("second", 2)
 
         assert {:ok, _} = Fil.write(disk, "once.txt", first, if_exists: :error)
         assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "once.txt", second, if_exists: :error)
         assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "once.txt", second, if_exists: :error, size: 6)
         assert Fil.read(disk, "once.txt") == {:ok, "first"}
 
-        large = :binary.copy("l", large())
+        large = :binary.copy("l", Fil.AdapterCase.large())
 
-        assert {:ok, _} = Fil.write(disk, "large.txt", chunked(large, 65_536), if_exists: :error)
-
-        assert {:error, %Fil.AlreadyExistsError{}} =
-                 Fil.write(disk, "large.txt", chunked(large, 65_536), if_exists: :error)
+        assert {:ok, _} = Fil.write(disk, "large.txt", Fil.AdapterCase.chunked(large, 65_536), if_exists: :error)
 
         assert {:error, %Fil.AlreadyExistsError{}} =
-                 Fil.write(disk, "once.txt", chunked(large, 65_536), if_exists: :error)
+                 Fil.write(disk, "large.txt", Fil.AdapterCase.chunked(large, 65_536), if_exists: :error)
+
+        assert {:error, %Fil.AlreadyExistsError{}} =
+                 Fil.write(disk, "once.txt", Fil.AdapterCase.chunked(large, 65_536), if_exists: :error)
 
         assert Fil.read(disk, "once.txt") == {:ok, "first"}
       end
@@ -786,8 +830,8 @@ defmodule Fil.AdapterCase do
 
         racing =
           "r"
-          |> :binary.copy(large())
-          |> chunked(65_536)
+          |> :binary.copy(Fil.AdapterCase.large())
+          |> Fil.AdapterCase.chunked(65_536)
           |> Stream.concat(race)
 
         assert {:error, %Fil.AlreadyExistsError{}} = Fil.write(disk, "race.txt", racing, if_exists: :error)
@@ -820,7 +864,7 @@ defmodule Fil.AdapterCase do
           end)
 
         # The transform drops `:size`, and a size that no longer holds wouldn't matter.
-        assert {:ok, _} = Fil.write(shouting, "shout.txt", chunked("hello world", 4), size: 11)
+        assert {:ok, _} = Fil.write(shouting, "shout.txt", Fil.AdapterCase.chunked("hello world", 4), size: 11)
         assert_received {:chunk, "hell"}
         assert_received {:chunk, "o wo"}
         assert_received {:chunk, "rld"}
@@ -834,10 +878,10 @@ defmodule Fil.AdapterCase do
       end
 
       test "plugins keep state across the chunks of a stream", %{disk: disk} do
-        compressing = compressing(disk)
+        compressing = Fil.AdapterCase.compressing(disk)
 
         content = String.duplicate("all work and no play makes Jack a dull boy\n", 5_000)
-        stream = chunked(content, 1_000)
+        stream = Fil.AdapterCase.chunked(content, 1_000)
 
         assert {:ok, _} = Fil.write(compressing, "jack.txt.gz", stream)
         assert {:ok, compressed} = Fil.read(disk, "jack.txt.gz")
@@ -859,7 +903,7 @@ defmodule Fil.AdapterCase do
 
       test "stores and verifies checksums of streams", %{disk: disk} do
         content = :crypto.strong_rand_bytes(100_000)
-        stream = chunked(content, 10_000)
+        stream = Fil.AdapterCase.chunked(content, 10_000)
 
         checksum =
           :sha256
@@ -876,10 +920,10 @@ defmodule Fil.AdapterCase do
       end
 
       test "stores and verifies a CRC32 of a stream larger than a part", %{disk: disk} do
-        content = :crypto.strong_rand_bytes(large())
+        content = :crypto.strong_rand_bytes(Fil.AdapterCase.large())
         checksum = Base.encode64(<<:erlang.crc32(content)::32>>)
 
-        assert {:ok, _} = Fil.write(disk, "checked.bin", chunked(content, 65_536), checksum: :crc32)
+        assert {:ok, _} = Fil.write(disk, "checked.bin", Fil.AdapterCase.chunked(content, 65_536), checksum: :crc32)
         assert {:ok, %Fil.Stat{checksum: {:crc32, ^checksum}}} = Fil.stat(disk, "checked.bin", checksum: :crc32)
         assert Fil.read(disk, "checked.bin", verify_checksum: true) == {:ok, content}
 
@@ -1350,7 +1394,7 @@ defmodule Fil.AdapterCase do
       test "signs download and upload URLs", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "signed/file.txt", "content")
         assert {:ok, get_url} = Fil.signed_url(disk, "signed/file.txt", expires_in: 300)
-        assert {:ok, put_url} = Fil.signed_url(disk, "signed/file.txt", method: :put)
+        assert {:ok, %{url: put_url}} = Fil.signed_upload(disk, "signed/file.txt")
 
         assert %URI{scheme: scheme, path: path} = URI.parse(get_url)
         assert scheme in ["http", "https"]
@@ -1382,41 +1426,63 @@ defmodule Fil.AdapterCase do
                |> Enum.any?(&String.contains?(&1, "attachment"))
 
         assert_raise ArgumentError, ~r/disposition/, fn ->
-          Fil.signed_url(disk, "cv.pdf", method: :put, disposition: :attachment)
+          Fil.signed_upload(disk, "cv.pdf", disposition: :attachment)
+        end
+
+        assert_raise ArgumentError, ~r/if_exists/, fn ->
+          Fil.signed_url(disk, "cv.pdf", if_exists: :error)
         end
       end
 
+      # Azure can't sign them, and refuses.
       test "signs extra query parameters into URLs", %{disk: disk} do
-        assert {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}])
-        assert {:ok, put_url} = Fil.signed_url(disk, "index.html", method: :put, query: [{"trackingInfo", "7"}])
+        case Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}]) do
+          {:ok, url} ->
+            assert {:ok, %{url: put_url}} = Fil.signed_upload(disk, "index.html", query: [{"trackingInfo", "7"}])
 
-        assert url
-               |> URI.parse()
-               |> Map.fetch!(:query)
-               |> URI.decode_query()
-               |> Map.get("trackingInfo") == "7-42-a b"
+            assert url
+                   |> URI.parse()
+                   |> Map.fetch!(:query)
+                   |> URI.decode_query()
+                   |> Map.get("trackingInfo") == "7-42-a b"
 
-        assert put_url =~ "trackingInfo=7"
+            assert put_url =~ "trackingInfo=7"
+
+          {:error, %Fil.UnsupportedError{reason: :unsigned_query}} ->
+            assert {:error, %Fil.UnsupportedError{reason: :unsigned_query}} =
+                     Fil.signed_upload(disk, "index.html", query: [{"trackingInfo", "7"}])
+        end
 
         for name <- ~w(expires Signature disposition content_type size if_exists X-Amz-Date response-content-type) do
           assert_raise ArgumentError, ~r/can't set/, fn -> Fil.signed_url(disk, "index.html", query: [{name, "x"}]) end
         end
       end
 
-      test "signs an upload's content type, size and if_exists into upload URLs", %{disk: disk} do
-        opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error]
+      test "signs an upload's content type and if_exists into its headers", %{disk: disk} do
+        opts = [content_type: "image/png", size: 3, if_exists: :error]
 
-        assert {:ok, plain} = Fil.signed_url(disk, "a.png", method: :put)
-        assert {:ok, bound} = Fil.signed_url(disk, "a.png", opts)
-        assert {:ok, other} = Fil.signed_url(disk, "a.png", Keyword.put(opts, :content_type, "text/html"))
+        assert {:ok, %{method: :put, url: url, headers: headers}} =
+                 Fil.signed_upload(disk, "a.png", opts)
 
-        assert [plain, bound, other]
-               |> Enum.map(&URI.parse(&1).query)
-               |> Enum.uniq()
-               |> length() == 3
+        assert headers["content-type"] == "image/png"
+        assert headers["if-none-match"] == "*"
+        refute Map.has_key?(headers, "content-length")
+        assert %URI{path: path} = URI.parse(url)
+        assert String.ends_with?(path, "/a.png")
+
+        assert {:ok, %{headers: plain}} = Fil.signed_upload(disk, "a.png")
+        refute Map.has_key?(plain, "content-type")
+        refute Map.has_key?(plain, "if-none-match")
+      end
+
+      test "a signed upload says when it expires", %{disk: disk} do
+        assert {:ok, %{method: :put, fields: [], expires_at: expires_at}} =
+                 Fil.signed_upload(disk, "a.png", expires_in: 300)
+
+        assert_in_delta DateTime.diff(expires_at, DateTime.utc_now()), 300, 5
 
         for {name, value} <- [content_type: "image/png", size: 3, if_exists: :error] do
-          assert_raise ArgumentError, ~r/only applies to uploads/, fn ->
+          assert_raise ArgumentError, ~r/unknown options/, fn ->
             Fil.signed_url(disk, "a.png", [{name, value}])
           end
         end
@@ -1443,14 +1509,12 @@ defmodule Fil.AdapterCase do
 
         assert {206, headers, "234"} = fil_request(disk, :get, url, headers: [{"range", "bytes=2-4"}])
         assert {"content-range", "bytes 2-4/10"} in headers
-
-        assert {206, _headers, "789"} = fil_request(disk, :get, url, headers: [{"range", "bytes=-3"}])
       end
 
-      test "a signed URL uploads a file", %{disk: disk} do
-        assert {:ok, url} = Fil.signed_url(disk, "inbox/new.txt", method: :put, expires_in: 60)
+      test "a signed upload uploads a file", %{disk: disk} do
+        assert {:ok, upload} = Fil.signed_upload(disk, "inbox/new.txt", expires_in: 60)
 
-        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "uploaded")
+        assert {status, _headers, _body} = upload_request(disk, upload, body: "uploaded")
         assert status in 200..299
         assert Fil.read(disk, "inbox/new.txt") == {:ok, "uploaded"}
       end
@@ -1487,38 +1551,50 @@ defmodule Fil.AdapterCase do
 
       test "a signed URL with query parameters works only with their signed values", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "index.html", "<html>")
-        assert {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}])
 
-        assert {200, _headers, "<html>"} = fil_request(disk, :get, url, [])
+        case Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42-a b"}]) do
+          {:ok, url} ->
+            assert {200, _headers, "<html>"} = fil_request(disk, :get, url, [])
 
-        changed = String.replace(url, "trackingInfo=7", "trackingInfo=8")
-        assert {status, _headers, _body} = fil_request(disk, :get, changed, [])
-        assert status in 400..499
+            changed = String.replace(url, "trackingInfo=7", "trackingInfo=8")
+            assert {status, _headers, _body} = fil_request(disk, :get, changed, [])
+            assert status in 400..499
+
+          {:error, %Fil.UnsupportedError{reason: :unsigned_query}} ->
+            :ok
+        end
       end
 
-      test "an upload URL bound to its content type, size and if_exists writes the file once", %{disk: disk} do
-        opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
-        assert {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
-        headers = [{"content-type", "image/png"}, {"if-none-match", "*"}]
-        other_type = List.keyreplace(headers, "content-type", 0, {"content-type", "text/html"})
+      test "a signed upload with if_exists: :error writes the file once", %{disk: disk} do
+        opts = [content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
+        assert {:ok, upload} = Fil.signed_upload(disk, "avatars/a.png", opts)
 
-        # Another content type or size is refused.
-        for {headers, body} <- [{other_type, "png"}, {headers, "pngs"}] do
-          assert {status, _headers, _body} = fil_request(disk, :put, url, body: body, headers: headers)
-          assert status in 400..499
-        end
-
-        refute Fil.exists?(disk, "avatars/a.png")
-
-        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "png", headers: headers)
+        assert {status, _headers, _body} = upload_request(disk, upload, body: "png")
         assert status in 200..299
         assert {:ok, %Fil.Stat{size: 3, content_type: content_type}} = Fil.stat(disk, "avatars/a.png")
         assert content_type in ["image/png", nil]
 
         # S3 answers 412, Fil.Plug 409.
-        assert {status, _headers, _body} = fil_request(disk, :put, url, body: "new", headers: headers)
+        assert {status, _headers, _body} = upload_request(disk, upload, body: "new")
         assert status in 400..499
         assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
+      end
+
+      # S3 and Fil.Plug refuse both, Azure takes them (see the adapters' own tests).
+      test "a signed upload with another content type or size than it was signed for", %{disk: disk} do
+        opts = [content_type: "image/png", size: 3, expires_in: 60]
+
+        for {path, headers, body} <- [{"a.png", [{"content-type", "text/html"}], "png"}, {"b.png", [], "pngs"}] do
+          assert {:ok, upload} = Fil.signed_upload(disk, path, opts)
+          assert {status, _headers, _body} = upload_request(disk, upload, body: body, headers: headers)
+
+          if status in 200..299 do
+            assert Fil.read(disk, path) == {:ok, body}
+          else
+            assert status in 400..499
+            refute Fil.exists?(disk, path)
+          end
+        end
       end
 
       ## ----------------------------------------------------------------

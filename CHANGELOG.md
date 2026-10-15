@@ -7,6 +7,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `Fil.Adapter.AzureBlob` stores files in Azure Blob Storage and Azurite, signed with the account key (Shared Key) or
+  sent with a SAS token. Streams without a size are uploaded in blocks and committed at the end, `checksum:` is stored
+  as blob metadata, and `Fil.signed_url/3` and `Fil.signed_upload/3` return service SAS URLs. A SAS can't bind the
+  content type, the size or extra query parameters, so `query:` returns a `Fil.UnsupportedError`, and `Fil.LiveView`
+  checks the content type and the size of a direct upload when it's consumed, and `Fil.Plugin.Validation` refuses to
+  sign an upload whose size or type its rules need. The Livebook smart cell builds Azure disks too.
+  ([#42](https://github.com/pehbehbeh/fil/pull/42))
+- `Fil.signed_upload/3` signs a direct upload and returns a map with the method, the URL, the headers and form fields
+  the client has to send, and when the URL expires. They come from the disk, so a client passes them on as they are, and
+  `Fil.LiveView`'s uploader sends a form when the method is `:post`. Its options are those of an upload URL before
+  (`expires_in:`, `content_type:`, `size:`, `if_exists:` and `query:`), and `Fil.disk/1` takes `signed_upload:` with
+  defaults for `expires_in:` and `if_exists:`. Adapters sign uploads with the new optional callback
+  `c:Fil.Adapter.signed_upload/3` and say with `c:Fil.Adapter.binds_uploads?/1` whether the storage enforces the signed
+  size and type, and plugins see uploads as the `:signed_upload` op.
+  ([#42](https://github.com/pehbehbeh/fil/pull/42))
+
+### Changed
+
+- `Fil.signed_url/3` signs downloads only, and no longer takes `method:`, `content_type:`, `size:` or `if_exists:`.
+  Sign uploads with `Fil.signed_upload/3` instead. The `signed_url:` option of `Fil.disk/1` no longer takes
+  `if_exists:`, which moved to `signed_upload:`. `Fil.Plugin.Validation` checks uploads on the `:signed_upload` op.
+  ([#42](https://github.com/pehbehbeh/fil/pull/42))
+
 ## [0.2.0] - 2026-10-06
 
 ### Added

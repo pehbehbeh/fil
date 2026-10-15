@@ -1,11 +1,11 @@
 defmodule Fil.Support.Checksum do
   @moduledoc false
 
-  # Checksums in the encoding S3 uses for its `x-amz-checksum-*` headers: the raw digest, base64 encoded. A CRC32 is its
-  # four bytes, big endian.
+  # Checksums as `Fil` stores them: the raw digest, base64 encoded, the encoding of S3's `x-amz-checksum-*` headers and
+  # of the metadata `Fil.Adapter.AzureBlob` keeps them in. A CRC32 is its four bytes, big endian.
   #
   # S3 stores the SHA checksum of an upload in parts as a composite checksum: the checksum of the parts' raw checksums,
-  # base64 encoded, then `-` and the number of parts. `init_parts/2` computes one.
+  # base64 encoded, then `-` and the number of parts. `init_parts/2` computes one, for checking such an object.
 
   @type algorithm :: :sha256 | :sha1 | :crc32
 

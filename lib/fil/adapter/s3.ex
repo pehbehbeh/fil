@@ -193,11 +193,15 @@ defmodule Fil.Adapter.S3 do
 
   ### `Fil.signed_url/3`
 
-    * Returns a presigned GET or PUT URL.
+    * Returns a presigned GET URL.
     * `disposition:` becomes `response-content-disposition`, and the `query:` parameters are added to the URL.
-    * For an upload, `content_type:`, `size:` and `if_exists: :error` are signed headers (`content-type`,
-      `content-length` and `if-none-match: *`). S3 refuses a PUT without them, or with other values, with a `403`, and
-      answers `412` when `if_exists: :error` finds an object.
+
+  ### `Fil.signed_upload/3`
+
+    * Returns a presigned PUT URL, with the `query:` parameters added to it.
+    * `content_type:`, `size:` and `if_exists: :error` are signed headers (`content-type`, `content-length` and
+      `if-none-match: *`). S3 refuses a PUT without them, or with other values, with a `403`, and answers `412` when
+      `if_exists: :error` finds an object.
 
   ### `Fil.Disk.same_storage?/2`
 
@@ -276,7 +280,7 @@ defmodule Fil.Adapter.S3 do
   | `NoSuchUpload`: an upload in parts was aborted from outside, by a lifecycle rule, say | `Fil.ConflictError` |
   | `BadDigest` | `Fil.ChecksumMismatchError` |
   | a body that doesn't match its stored checksum | `Fil.ChecksumMismatchError`, `reason: :checksum_mismatch` |
-  | a signed URL on a disk without credentials | `Fil.UnsupportedError`, `reason: :missing_credentials` |
+  | a signed URL or upload on a disk without credentials | `Fil.UnsupportedError`, `reason: :missing_credentials` |
   | `301`, or a `400` that gives another region | `Fil.ConfigurationError`, `reason: {:wrong_region, region}` |
   | `SlowDown`, `OperationAborted`, `InternalError`, `ServiceUnavailable` | `Fil.UnavailableError` |
   | `429`, `5xx` | `Fil.UnavailableError` |
@@ -287,18 +291,16 @@ defmodule Fil.Adapter.S3 do
 
   @behaviour Fil.Adapter
 
+  alias Fil.Adapter.S3.Checksums
+  alias Fil.Adapter.S3.Client
+  alias Fil.Adapter.S3.MultipartUpload
   alias Fil.Stat
   alias Fil.Support.ByteRange
-  alias Fil.Support.Checksum
   alias Fil.Support.Content
-  alias Fil.Support.Parts
-  alias Fil.Support.Relay
+  alias Fil.Support.Download
+  alias Fil.Support.ObjectStore
+  alias Fil.Support.Timestamps
   alias Fil.Support.XML
-
-  import Fil.Support.Timestamps
-  import Fil.Support.URL
-
-  @checksum_mode {"x-amz-checksum-mode", "ENABLED"}
 
   # S3's limits: the largest PutObject, the largest object, and the most parts of a multipart upload.
   @max_put 5 * 1024 ** 3
@@ -330,9 +332,9 @@ defmodule Fil.Adapter.S3 do
   @impl Fil.Adapter
   def init(opts) do
     with {:ok, opts} <- NimbleOptions.validate(opts, @schema),
-         {:ok, prefix} <- parse_root(opts[:root]),
-         {:ok, endpoint} <- parse_endpoint(:endpoint, opts[:endpoint]),
-         {:ok, public_endpoint} <- parse_endpoint(:public_endpoint, opts[:public_endpoint]) do
+         {:ok, prefix} <- ObjectStore.parse_root(opts[:root]),
+         {:ok, endpoint} <- ObjectStore.parse_endpoint(:endpoint, opts[:endpoint]),
+         {:ok, public_endpoint} <- ObjectStore.parse_endpoint(:public_endpoint, opts[:public_endpoint]) do
       {:ok,
        %__MODULE__{
          bucket: opts[:bucket],
@@ -364,12 +366,12 @@ defmodule Fil.Adapter.S3 do
 
   defp read_object(state, path, opts) do
     verify? = Keyword.get(opts, :verify_checksum, false)
-    headers = if verify?, do: [@checksum_mode], else: []
+    headers = if verify?, do: [Checksums.mode_header()], else: []
 
-    case request(state, :get, key(state, path), headers: headers) do
-      {:ok, %{status: 200} = response} when verify? -> verify_checksum(state, key(state, path), response)
+    case Client.request(state, :get, ObjectStore.key(state, path), headers: headers) do
+      {:ok, %{status: 200} = response} when verify? -> Checksums.verify(state, ObjectStore.key(state, path), response)
       {:ok, %{status: 200, body: body}} -> {:ok, body}
-      {:ok, response} -> {:error, error(response)}
+      {:ok, response} -> {:error, Client.error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -377,50 +379,45 @@ defmodule Fil.Adapter.S3 do
   # S3 answers a range that starts at or after the end, and any range of an empty object, with `416 InvalidRange`: the
   # range is empty then. A server that ignores the header sends the whole object, which is cut here.
   defp read_range(state, path, range) do
-    case request(state, :get, key(state, path), headers: [range_header(range)]) do
+    case Client.request(state, :get, ObjectStore.key(state, path), headers: [range_header(range)]) do
       {:ok, %{status: 206, body: body}} -> {:ok, body}
       {:ok, %{status: 200, body: body}} -> {:ok, ByteRange.slice(body, range)}
       {:ok, %{status: 416}} -> {:ok, ""}
-      {:ok, response} -> {:error, error(response)}
+      {:ok, response} -> {:error, Client.error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp get_into(state, key, check, range, relay) do
-    headers = if check, do: [@checksum_mode | range_headers(range)], else: range_headers(range)
-
-    case request(state, :get, key, headers: headers, into: Relay.into(relay, range)) do
-      {:ok, %{status: status, headers: headers}} when status in [200, 206] -> downloaded(status, range, headers)
-      {:ok, response} -> {:error, error(response)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  # S3 answers a range with `206`, even one that covers the whole object. A `200` to a range is a server that ignored
-  # the header, and `Fil.Support.Relay` cuts the range from it. A `206` without a range is an error.
-  defp downloaded(206, nil, _headers), do: {:error, %Fil.UnknownError{reason: {:http_status, 206}}}
-  defp downloaded(_status, _range, headers), do: {:ok, headers}
-
-  defp range_headers(nil), do: []
-  defp range_headers(range), do: [range_header(range)]
 
   defp range_header({offset, nil}), do: {"range", "bytes=#{offset}-"}
   defp range_header({offset, length}), do: {"range", "bytes=#{offset}-#{offset + length - 1}"}
 
   @impl Fil.Adapter
   def write(state, path, content, opts) do
-    key = key(state, path)
+    key = ObjectStore.key(state, path)
 
     case route(content, opts) do
-      :put -> put_object(state, key, content, opts)
-      :put_stream -> put_stream(state, key, content, opts)
-      {:parts, content, size} -> upload(state, key, content, size, opts)
-      :too_large -> {:error, %Fil.InvalidRequestError{reason: "EntityTooLarge"}}
+      :put ->
+        put_object(state, key, content, opts)
+
+      :put_stream ->
+        put_stream(state, key, content, opts)
+
+      {:parts, content, size} ->
+        state
+        |> MultipartUpload.upload(key, content, size, opts)
+        |> single(state, key, opts)
+
+      :too_large ->
+        {:error, %Fil.InvalidRequestError{reason: "EntityTooLarge"}}
     end
   end
 
+  # Content that fit in one part after all goes out in one request.
+  defp single({:single, content}, state, key, opts), do: put_object(state, key, content, opts)
+  defp single(result, _state, _key, _opts), do: result
+
   # Content in memory is one PutObject, up to S3's limit of 5 GiB for one. So is a stream of known size without a
-  # checksum, sent as it's read. Anything else is uploaded in parts (see `upload/5`).
+  # checksum, sent as it's read. Anything else is uploaded in parts (see `Fil.Adapter.S3.MultipartUpload`).
   defp route(content, opts) do
     if Content.iodata?(content) do
       content
@@ -442,12 +439,12 @@ defmodule Fil.Adapter.S3 do
 
   # One PutObject with content in memory, signed with its SHA-256.
   defp put_object(state, key, content, opts) do
-    checksum = checksum_header(opts, content)
+    checksum = Checksums.headers(opts, content)
 
     headers =
       opts
-      |> content_type_header()
-      |> put_if_exists(opts)
+      |> Client.content_type_header()
+      |> ObjectStore.put_if_exists(opts)
       |> Kernel.++(checksum)
 
     put(state, key, headers, content)
@@ -458,196 +455,87 @@ defmodule Fil.Adapter.S3 do
   defp put_stream(state, key, content, opts) do
     headers =
       opts
-      |> content_type_header()
-      |> put_if_exists(opts)
+      |> Client.content_type_header()
+      |> ObjectStore.put_if_exists(opts)
       |> Kernel.++([{"content-length", Integer.to_string(opts[:size])}])
 
     put(state, key, headers, content)
   end
 
   defp put(state, key, headers, body) do
-    case request(state, :put, key, headers: headers, body: body) do
+    case Client.request(state, :put, key, headers: headers, body: body) do
       {:ok, %{status: status}} when status in [200, 201] -> :ok
-      {:ok, response} -> {:error, error(response)}
+      {:ok, response} -> {:error, Client.error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  # Checks the object with a HeadObject, and downloads it when the stream is read. The download runs in a process of
-  # its own that sends the chunks one at a time (`Fil.Support.Relay`), so it goes no faster than the stream is read.
-  # A HeadObject has no body and so no error code, and a missing bucket is a 404 like a missing key, so a 404 is asked
-  # again with a GetObject to get the same error as `read/3`.
+  # Checks the object with a HeadObject, and downloads it when the stream is read (`Fil.Support.Download`). A HeadObject
+  # has no body and so no error code, and a missing bucket is a 404 like a missing key, so a 404 is asked again with a
+  # GetObject to get the same error as `read/3`.
   @impl Fil.Adapter
   def stream(state, path, opts) do
     verify? = Keyword.get(opts, :verify_checksum, false)
-    headers = if verify?, do: [@checksum_mode], else: []
+    headers = if verify?, do: [Checksums.mode_header()], else: []
 
-    case request(state, :head, key(state, path), headers: headers) do
-      {:ok, %{status: 200} = response} -> download(state, key(state, path), response, verify?, opts)
+    case Client.request(state, :head, ObjectStore.key(state, path), headers: headers) do
+      {:ok, %{status: 200} = response} -> download(state, ObjectStore.key(state, path), response, verify?, opts)
       {:ok, %{status: 404}} -> with {:ok, content} <- read(state, path, opts), do: {:ok, [content], byte_size(content)}
-      {:ok, response} -> {:error, error(response)}
+      {:ok, response} -> {:error, Client.error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp download(state, key, response, verify?, opts) do
-    check = if verify?, do: download_check(state, key, response), else: {:ok, nil}
+    check = if verify?, do: Checksums.download_check(state, key, response), else: {:ok, nil}
+    size = ObjectStore.content_length(response)
+    range = ByteRange.from_options(opts)
 
     with {:ok, check} <- check,
-         {range, size} <- download_range(content_length(response), ByteRange.from_options(opts)) do
-      start = fn -> start_download(state, key, check, range) end
-      {:ok, Stream.resource(start, &next_chunk/1, &stop_download/1), size}
+         {range, size} <- Download.range(size, range) do
+      get = &get_into(state, key, check, range, &1)
+      # The label shows in `:observer` and crash reports. The key names the file, and nothing else goes in.
+      {:ok, Download.stream({__MODULE__, :stream, key}, get, check, &Checksums.verify_download!/2), size}
     else
       :empty -> {:ok, [], 0}
       {:error, error} -> {:error, error}
     end
   end
 
-  # The range of the download and the size of the stream. A range is clamped to the size the HeadObject found, so the
-  # stream knows its size, and an empty range downloads nothing (S3 would answer it with `416`). A HeadObject without a
-  # size leaves the range as it is, and the size unknown.
-  defp download_range(size, nil), do: {nil, size}
-  defp download_range(nil, range), do: {range, nil}
+  defp get_into(state, key, check, range, relay) do
+    range_headers = if range, do: [range_header(range)], else: []
+    headers = if check, do: [Checksums.mode_header() | range_headers], else: range_headers
 
-  defp download_range(size, range) do
-    case ByteRange.clamp(range, size) do
-      {_start, 0} -> :empty
-      {start, count} -> {{start, count}, count}
-    end
-  end
-
-  defp content_length(%{headers: headers}), do: integer(header(headers, "content-length"))
-
-  # What the download computes as it goes, from the checksum the HeadObject found: the checksum of the whole object,
-  # or a composite one, whose parts it then needs the size of. `nil` for none, or one that can't be checked.
-  defp download_check(state, key, response) do
-    case find_checksum(response.headers) do
-      nil ->
-        {:ok, nil}
-
-      {algorithm, _checksum} ->
-        {:ok, %{algorithm: algorithm, checksum: Checksum.init(algorithm), composite: nil}}
-
-      {algorithm, composite, parts} ->
-        size = content_length(response)
-
-        with {:ok, part_size} <- part_size(state, key, response, size, parts) do
-          {:ok, composite_check(algorithm, composite, part_size)}
-        end
-    end
-  end
-
-  defp composite_check(_algorithm, _composite, nil), do: nil
-
-  defp composite_check(algorithm, composite, part_size) do
-    %{algorithm: algorithm, checksum: Checksum.init_parts(algorithm, part_size), composite: composite}
-  end
-
-  defp start_download(state, key, check, range) do
-    reader = self()
-    ref = make_ref()
-    # `$callers` lets the download find what the reader was allowed, such as a `Req.Test` stub.
-    callers = [reader | Process.get(:"$callers", [])]
-
-    {pid, monitor} =
-      spawn_monitor(fn ->
-        # The label shows in `:observer` and crash reports. The key names the file, and nothing else goes in.
-        Process.set_label({__MODULE__, :stream, key})
-        Process.put(:"$callers", callers)
-        relay = %Relay{to: reader, ref: ref, monitor: Process.monitor(reader)}
-        send(reader, {ref, :done, get_into(state, key, check, range, relay)})
-      end)
-
-    %{pid: pid, monitor: monitor, ref: ref, check: check}
-  end
-
-  defp next_chunk(%{pid: pid, monitor: monitor, ref: ref} = download) do
-    receive do
-      {^ref, :data, chunk} ->
-        send(pid, {ref, :more})
-        {[chunk], put_chunk(download, chunk)}
-
-      {^ref, :done, result} ->
-        finish_download!(download, result)
-
-      {:DOWN, ^monitor, :process, ^pid, reason} ->
-        crashed!(reason)
-    end
-  end
-
-  defp put_chunk(%{check: nil} = download, _chunk), do: download
-
-  defp put_chunk(%{check: check} = download, chunk) do
-    %{download | check: %{check | checksum: Checksum.update(check.checksum, chunk)}}
-  end
-
-  defp finish_download!(download, {:ok, headers}) do
-    verify_download!(download, headers)
-    {:halt, download}
-  end
-
-  defp finish_download!(_download, {:error, error}), do: raise(error)
-
-  # The download process only ends before it's done if it crashed, for example on bad `:req_options`.
-  defp crashed!({%{__exception__: true} = exception, stacktrace}), do: reraise(exception, stacktrace)
-  defp crashed!(reason), do: exit(reason)
-
-  # Compared with the checksum the GetObject returned, which belongs to the content that was downloaded. An object
-  # replaced since the HeadObject may have none for this algorithm, or parts of another size, and is then read without
-  # a check, like `read/3`.
-  defp verify_download!(%{check: nil}, _headers), do: :ok
-
-  defp verify_download!(%{check: check}, headers) do
-    case downloaded_checksum(check, headers) do
-      nil ->
-        :ok
-
-      stored ->
-        if Checksum.final(check.checksum) != stored, do: raise(%Fil.ChecksumMismatchError{reason: :checksum_mismatch})
-    end
-  end
-
-  defp downloaded_checksum(%{algorithm: algorithm, composite: nil}, headers) do
-    with {^algorithm, stored} <- stored_checksum(headers, algorithm), do: stored
-  end
-
-  defp downloaded_checksum(%{algorithm: algorithm, composite: composite}, headers) do
-    if header(headers, checksum_header(algorithm)) == composite, do: composite
-  end
-
-  # Runs when the stream is done, halted early or raised. Stopping the download closes its connection. A chunk it sent
-  # meanwhile arrives before the `:DOWN` of a new monitor, so it's dropped once that's in.
-  defp stop_download(%{pid: pid, monitor: monitor, ref: ref}) do
-    Process.demonitor(monitor, [:flush])
-    stopped = Process.monitor(pid)
-    Process.exit(pid, :kill)
-
-    receive do
-      {:DOWN, ^stopped, :process, ^pid, _reason} -> flush_download(ref)
-    end
-  end
-
-  defp flush_download(ref) do
-    receive do
-      {^ref, _tag, _value} -> flush_download(ref)
-    after
-      0 -> :ok
-    end
-  end
-
-  @impl Fil.Adapter
-  def rm(state, path, _opts) do
-    case request(state, :delete, key(state, path)) do
-      {:ok, %{status: status}} when status in [200, 204] -> :ok
-      {:ok, %{status: 404} = response} -> missing_is_ok(error(response))
-      {:ok, response} -> {:error, error(response)}
+    case Client.request(state, :get, key, headers: headers, into: Download.into(relay, range)) do
+      {:ok, %{status: status, headers: headers}} when status in [200, 206] -> downloaded(status, range, headers)
+      {:ok, response} -> {:error, Client.error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  # A missing file is fine for an idempotent delete, a missing bucket isn't.
-  defp missing_is_ok(%Fil.NotFoundError{}), do: :ok
-  defp missing_is_ok(error), do: {:error, error}
+  # S3 answers a range with `206`, even one that covers the whole object. A `200` to a range is a server that ignored
+  # the header, and `Fil.Support.Download.into/2` cuts the range from it. A `206` without a range is an error.
+  defp downloaded(206, nil, _headers), do: {:error, %Fil.UnknownError{reason: {:http_status, 206}}}
+  defp downloaded(_status, _range, headers), do: {:ok, headers}
+
+  @impl Fil.Adapter
+  def rm(state, path, _opts) do
+    case Client.request(state, :delete, ObjectStore.key(state, path)) do
+      {:ok, %{status: status}} when status in [200, 204] ->
+        :ok
+
+      {:ok, %{status: 404} = response} ->
+        response
+        |> Client.error()
+        |> ObjectStore.missing_is_ok()
+
+      {:ok, response} ->
+        {:error, Client.error(response)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   @impl Fil.Adapter
   def stat(_state, ".", _opts), do: {:ok, %Stat{type: :directory}}
@@ -661,69 +549,56 @@ defmodule Fil.Adapter.S3 do
   end
 
   defp object_stat(state, path, type, algorithm) do
-    headers = if algorithm, do: [@checksum_mode], else: []
+    headers = if algorithm, do: [Checksums.mode_header()], else: []
 
-    case request(state, :head, key(state, path), headers: headers) do
-      {:ok, %{status: 200} = response} -> {:ok, object_stat(response, algorithm)}
+    case Client.request(state, :head, ObjectStore.key(state, path), headers: headers) do
+      {:ok, %{status: 200, headers: headers}} -> {:ok, object_stat(headers, algorithm)}
       {:ok, %{status: 404}} when type == :regular -> {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
       {:ok, %{status: 404}} -> directory_stat(state, path)
-      {:ok, response} -> {:error, error(response)}
+      {:ok, response} -> {:error, Client.error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
 
+  defp object_stat(headers, algorithm) do
+    %Stat{
+      size:
+        headers
+        |> ObjectStore.header("content-length")
+        |> ObjectStore.integer(),
+      type: :regular,
+      mtime:
+        headers
+        |> ObjectStore.header("last-modified")
+        |> Timestamps.parse_http_date(),
+      etag:
+        headers
+        |> ObjectStore.header("etag")
+        |> ObjectStore.unquote_etag(),
+      content_type: ObjectStore.header(headers, "content-type"),
+      checksum: algorithm && Checksums.stored(headers, algorithm)
+    }
+  end
+
+  defp directory_stat(state, path), do: ObjectStore.directory_stat(state, &list_page(state, &1, &2, &3, &4), path)
+
   @impl Fil.Adapter
-  def ls(state, prefix, opts) do
-    delimiter = if !Keyword.get(opts, :recursive, false), do: "/"
-
-    with {:ok, contents, prefixes} <- list_all(state, list_prefix(state, prefix), delimiter) do
-      listed =
-        contents
-        |> Enum.map(&object_listing(state, &1))
-        |> Kernel.++(Enum.map(prefixes, &prefix_listing(state, &1)))
-        |> subtree(prefix, delimiter)
-
-      {:ok, Enum.sort_by(listed, &elem(&1, 0))}
-    end
-  end
-
-  # Without a delimiter S3 returns only objects, so a subtree's directories are the parents of its keys. A key ending in
-  # `/` is a directory marker (an empty "folder" made in a console), listed as the directory it stands for.
-  defp subtree(listed, _prefix, "/"), do: listed
-
-  defp subtree(listed, prefix, nil) do
-    {markers, files} = Enum.split_with(listed, fn {path, _stat} -> String.ends_with?(path, "/") end)
-    marker_paths = Enum.map(markers, fn {path, _stat} -> String.trim_trailing(path, "/") end)
-
-    file_paths = Enum.map(files, &elem(&1, 0))
-    parents = Fil.Support.Path.parents(file_paths ++ marker_paths, prefix)
-
-    directories =
-      (parents ++ marker_paths)
-      |> Enum.uniq()
-      |> Enum.map(&{&1, %Stat{type: :directory}})
-
-    files ++ directories
-  end
+  def ls(state, path, opts), do: ObjectStore.ls(state, &list_page(state, &1, &2, &3, &4), path, opts)
 
   @impl Fil.Adapter
   def cp(state, src, dest, opts) do
-    headers = put_if_exists([{"x-amz-copy-source", copy_source(state, src)}], opts)
+    headers = ObjectStore.put_if_exists([{"x-amz-copy-source", Client.copy_source(state, src)}], opts)
 
     result =
-      case request(state, :put, key(state, dest), headers: headers) do
-        {:ok, %{status: 200} = response} -> xml_result(response)
-        {:ok, %{status: 400} = response} -> copy_error(state, src, error(response))
-        {:ok, response} -> {:error, error(response)}
+      case Client.request(state, :put, ObjectStore.key(state, dest), headers: headers) do
+        {:ok, %{status: 200} = response} -> Client.xml_result(response)
+        {:ok, %{status: 400} = response} -> copy_error(state, src, Client.error(response))
+        {:ok, response} -> {:error, Client.error(response)}
         {:error, reason} -> {:error, reason}
       end
 
-    existing_dest(result, dest)
+    ObjectStore.existing_dest(result, dest)
   end
-
-  # `If-None-Match` is about the destination, so a copy that found it already there fails with its path.
-  defp existing_dest({:error, %Fil.AlreadyExistsError{} = error}, dest), do: {:error, %{error | path: dest}}
-  defp existing_dest(result, _dest), do: result
 
   # AWS answers a missing source with `404 NoSuchKey`, but some S3-compatible servers (SeaweedFS) send a plain 400, so
   # an unexplained 400 is checked against the source. So is `InvalidRequest`, which doesn't say much more.
@@ -735,7 +610,7 @@ defmodule Fil.Adapter.S3 do
   defp copy_error(_state, _src, error), do: {:error, error}
 
   defp check_source(state, src, error) do
-    case request(state, :head, key(state, src)) do
+    case Client.request(state, :head, ObjectStore.key(state, src)) do
       {:ok, %{status: 404}} -> {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
       _other -> {:error, error}
     end
@@ -746,641 +621,75 @@ defmodule Fil.Adapter.S3 do
     with :ok <- cp(state, src, dest, opts), do: rm(state, src, opts)
   end
 
+  # One DeleteObject per key. The batched DeleteObjects call needs a hand-built XML body with an MD5 checksum, so that
+  # optimization is left for later.
   @impl Fil.Adapter
-  def rm_rf(state, prefix, opts) do
-    # One DeleteObject per key. The batched DeleteObjects call needs a hand-built XML body with an MD5 checksum, so that
-    # optimization is left for later.
-    with {:ok, contents, _prefixes} <- list_all(state, base_prefix(state, prefix), nil) do
-      contents
-      |> Enum.map(&relative(state, XML.text(&1, "Key")))
-      |> Enum.filter(&under_prefix?(&1, prefix))
-      |> delete_each(state, opts)
-    end
-  end
-
-  defp delete_each(paths, state, opts) do
-    Enum.reduce_while(paths, {:ok, 0}, fn path, {:ok, count} ->
-      case rm(state, path, opts) do
-        :ok -> {:cont, {:ok, count + 1}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+  def rm_rf(state, path, opts) do
+    ObjectStore.rm_rf(state, &list_page(state, &1, &2, &3, &4), path, &rm(state, &1, opts))
   end
 
   @impl Fil.Adapter
-  def url(state, path, _opts), do: {:ok, object_url(state, key(state, path), [], public_base_url(state))}
+  def url(state, path, _opts),
+    do: {:ok, Client.object_url(state, ObjectStore.key(state, path), [], Client.public_base_url(state))}
 
+  # `Fil` has validated `:expires_in` (at most 7 days, the limit of S3) and built `:disposition`.
   @impl Fil.Adapter
   def signed_url(state, path, opts) do
-    # `Fil` has validated `:method` and `:expires_in` (at most 7 days, the limit of S3) and built `:disposition`.
-    if is_nil(state.access_key_id) or is_nil(state.secret_access_key) do
-      {:error, %Fil.UnsupportedError{reason: :missing_credentials}}
-    else
-      {:ok, presign(state, key(state, path), opts)}
+    with :ok <- Client.check_credentials(state) do
+      url = Client.public_object_url(state, ObjectStore.key(state, path))
+      {:ok, Client.presign(state, url, :get, opts)}
     end
   end
 
-  ## ------------------------------------------------------------------
-  ## Uploads in parts
-  ## ------------------------------------------------------------------
+  # The signature covers `content-type` and `content-length`, so S3 refuses an upload with others.
+  @impl Fil.Adapter
+  def binds_uploads?(_state), do: true
 
-  # A stream without a size or with a checksum, and content over 5 GiB, is read one part at a time
-  # (`Fil.Support.Parts`), in parts of `:part_size`, or larger ones for known sizes that would need more than 10,000.
-  # Content that ends within the first part goes out as one PutObject. Anything larger starts a multipart upload once
-  # the second part begins, uploads each part when it's full, and completes the upload after the content has ended, so
-  # nothing is written unless it ends.
-  #
-  # A guard process (`start_guard/2`) creates the upload and is the only one that aborts it: when the write fails,
-  # raises or is killed. The content is read and the parts are uploaded in the calling process.
-  defp upload(state, key, content, size, opts) do
-    guard = start_guard(state, key)
-    algorithm = opts[:checksum]
+  # The headers the client sends are the signed ones but `content-length`, which a browser sets from the body.
+  @impl Fil.Adapter
+  def signed_upload(state, path, opts) do
+    with :ok <- Client.check_credentials(state) do
+      now = DateTime.utc_now(:second)
+      url = Client.public_object_url(state, ObjectStore.key(state, path))
 
-    upload = %{
-      key: key,
-      guard: guard,
-      id: nil,
-      number: 0,
-      parts: [],
-      algorithm: algorithm,
-      whole: if(algorithm == :crc32, do: Checksum.init(:crc32))
-    }
+      headers =
+        opts
+        |> Client.upload_headers()
+        |> Map.new()
+        |> Map.delete("content-length")
 
-    part_size = Parts.size(size, state.part_size, state.max_parts)
+      expires_at = DateTime.add(now, Keyword.get(opts, :expires_in, 900))
 
-    try do
-      content
-      |> Parts.reduce(part_size, upload, &next_part(state, &1, &2, opts))
-      |> finish_upload(state, opts)
-    else
-      :ok ->
-        stop_guard(guard, :done)
-
-      {:error, error} ->
-        stop_guard(guard, :abort)
-        {:error, error}
-    catch
-      kind, reason ->
-        stop_guard(guard, :abort)
-        :erlang.raise(kind, reason, __STACKTRACE__)
-    end
-  end
-
-  # Called with every full part while the stream is read, so a failed request halts the stream instead of raising: the
-  # content is read inside `Fil.Op`, where a raised `Fil` error would count as the source's. A full part always has
-  # more content behind it, so the last part a stream can have is refused before it's uploaded.
-  defp next_part(state, part, upload, opts) do
-    result =
-      if upload.number + 1 >= state.max_parts,
-        do: {:error, %Fil.InvalidRequestError{reason: :too_many_parts}},
-        else: upload_part(state, part, upload, opts)
-
-    case result do
-      {:ok, upload} -> {:cont, upload}
-      {:error, error} -> {:halt, {:error, error}}
-    end
-  end
-
-  defp finish_upload({:halted, {:error, error}}, _state, _opts), do: {:error, error}
-  defp finish_upload({:done, last, %{id: nil, key: key}}, state, opts), do: put_object(state, key, last, opts)
-
-  defp finish_upload({:done, last, upload}, state, opts) do
-    with {:ok, upload} <- upload_part(state, last, upload, opts), do: complete_upload(state, upload, opts)
-  end
-
-  # With `checksum:`, every part is sent with its checksum, which S3 checks. A CRC32 is also computed over all of the
-  # content, which S3 checks when the upload completes and stores as the object's checksum.
-  defp upload_part(state, part, upload, opts) do
-    checksum = upload.algorithm && Checksum.digest(upload.algorithm, part)
-    headers = part_checksum_header(upload.algorithm, checksum)
-
-    with {:ok, upload} <- create_upload(upload, opts),
-         number = upload.number + 1,
-         {:ok, etag} <- send_part(state, upload, number, part, headers) do
       {:ok,
        %{
-         upload
-         | number: number,
-           parts: [{number, etag, checksum} | upload.parts],
-           whole: upload.whole && Checksum.update(upload.whole, part)
+         method: :put,
+         url: Client.presign(state, url, :put, opts, now),
+         headers: headers,
+         fields: [],
+         expires_at: expires_at
        }}
     end
   end
-
-  defp part_checksum_header(nil, _checksum), do: []
-  defp part_checksum_header(algorithm, checksum), do: [{checksum_header(algorithm), checksum}]
-
-  # S3 only stores and checks the checksums of an upload in parts when the upload declares the algorithm up front.
-  # CRC32 can cover the whole object (`FULL_OBJECT`). SHA-1 and SHA-256 can't, so S3 stores a checksum of the parts'
-  # checksums (`COMPOSITE`, the default), which ends in `-` and the number of parts.
-  defp create_upload(%{id: nil, guard: guard} = upload, opts) do
-    headers = [{"content-length", "0"} | content_type_header(opts)] ++ algorithm_headers(upload.algorithm)
-
-    with {:ok, id} <- call_guard(guard, {:create, headers}), do: {:ok, %{upload | id: id}}
-  end
-
-  defp create_upload(upload, _opts), do: {:ok, upload}
-
-  # A part is in memory and invisible until the upload completes, so a part that failed with `Fil.UnavailableError` is
-  # sent once more, a second later (`SlowDown` and `503` are unavailable too). The ETag goes into the completion as S3
-  # sent it, quotes included.
-  defp send_part(state, upload, number, part, headers, retries \\ 1) do
-    params = [{"partNumber", number}, {"uploadId", upload.id}]
-
-    result =
-      case request(state, :put, upload.key, params: params, headers: headers, body: part) do
-        {:ok, %{status: 200} = response} -> etag(response.headers)
-        {:ok, response} -> {:error, error(response)}
-        {:error, reason} -> {:error, reason}
-      end
-
-    case result do
-      {:error, %Fil.UnavailableError{}} when retries > 0 ->
-        Process.sleep(state.retry_delay)
-        send_part(state, upload, number, part, headers, retries - 1)
-
-      result ->
-        result
-    end
-  end
-
-  defp etag(headers) do
-    case header(headers, "etag") do
-      nil -> {:error, %Fil.UnknownError{reason: :missing_etag}}
-      etag -> {:ok, etag}
-    end
-  end
-
-  # `if_exists: :error` can only be checked here: S3 takes `If-None-Match` on the completion, and not before.
-  defp complete_upload(state, upload, opts) do
-    headers = put_if_exists(whole_checksum_headers(upload), opts)
-    params = [{"uploadId", upload.id}]
-
-    case request(state, :post, upload.key, params: params, headers: headers, body: completion(upload)) do
-      {:ok, %{status: 200} = response} -> xml_result(response)
-      {:ok, response} -> {:error, error(response)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp completion(%{parts: parts, algorithm: algorithm}) do
-    parts =
-      parts
-      |> Enum.reverse()
-      |> Enum.map(&completed_part(&1, algorithm))
-
-    [~s(<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">), parts, "</CompleteMultipartUpload>"]
-  end
-
-  defp completed_part({number, etag, checksum}, algorithm) do
-    [
-      "<Part><PartNumber>",
-      Integer.to_string(number),
-      "</PartNumber><ETag>",
-      XML.escape(etag),
-      "</ETag>",
-      completed_checksum(algorithm, checksum),
-      "</Part>"
-    ]
-  end
-
-  defp completed_checksum(nil, _checksum), do: []
-
-  defp completed_checksum(algorithm, checksum) do
-    element = checksum_element(algorithm)
-    ["<", element, ">", checksum, "</", element, ">"]
-  end
-
-  defp algorithm_headers(nil), do: []
-  defp algorithm_headers(:crc32), do: [{"x-amz-checksum-algorithm", "CRC32"}, {"x-amz-checksum-type", "FULL_OBJECT"}]
-  defp algorithm_headers(:sha1), do: [{"x-amz-checksum-algorithm", "SHA1"}]
-  defp algorithm_headers(:sha256), do: [{"x-amz-checksum-algorithm", "SHA256"}]
-
-  defp checksum_element(:crc32), do: "ChecksumCRC32"
-  defp checksum_element(:sha1), do: "ChecksumSHA1"
-  defp checksum_element(:sha256), do: "ChecksumSHA256"
-
-  defp whole_checksum_headers(%{whole: nil}), do: []
-
-  defp whole_checksum_headers(%{whole: whole}) do
-    [{"x-amz-checksum-crc32", Checksum.final(whole)}, {"x-amz-checksum-type", "FULL_OBJECT"}]
-  end
-
-  ## Guard
-
-  # The guard is a process of its own that creates the multipart upload and aborts it, so an upload whose writer is
-  # killed (a supervisor shutdown, a client that disconnects from a Cowboy request) is aborted too. It monitors the
-  # writer, and knows the upload from the moment it exists. It isn't linked, so it outlives a killed writer. The writer
-  # stops it with `:done` after completing, and with `:abort` on any failure, and waits until it's done, so no upload
-  # is left when a write returns. What a guard can't clean up (the node goes down, the abort fails) is left to the
-  # bucket's lifecycle rules.
-  defp start_guard(state, key) do
-    writer = self()
-    ref = make_ref()
-    # `$callers` lets the guard find what the writer was allowed, such as a `Req.Test` stub.
-    callers = [writer | Process.get(:"$callers", [])]
-
-    pid =
-      spawn(fn ->
-        Process.set_label({__MODULE__, :upload_guard, key})
-        Process.put(:"$callers", callers)
-        guard(%{state: state, key: key, ref: ref, writer: writer, monitor: Process.monitor(writer), id: nil})
-      end)
-
-    %{pid: pid, ref: ref}
-  end
-
-  defp guard(%{ref: ref, writer: writer, monitor: monitor} = guard) do
-    receive do
-      {^ref, {:create, headers}} ->
-        guard
-        |> create(headers)
-        |> guard()
-
-      {^ref, :done} ->
-        send(writer, {ref, :ok})
-
-      {^ref, :abort} ->
-        abort(guard)
-        send(writer, {ref, :ok})
-
-      {:DOWN, ^monitor, :process, _pid, _reason} ->
-        abort(guard)
-    end
-  end
-
-  # Creates the upload and tells the writer its id, which the guard keeps.
-  defp create(%{state: state, key: key, ref: ref, writer: writer} = guard, headers) do
-    result =
-      case request(state, :post, key, params: [{"uploads", ""}], headers: headers) do
-        {:ok, %{status: 200, body: body}} -> upload_id(body)
-        {:ok, response} -> {:error, error(response)}
-        {:error, reason} -> {:error, reason}
-      end
-
-    send(writer, {ref, result})
-
-    case result do
-      {:ok, id} -> %{guard | id: id}
-      {:error, _error} -> guard
-    end
-  end
-
-  defp upload_id(body) do
-    with {:ok, result} <- parse_xml(body) do
-      case XML.text(result, "UploadId") do
-        id when id in [nil, ""] -> {:error, %Fil.UnavailableError{reason: :invalid_xml}}
-        id -> {:ok, id}
-      end
-    end
-  end
-
-  # Once the upload is completed or aborted, S3 answers `404 NoSuchUpload`, which is fine too. A failed abort is left
-  # to the lifecycle rules: the write's own error is what the caller needs.
-  defp abort(%{id: nil}), do: :ok
-
-  defp abort(%{state: state, key: key, id: id}) do
-    _result = request(state, :delete, key, params: [{"uploadId", id}])
-    :ok
-  end
-
-  # The guard crashes only on a bug, such as bad `:req_options`, which the writer then raises.
-  defp call_guard(guard, message) do
-    case ask_guard(guard, message) do
-      {:down, reason} -> crashed!(reason)
-      reply -> reply
-    end
-  end
-
-  # A guard that crashed has nothing left to stop, and its error was raised already.
-  defp stop_guard(guard, message) do
-    case ask_guard(guard, message) do
-      {:down, _reason} -> :ok
-      reply -> reply
-    end
-  end
-
-  defp ask_guard(%{pid: pid, ref: ref}, message) do
-    monitor = Process.monitor(pid)
-    send(pid, {ref, message})
-
-    receive do
-      {^ref, reply} ->
-        Process.demonitor(monitor, [:flush])
-        reply
-
-      {:DOWN, ^monitor, :process, ^pid, reason} ->
-        {:down, reason}
-    end
-  end
-
-  ## ------------------------------------------------------------------
-  ## Options
-  ## ------------------------------------------------------------------
-
-  # The root is stored as a key prefix: `""` for the bucket root, otherwise the normalized root with a trailing slash.
-  defp parse_root(root) do
-    case Fil.Support.Path.normalize(root) do
-      {:ok, "."} -> {:ok, ""}
-      {:ok, path} -> {:ok, path <> "/"}
-      {:error, :ebadpath} -> {:error, {:invalid_option, {:root, root}}}
-    end
-  end
-
-  defp parse_endpoint(_name, nil), do: {:ok, nil}
-
-  defp parse_endpoint(name, endpoint) do
-    case URI.parse(endpoint) do
-      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
-        {:ok, String.trim_trailing(endpoint, "/")}
-
-      _other ->
-        {:error, {:invalid_option, {name, endpoint}}}
-    end
-  end
-
-  defp content_type_header(opts) do
-    case Keyword.get(opts, :content_type) do
-      nil -> []
-      content_type -> [{"content-type", content_type}]
-    end
-  end
-
-  # S3 creates an object only if none exists when the request has `If-None-Match: *`.
-  defp put_if_exists(headers, opts) do
-    case Keyword.get(opts, :if_exists, :overwrite) do
-      :overwrite -> headers
-      :error -> [{"if-none-match", "*"} | headers]
-    end
-  end
-
-  defp checksum_header(opts, body) do
-    case Keyword.get(opts, :checksum) do
-      nil -> []
-      algorithm -> [{checksum_header(algorithm), Checksum.digest(algorithm, body)}]
-    end
-  end
-
-  ## ------------------------------------------------------------------
-  ## Checksums
-  ## ------------------------------------------------------------------
-
-  defp checksum_header(algorithm), do: "x-amz-checksum-#{algorithm}"
-
-  # `{algorithm, checksum}` if S3 returned a checksum for this algorithm. Composite checksums of uploads in parts end in
-  # `-` and the number of parts, and cover the parts, so they're skipped (base64 has no `-`).
-  defp stored_checksum(headers, algorithm) do
-    case header(headers, checksum_header(algorithm)) do
-      nil -> nil
-      checksum -> if !String.contains?(checksum, "-"), do: {algorithm, checksum}
-    end
-  end
-
-  # `{algorithm, checksum, parts}` if S3 returned a composite checksum for this algorithm.
-  defp composite_checksum(headers, algorithm) do
-    with checksum when is_binary(checksum) <- header(headers, checksum_header(algorithm)),
-         [_digest, parts] <- String.split(checksum, "-"),
-         {parts, ""} when parts > 0 <- Integer.parse(parts) do
-      {algorithm, checksum, parts}
-    else
-      _none -> nil
-    end
-  end
-
-  # The checksum stored with the object, of the whole object or composite, for the first algorithm that has one.
-  defp find_checksum(headers) do
-    Enum.find_value(Checksum.algorithms(), fn algorithm ->
-      stored_checksum(headers, algorithm) || composite_checksum(headers, algorithm)
-    end)
-  end
-
-  defp verify_checksum(state, key, %{body: body} = response) do
-    case checksums(state, key, response) do
-      {:ok, {same, same}} -> {:ok, body}
-      {:ok, {_computed, _stored}} -> {:error, %Fil.ChecksumMismatchError{reason: :checksum_mismatch}}
-      {:ok, nil} -> {:ok, body}
-      {:error, error} -> {:error, error}
-    end
-  end
-
-  # `{computed, stored}`, or `nil` if there's nothing to check.
-  defp checksums(state, key, %{body: body} = response) do
-    case find_checksum(response.headers) do
-      nil -> {:ok, nil}
-      {algorithm, checksum} -> {:ok, {Checksum.digest(algorithm, body), checksum}}
-      {algorithm, composite, parts} -> composite_digest(state, key, response, algorithm, composite, parts)
-    end
-  end
-
-  # `{:ok, nil}` when the parts can't be found (see `part_size/5`).
-  defp composite_digest(state, key, %{body: body} = response, algorithm, composite, parts) do
-    size = byte_size(body)
-
-    with {:ok, part_size} when is_integer(part_size) <- part_size(state, key, response, size, parts) do
-      computed =
-        algorithm
-        |> Checksum.init_parts(part_size)
-        |> Checksum.update(body)
-        |> Checksum.final()
-
-      {:ok, {computed, composite}}
-    end
-  end
-
-  # A composite checksum can only be checked with the size of the parts, which S3 doesn't store with it, but a
-  # HeadObject for part 1 returns. Every part but the last has that size in uploads from `Fil` and from AWS's tools,
-  # which is all the check assumes. Parts that don't add up to the object, and a server that ignores `partNumber`
-  # (RustFS answers with the whole object), give `nil`, and the content is read without a check. So does a server that
-  # refuses `partNumber` (`400`, `501`). `If-Match` makes sure part 1 belongs to the object that was read, and an object
-  # replaced or removed since then is read without a check. A failed connection or a `5xx` fails the read.
-  defp part_size(state, key, response, size, parts) do
-    headers = Enum.map(response.headers["etag"] || [], &{"if-match", &1})
-
-    case request(state, :head, key, params: [{"partNumber", 1}], headers: headers) do
-      {:ok, %{status: status} = part} when status in [200, 206] ->
-        {:ok, uniform_part_size(content_length(part), size, parts)}
-
-      {:ok, %{status: status}} when status in [400, 404, 412, 501] ->
-        {:ok, nil}
-
-      {:ok, response} ->
-        {:error, error(response)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp uniform_part_size(part_size, size, parts) when is_integer(part_size) and part_size > 0 and is_integer(size) do
-    last = size - (parts - 1) * part_size
-    if last > 0 and last <= part_size, do: part_size
-  end
-
-  defp uniform_part_size(_part_size, _size, _parts), do: nil
-
-  ## ------------------------------------------------------------------
-  ## Requests
-  ## ------------------------------------------------------------------
-
-  defp request(state, method, key, opts \\ []) do
-    params = Keyword.get(opts, :params, [])
-
-    options =
-      Keyword.merge(state.req_options,
-        method: method,
-        url: object_url(state, key, params),
-        headers: Keyword.get(opts, :headers, []),
-        body: Keyword.get(opts, :body),
-        into: Keyword.get(opts, :into),
-        aws_sigv4: aws_sigv4(state),
-        retry: false,
-        raw: true
-      )
-
-    # Every status, 5xx included, comes back as a response and is mapped by the caller. Only a failed connection is an
-    # error here.
-    case Req.request(options) do
-      {:ok, response} -> {:ok, response}
-      {:error, %Req.TransportError{reason: reason}} -> {:error, %Fil.UnavailableError{reason: reason}}
-      {:error, exception} -> {:error, %Fil.UnavailableError{reason: exception}}
-    end
-  end
-
-  # Req signs every request with SigV4 when the disk has credentials. Without them, requests go out unsigned, which is
-  # how a public bucket is read.
-  defp aws_sigv4(%__MODULE__{access_key_id: nil}), do: nil
-  defp aws_sigv4(%__MODULE__{secret_access_key: nil}), do: nil
-
-  defp aws_sigv4(state) do
-    [
-      access_key_id: state.access_key_id,
-      secret_access_key: state.secret_access_key,
-      token: state.session_token,
-      region: state.region,
-      service: :s3
-    ]
-  end
-
-  # `Req.Utils.aws_sigv4_url/1` is private Req API. Req isn't pinned for it: if a release drops it, presigning crashes.
-  # It has no option for a session token, but it signs any extra query parameters, so the token goes in that way, and so
-  # do the `response-content-disposition` S3 answers the download with and the caller's `:query`. An upload's
-  # `:content_type`, `:size` and `if_exists: :error` become signed headers, which the client has to send as they are.
-  defp presign(state, key, opts) do
-    query =
-      Enum.reject(
-        [
-          {"X-Amz-Security-Token", state.session_token},
-          {"response-content-disposition", Keyword.get(opts, :disposition)}
-          | Keyword.get(opts, :query, [])
-        ],
-        &is_nil(elem(&1, 1))
-      )
-
-    [
-      access_key_id: state.access_key_id,
-      secret_access_key: state.secret_access_key,
-      region: state.region,
-      service: :s3,
-      datetime: DateTime.utc_now(),
-      method: Keyword.get(opts, :method, :get),
-      url: object_url(state, key, [], public_base_url(state)),
-      expires: Keyword.get(opts, :expires_in, 900),
-      headers: signed_upload_headers(opts),
-      query: query
-    ]
-    |> Req.Utils.aws_sigv4_url()
-    |> URI.to_string()
-  end
-
-  defp signed_upload_headers(opts) do
-    headers =
-      for {name, key} <- [{"content-type", :content_type}, {"content-length", :size}],
-          value = opts[key],
-          value != nil,
-          do: {name, to_string(value)}
-
-    put_if_exists(headers, opts)
-  end
-
-  defp object_url(state, key, params, base_url \\ nil) do
-    (base_url || base_url(state, state.endpoint)) <> encode_key(key) <> encode_query(params)
-  end
-
-  # URLs handed out to clients use the public endpoint, requests the disk makes itself use `:endpoint`.
-  defp public_base_url(state), do: base_url(state, state.public_endpoint || state.endpoint)
-
-  defp base_url(state, nil) do
-    if state.path_style do
-      "https://s3.#{state.region}.amazonaws.com/#{state.bucket}"
-    else
-      "https://#{state.bucket}.s3.#{state.region}.amazonaws.com"
-    end
-  end
-
-  defp base_url(state, endpoint) do
-    if state.path_style, do: endpoint <> "/" <> state.bucket, else: endpoint
-  end
-
-  defp encode_key(""), do: "/"
-  defp encode_key(key), do: "/" <> encode_path(key)
-
-  defp copy_source(state, src), do: "/" <> state.bucket <> "/" <> encode_path(key(state, src))
-
-  # CopyObject and CompleteMultipartUpload can report failure inside a `200`, after the status has gone out. Only an
-  # `<Error>` document is a failure: once the object may have been written, a body that can't be read doesn't turn it
-  # into an error.
-  defp xml_result(response) do
-    case XML.parse(response.body) do
-      {:ok, {"Error", _attributes, _children}} -> {:error, error(response)}
-      _result_or_unreadable -> :ok
-    end
-  end
-
-  ## ------------------------------------------------------------------
-  ## Keys and prefixes
-  ## ------------------------------------------------------------------
-
-  # Paths are relative to the disk root, keys are relative to the bucket. `state.prefix` is `""` or ends in `/`.
-  defp key(state, "."), do: state.prefix
-  defp key(state, path), do: state.prefix <> path
-
-  defp list_prefix(state, "."), do: state.prefix
-  defp list_prefix(state, path), do: state.prefix <> path <> "/"
-
-  defp base_prefix(state, "."), do: state.prefix
-  defp base_prefix(state, path), do: state.prefix <> path
-
-  defp relative(state, key), do: String.replace_prefix(key, state.prefix, "")
-
-  defp under_prefix?(_key, "."), do: true
-  defp under_prefix?(key, prefix), do: key == prefix or String.starts_with?(key, prefix <> "/")
 
   ## ------------------------------------------------------------------
   ## Listing
   ## ------------------------------------------------------------------
 
-  defp list_all(state, prefix, delimiter, token \\ nil, contents \\ [], prefixes \\ []) do
-    with {:ok, result} <- list_page(state, prefix, delimiter, token) do
-      page_contents =
-        result
-        |> XML.children("Contents")
-        |> Enum.reject(&marker?(&1, prefix))
+  # One page of ListObjectsV2, for `Fil.Support.ObjectStore`.
+  defp list_page(state, prefix, delimiter, token, max_keys) do
+    with {:ok, result} <- list_request(state, list_params(prefix, delimiter, token, max_keys)) do
+      objects = for contents <- XML.children(result, "Contents"), do: object_listing(contents)
+      prefixes = for common_prefix <- XML.children(result, "CommonPrefixes"), do: XML.text(common_prefix, "Prefix")
+      next = if XML.text(result, "IsTruncated") == "true", do: XML.text(result, "NextContinuationToken")
 
-      contents = contents ++ page_contents
-
-      prefixes = prefixes ++ XML.children(result, "CommonPrefixes")
-
-      case next_token(result) do
-        nil -> {:ok, contents, prefixes}
-        token -> list_all(state, prefix, delimiter, token, contents, prefixes)
-      end
+      {:ok, objects, prefixes, next}
     end
   end
 
-  defp list_page(state, prefix, delimiter, token, max_keys \\ nil) do
-    case request(state, :get, "", params: list_params(prefix, delimiter, token, max_keys)) do
-      {:ok, %{status: 200, body: body}} -> parse_xml(body)
-      {:ok, response} -> {:error, error(response)}
+  defp list_request(state, params) do
+    case Client.request(state, :get, "", params: params) do
+      {:ok, %{status: 200, body: body}} -> ObjectStore.parse_xml(body)
+      {:ok, response} -> {:error, Client.error(response)}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -1398,152 +707,31 @@ defmodule Fil.Adapter.S3 do
     )
   end
 
-  defp parse_xml(body) do
-    case XML.parse(body) do
-      {:ok, element} -> {:ok, element}
-      {:error, :invalid_xml} -> {:error, %Fil.UnavailableError{reason: :invalid_xml}}
+  # A key ending in `/` is a directory marker (an empty "folder" made in a console), listed as the directory it stands
+  # for.
+  defp object_listing(contents) do
+    key = XML.text(contents, "Key")
+
+    if String.ends_with?(key, "/") do
+      {key, %Stat{type: :directory}}
+    else
+      stat = %Stat{
+        size:
+          contents
+          |> XML.text("Size")
+          |> ObjectStore.integer(),
+        type: :regular,
+        mtime:
+          contents
+          |> XML.text("LastModified")
+          |> Timestamps.parse_iso8601(),
+        etag:
+          contents
+          |> XML.text("ETag")
+          |> ObjectStore.unquote_etag()
+      }
+
+      {key, stat}
     end
   end
-
-  defp next_token(result) do
-    if XML.text(result, "IsTruncated") == "true", do: XML.text(result, "NextContinuationToken")
-  end
-
-  # A "directory marker" is an empty object named exactly like the listed directory. Only listings pass a prefix with a
-  # trailing slash. Prefix deletions don't, and there a key equal to the prefix is a file to remove.
-  defp marker?(contents, prefix) do
-    String.ends_with?(prefix, "/") and XML.text(contents, "Key") == prefix
-  end
-
-  defp object_listing(state, contents) do
-    stat = %Stat{
-      size: integer(XML.text(contents, "Size")),
-      type: :regular,
-      mtime: parse_iso8601(XML.text(contents, "LastModified")),
-      etag: unquote_etag(XML.text(contents, "ETag"))
-    }
-
-    {relative(state, XML.text(contents, "Key")), stat}
-  end
-
-  defp prefix_listing(state, common_prefix) do
-    path =
-      common_prefix
-      |> XML.text("Prefix")
-      |> to_string()
-      |> String.trim_trailing("/")
-      |> then(&relative(state, &1))
-
-    {path, %Stat{type: :directory}}
-  end
-
-  ## ------------------------------------------------------------------
-  ## Stat
-  ## ------------------------------------------------------------------
-
-  defp object_stat(%{headers: headers}, algorithm) do
-    %Stat{
-      size: integer(header(headers, "content-length")),
-      type: :regular,
-      mtime: parse_http_date(header(headers, "last-modified")),
-      etag: unquote_etag(header(headers, "etag")),
-      content_type: header(headers, "content-type"),
-      checksum: algorithm && stored_checksum(headers, algorithm)
-    }
-  end
-
-  # One page of two keys is enough: the first key under the prefix may be the directory's own marker, which doesn't
-  # count.
-  defp directory_stat(state, path) do
-    prefix = list_prefix(state, path)
-
-    with {:ok, result} <- list_page(state, prefix, "/", nil, 2) do
-      contents =
-        result
-        |> XML.children("Contents")
-        |> Enum.reject(&marker?(&1, prefix))
-
-      if contents == [] and XML.children(result, "CommonPrefixes") == [] do
-        {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
-      else
-        {:ok, %Stat{type: :directory}}
-      end
-    end
-  end
-
-  ## ------------------------------------------------------------------
-  ## Errors
-  ## ------------------------------------------------------------------
-
-  @codes %{
-    "NoSuchKey" => Fil.NotFoundError,
-    "NoSuchBucket" => Fil.ConfigurationError,
-    "AccessDenied" => Fil.AccessDeniedError,
-    "InvalidRequest" => Fil.InvalidRequestError,
-    "EntityTooLarge" => Fil.InvalidRequestError,
-    "KeyTooLongError" => Fil.InvalidRequestError,
-    "PreconditionFailed" => Fil.AlreadyExistsError,
-    "ConditionalRequestConflict" => Fil.AlreadyExistsError,
-    "BadDigest" => Fil.ChecksumMismatchError,
-    "NoSuchUpload" => Fil.ConflictError,
-    "SlowDown" => Fil.UnavailableError,
-    "OperationAborted" => Fil.UnavailableError,
-    "InternalError" => Fil.UnavailableError,
-    "ServiceUnavailable" => Fil.UnavailableError
-  }
-
-  # The error code decides before the status, because S3-compatible servers don't all send the status AWS does.
-  defp error(%{status: status} = response) do
-    region = bucket_region(response)
-    code = error_code(response.body)
-
-    cond do
-      status == 301 or (status == 400 and is_binary(region)) -> %Fil.ConfigurationError{reason: {:wrong_region, region}}
-      Map.has_key?(@codes, code) -> struct(Map.fetch!(@codes, code), reason: code)
-      true -> struct(status_error(status, code), reason: code || {:http_status, status})
-    end
-  end
-
-  # A 409 means an `if_exists: :error` write found a file only without another code: S3 sends 409 for other conflicts
-  # too.
-  defp status_error(404, _code), do: Fil.NotFoundError
-  defp status_error(403, _code), do: Fil.AccessDeniedError
-  defp status_error(412, _code), do: Fil.AlreadyExistsError
-  defp status_error(409, nil), do: Fil.AlreadyExistsError
-  defp status_error(status, _code) when status == 429 or status >= 500, do: Fil.UnavailableError
-  defp status_error(_status, _code), do: Fil.UnknownError
-
-  defp bucket_region(%{headers: headers}), do: header(headers, "x-amz-bucket-region")
-
-  defp error_code(body) when is_binary(body) do
-    case XML.parse(body) do
-      {:ok, element} -> XML.text(element, "Code")
-      {:error, :invalid_xml} -> nil
-    end
-  end
-
-  defp error_code(_body), do: nil
-
-  ## ------------------------------------------------------------------
-  ## Response values
-  ## ------------------------------------------------------------------
-
-  # Req returns headers as a map of lowercase names to lists of values.
-  defp header(headers, name) do
-    headers
-    |> Map.get(name, [])
-    |> List.first()
-  end
-
-  defp integer(nil), do: nil
-
-  defp integer(value) do
-    case Integer.parse(value) do
-      {integer, _rest} -> integer
-      :error -> nil
-    end
-  end
-
-  defp unquote_etag(nil), do: nil
-  defp unquote_etag(etag), do: String.trim(etag, "\"")
 end

@@ -40,8 +40,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
     ## Smart cell
 
-    With `Fil` and Kino installed, Livebook offers a Fil disk smart cell. It's a form for a Local, S3 or Memory disk
-    that generates the `Fil.disk/1` call, such as:
+    With `Fil` and Kino installed, Livebook offers a Fil disk smart cell. It's a form for a Local, S3, Azure Blob or
+    Memory disk that generates the `Fil.disk/1` call, such as:
 
         disk =
           Fil.disk(
@@ -54,7 +54,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
     The S3 credentials are Livebook secrets you pick in the form, so they're never part of the notebook. Without them,
     the disk accesses a public bucket without signing. The session token is optional, for temporary credentials such as
-    those from AWS STS or SSO. Empty fields are left out, so the adapter's defaults apply.
+    those from AWS STS or SSO. Empty fields are left out, so the adapter's defaults apply. An Azure Blob disk takes its
+    account key from a secret the same way.
 
     The path-style switch shows what the disk does. `Fil.Adapter.S3` uses path-style URLs when there's an endpoint, so
     the switch turns on when you enter one and off when you clear it, until you switch it the other way. The code sets

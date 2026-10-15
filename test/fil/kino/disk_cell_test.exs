@@ -112,6 +112,43 @@ defmodule Fil.Kino.DiskCellTest do
     end
   end
 
+  describe "azure_blob" do
+    test "generates every option, with the account key from a secret" do
+      attrs = %{
+        "variable" => "invoices",
+        "adapter" => "azure_blob",
+        "account" => "acct",
+        "container" => "invoices",
+        "root" => "2026",
+        "blob_endpoint" => "http://127.0.0.1:10000/acct",
+        "account_key_secret" => "AZURE_STORAGE_KEY",
+        "bucket" => "left over from S3"
+      }
+
+      {_kino, source} = start_smart_cell!(DiskCell, attrs)
+
+      assert source == """
+             invoices =
+               Fil.disk(
+                 adapter: Fil.Adapter.AzureBlob,
+                 account: "acct",
+                 container: "invoices",
+                 root: "2026",
+                 endpoint: "http://127.0.0.1:10000/acct",
+                 account_key: System.fetch_env!("LB_AZURE_STORAGE_KEY")
+               )\
+             """
+    end
+
+    test "leaves out empty fields and a missing secret" do
+      attrs = %{"variable" => "public", "adapter" => "azure_blob", "account" => "acct", "container" => "c"}
+
+      {_kino, source} = start_smart_cell!(DiskCell, attrs)
+
+      assert source == ~s[public = Fil.disk(adapter: Fil.Adapter.AzureBlob, account: "acct", container: "c")]
+    end
+  end
+
   describe "path_style" do
     test "is left out when it's on with an endpoint, the adapter's default" do
       source = s3_source(%{"endpoint" => "http://localhost:9000", "path_style" => true})

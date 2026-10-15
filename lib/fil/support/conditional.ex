@@ -24,7 +24,7 @@ defmodule Fil.Support.Conditional do
   @doc "The `Last-Modified` header value of a file, or `nil` if the storage gave no time."
   @spec last_modified(Stat.t()) :: String.t() | nil
   def last_modified(%Stat{mtime: nil}), do: nil
-  def last_modified(%Stat{mtime: mtime}), do: http_date(mtime)
+  def last_modified(%Stat{mtime: mtime}), do: Fil.Support.Timestamps.format_http_date(mtime)
 
   @doc """
   Whether a `GET` or `HEAD` gets a `304`: `If-None-Match` lists the file's etag (compared weakly) or is `*`, or, without
@@ -141,14 +141,6 @@ defmodule Fil.Support.Conditional do
   defp resolve({first, _last}, size) when first >= size, do: :unsatisfiable
   defp resolve({first, nil}, size), do: {:range, first, size - first}
   defp resolve({first, last}, size), do: {:range, first, min(last, size - 1) - first + 1}
-
-  @doc "Formats a time as an HTTP date: `Sun, 06 Nov 1994 08:49:37 GMT`."
-  @spec http_date(DateTime.t()) :: String.t()
-  def http_date(%DateTime{} = time) do
-    time
-    |> DateTime.shift_zone!("Etc/UTC")
-    |> Calendar.strftime("%a, %d %b %Y %H:%M:%S GMT")
-  end
 
   @doc """
   Parses an HTTP date in the format every sender has to use (IMF-fixdate). A date in one of the obsolete formats is an

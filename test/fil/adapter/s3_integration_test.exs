@@ -13,6 +13,7 @@ defmodule Fil.Adapter.S3IntegrationTest do
   """
 
   alias Fil.Adapter.S3
+  alias Fil.AdapterCase
   alias Fil.Emulator
   alias Phoenix.LiveView.UploadEntry
 
@@ -45,20 +46,7 @@ defmodule Fil.Adapter.S3IntegrationTest do
   end
 
   # Sends the requests of the conformance suite's signed URL tests to RustFS.
-  def fil_request(_disk, method, url, opts) do
-    {:ok, response} =
-      Req.request(
-        method: method,
-        url: url,
-        body: Keyword.get(opts, :body),
-        headers: Keyword.get(opts, :headers, []),
-        retry: false,
-        raw: true
-      )
-
-    headers = for {name, values} <- response.headers, value <- values, do: {name, value}
-    {response.status, headers, response.body}
-  end
+  defdelegate fil_request(disk, method, url, opts), to: Fil.AdapterCase, as: :req_request
 
   # The test's own root in the run's bucket. It's derived from the test name, because the conformance suite calls
   # `fil_disk/1` in its `setup` and again in a test, and both calls have to return the same disk.
@@ -130,15 +118,24 @@ defmodule Fil.Adapter.S3IntegrationTest do
       assert {:ok, %{status: 200, body: "public"}} = get(url)
       assert {:ok, %{status: 403}} = get(String.replace(url, public_host, endpoint.host))
 
-      assert {:ok, put_url} = Fil.signed_url(public, "a b/ü.txt", method: :put)
+      assert {:ok, %{url: put_url}} = Fil.signed_upload(public, "a b/ü.txt")
       assert {:ok, %{status: 200}} = put(put_url, "changed")
       assert Fil.read(disk, "a b/ü.txt") == {:ok, "changed"}
     end
 
+    # Azure doesn't take a range from the end, so it's no test of the conformance suite.
+    test "a presigned URL downloads the end of a file", %{disk: disk} do
+      assert {:ok, _} = Fil.write(disk, "digits.txt", "0123456789")
+      assert {:ok, url} = Fil.signed_url(disk, "digits.txt", expires_in: 60)
+
+      assert {:ok, %{status: 206, body: "789"}} =
+               Req.request(method: :get, url: url, headers: [{"range", "bytes=-3"}], retry: false, raw: true)
+    end
+
     test "presigns an upload bound to if-none-match, and answers 412 the second time", %{disk: disk} do
-      opts = [method: :put, content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
-      assert {:ok, url} = Fil.signed_url(disk, "avatars/a.png", opts)
-      headers = [{"content-type", "image/png"}, {"if-none-match", "*"}]
+      opts = [content_type: "image/png", size: 3, if_exists: :error, expires_in: 60]
+      assert {:ok, %{url: url, headers: headers}} = Fil.signed_upload(disk, "avatars/a.png", opts)
+      headers = Map.to_list(headers)
 
       # The signature covers the header, so a request without it is refused.
       assert {:ok, %{status: 403}} = put(url, "png", List.keydelete(headers, "if-none-match", 0))
@@ -174,9 +171,9 @@ defmodule Fil.Adapter.S3IntegrationTest do
 
   describe "uploads in parts" do
     test "complete with the content type, and an ETag that counts the parts", %{disk: disk} do
-      content = :crypto.strong_rand_bytes(large())
+      content = :crypto.strong_rand_bytes(AdapterCase.large())
 
-      assert {:ok, _} = Fil.write(disk, "video.mp4", chunked(content, 65_536), content_type: "video/mp4")
+      assert {:ok, _} = Fil.write(disk, "video.mp4", AdapterCase.chunked(content, 65_536), content_type: "video/mp4")
       assert {:ok, %Fil.Stat{content_type: "video/mp4", etag: etag}} = Fil.stat(disk, "video.mp4")
       assert String.ends_with?(etag, "-2")
     end
@@ -216,9 +213,9 @@ defmodule Fil.Adapter.S3IntegrationTest do
     end
 
     test "a SHA-256 of an upload in parts covers the parts", %{disk: disk} do
-      content = :crypto.strong_rand_bytes(large())
+      content = :crypto.strong_rand_bytes(AdapterCase.large())
 
-      assert {:ok, _} = Fil.write(disk, "sha.bin", chunked(content, 65_536), checksum: :sha256)
+      assert {:ok, _} = Fil.write(disk, "sha.bin", AdapterCase.chunked(content, 65_536), checksum: :sha256)
 
       # S3 stores a checksum of the parts' checksums, which isn't the checksum of the file.
       assert {:ok, %Fil.Stat{checksum: nil}} = Fil.stat(disk, "sha.bin", checksum: :sha256)
@@ -241,8 +238,8 @@ defmodule Fil.Adapter.S3IntegrationTest do
 
   defp large_chunks do
     "a"
-    |> :binary.copy(large())
-    |> chunked(65_536)
+    |> :binary.copy(AdapterCase.large())
+    |> AdapterCase.chunked(65_536)
   end
 
   # `chunks`, then a chunk that runs `fun`.

@@ -7,9 +7,9 @@ defmodule Fil.TelemetryHelper do
   `$callers`. So the handler only forwards events from the test process and the processes it started, such as a `Task`
   that reads a stream.
 
-      import Fil.TelemetryHelper
+      alias Fil.TelemetryHelper
 
-      attach([[:fil, :op, :stop]])
+      TelemetryHelper.attach([[:fil, :op, :stop]])
       Fil.read(disk, "a.txt")
       assert_receive {:telemetry, [:fil, :op, :stop], %{duration: _}, %{op: :read}}
 

@@ -5,7 +5,7 @@
   doc), because third-party adapters will be held to the suite once it's public. A result that differs between adapters
   on purpose (S3 refuses what Local allows) is asserted as the set of allowed results, and the exact result stays in the
   adapter's own test. Signed URL tests send their requests with `fil_request/4` (see `Fil.AdapterCase`) and assert
-  refusals as a 4xx status; the exact statuses stay in `plug_test.exs` and `s3_integration_test.exs`.
+  refusals as a 4xx status; the exact statuses stay in `plug_test.exs` and the adapters' integration tests.
 - Feature tests whose subject is the storage path (`Fil.Plug`, `Fil.LiveView`) run on Local and Memory with
   `use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()`, `@moduletag :tmp_dir` and
   `Fil.DiskHelper.disk/1` in `setup` (never `setup_all`: a memory store belongs to the test process). Tests that need
@@ -16,22 +16,23 @@
   `file:line` runs a test on both adapters, a failure prints `Parameters: %{adapter: ...}` under the test, and
   `--slowest` lists the test twice without saying which run is which.
 - Cloud unit tests stub the storage with `Req.Test` (`Req.Test.stub(__MODULE__, &s3(&1, test))` or `Req.Test.expect/3`,
-  and `req_options: [plug: {Req.Test, __MODULE__}]`), so `mix test` makes no network requests. The stubs are plugs, so
-  the tests need Plug, which stays optional for users. Req runs the stub after its own request steps (signing included),
-  so it can send the test the `Plug.Conn` it got, to assert on its method, path, query, headers and body
+  and `req_options: [plug: {Req.Test, __MODULE__}]`), so `mix test` makes no network requests. The adapter tests share
+  `Fil.ReqStub` (test/support), which expects one request per response and sends each request to the test. The stubs are
+  plugs, so the tests need Plug, which stays optional for users. Req runs the stub after its own request steps (signing
+  included), so it can send the test the `Plug.Conn` it got, to assert on its method, path, query, headers and body
   (`Plug.Conn.read_body/1`). Bind `test = self()` outside the stub and send to `test`, not `self()`: Req.Test finds the
   stub through `$callers`, so it may run in another process. Stubs are owned per test process, so the tests stay async.
   Tests `import Plug.Conn`, like `Fil.Plug` does.
-- Integration tests create a bucket per run and give each test its own root in it, derived from the test name
-  (`:erlang.phash2(test, 4_294_967_296)`), so `fil_disk/1` returns the same disk each time it's called. Anything that
-  lists the whole bucket, such as the multipart uploads, filters by that root.
+- Integration tests create a bucket or container per run and give each test its own root in it, derived from the test
+  name (`:erlang.phash2(test, 4_294_967_296)`), so `fil_disk/1` returns the same disk each time it's called. Anything
+  that lists the whole bucket, such as the multipart uploads, filters by that root.
 - Telemetry tests attach with `Fil.TelemetryHelper.attach/1`, which forwards only the events of the test process and
   the processes it started (`$callers`), so they stay async. `:telemetry_test.attach_event_handlers/2` would forward
   every async test's events. Tests that attach a handler for every process (the default logger) are `async: false`.
-- Kino tests `import Kino.Test` and run `setup :configure_livebook_bridge`, then `setup :configure_uploads` from
-  `Fil.KinoHelper`, in that order: the helper's group leader sits in front of Kino's and answers the file path requests
-  Kino's can't. `Fil.KinoHelper.upload/3` fakes a Livebook upload into a file input, and `status/1` returns the next
-  status line of an upload field. Both group leaders belong to the test process, so the tests stay async.
+- Kino tests `import Kino.Test` and run `setup :configure_livebook_bridge`, then `setup {Fil.KinoHelper,
+  :configure_uploads}`, in that order: the helper's group leader sits in front of Kino's and answers the file path
+  requests Kino's can't. `Fil.KinoHelper.upload/3` fakes a Livebook upload into a file input, and `status/1` returns the
+  next status line of an upload field. Both group leaders belong to the test process, so the tests stay async.
 - One-line input/output checks are doctests on the function they test, not separate tests. `Fil.DoctestTest` runs
   the doctests of every module in the app, so don't add `doctest` lines to other test files.
 - Doctests that write files use `Fil.disk(adapter: Fil.Adapter.Memory)` (a second disk gets another `root:`).

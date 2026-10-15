@@ -68,9 +68,9 @@ defmodule Fil.Adapter do
   `Fil.AdapterCase` (internal for now) tests this contract against a live disk.
 
   Every adapter `Fil` ships reads, writes and streams files, lists, copies and checks checksums, and every disk builds
-  public and signed URLs (S3 itself, the others with `Fil.Plugin.URL`), so code written against one disk runs on the
-  others. What's left are edge cases, such as whether directories exist on their own, and each adapter lists them
-  under Operations on its own page.
+  public and signed URLs (S3 and Azure themselves, the others with `Fil.Plugin.URL`), so code written against one disk
+  runs on the others. What's left are edge cases, such as whether directories exist on their own, and each adapter lists
+  them under Operations on its own page.
 
   ## Errors
 
@@ -207,22 +207,42 @@ defmodule Fil.Adapter do
   @callback url(state(), path(), opts()) :: {:ok, String.t()} | error()
 
   @doc """
-  Builds a URL that grants temporary access to a file.
+  Builds a URL that downloads a file for a limited time.
 
   Optional. Adapters whose storage can't sign URLs leave it out, and `Fil.signed_url/2` then returns a
   `Fil.UnsupportedError`. `Fil.Plugin.URL` signs URLs for those disks, and `Fil.Plug` serves them.
 
-  `opts` has `:method`, `:expires_in` and `:query` as `Fil.signed_url/3` validated them, and for a download with
-  `disposition:`, `:disposition` as the finished `content-disposition` header value. The storage has to send that header
-  with the download, and the URL's signature has to cover it and the `:query` parameters. A request with another path,
-  method or parameter than the URL was signed for gets a status in the 4xx range, and an upload through it writes
-  nothing.
-
-  An upload URL may get `:content_type`, `:size` and `:if_exists`. The signature has to cover them, so the storage
-  refuses an upload with another `content-type` or `content-length`, and with `if_exists: :error` one that finds a file
-  at the path. The client sends the headers `Fil.signed_url/3` lists under Uploads.
+  `opts` has `:expires_in` and `:query` as `Fil.signed_url/3` validated them, and with `disposition:`, `:disposition`
+  as the finished `content-disposition` header value. The storage has to send that header with the download, and the
+  URL's signature has to cover it and the `:query` parameters. A request with another path, method or parameter than
+  the URL was signed for gets a status in the 4xx range. A storage that can't sign `:query` returns a
+  `Fil.UnsupportedError` when there is one.
   """
   @callback signed_url(state(), path(), opts()) :: {:ok, String.t()} | error()
+
+  @doc """
+  Signs an upload to a file: the request a client sends to store it, as a `t:Fil.signed_upload/0`.
+
+  Optional, like `c:signed_url/3`: without it, `Fil.signed_upload/2` returns a `Fil.UnsupportedError`, and
+  `Fil.Plugin.URL` signs uploads for the disk instead.
+
+  `opts` has `:expires_in` and `:query`, as for `c:signed_url/3`, and may have `:content_type`, `:size` and
+  `:if_exists`. The result is a `PUT` with the file as the body, or a `POST` with form fields before it. Its headers are
+  the ones the client has to send: `content-type` for `:content_type`, `if-none-match: *` for `if_exists: :error`, and
+  any the storage needs. `:expires_at` is when the URL stops working. The storage refuses an upload with another
+  `content-type` or `content-length` where it can (see `c:binds_uploads?/1`), and with `if_exists: :error` one that
+  finds a file at the path. A request with another path or method, or a changed parameter, writes nothing.
+  """
+  @callback signed_upload(state(), path(), opts()) :: {:ok, Fil.signed_upload()} | error()
+
+  @doc """
+  Whether the storage refuses an upload from `c:signed_upload/3` with another `content-type` or `content-length` than
+  it was signed with.
+
+  Optional, and `false` without it. `Fil.Plugin.Validation` takes the signed `:content_type` and `:size` as the
+  upload's only where the storage binds them, and otherwise refuses to sign an upload its rules can't check.
+  """
+  @callback binds_uploads?(state()) :: boolean()
 
   @doc """
   Returns the address of the files: what decides which file a path names, such as the root directory, or the bucket and
@@ -234,5 +254,5 @@ defmodule Fil.Adapter do
   """
   @callback address(state()) :: term()
 
-  @optional_callbacks stream: 3, url: 3, signed_url: 3, address: 1
+  @optional_callbacks stream: 3, url: 3, signed_url: 3, signed_upload: 3, binds_uploads?: 1, address: 1
 end

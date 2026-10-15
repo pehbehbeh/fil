@@ -12,7 +12,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     def uploader(assigns) do
       ~H"""
       <script :type={Phoenix.LiveView.ColocatedJS} name="Fil" key="uploaders">
-        // PUTs each file to the URL `Fil.LiveView.external/2` signed, with the headers the signature covers. XHR
+        // Sends each file as `Fil.LiveView.external/2` signed it, with the method, headers and form fields
+        // `Fil.signed_upload/3` gave: the file as the body of a PUT, or after the fields of a form for a POST. XHR
         // instead of fetch, because only XHR reports upload progress. LiveView turns `entry.error()` into
         // `:external_client_failure`.
         export default function Fil(entries, onViewError) {
@@ -38,13 +39,21 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             }
             xhr.onerror = () => entry.error()
 
-            xhr.open("PUT", entry.meta.url, true)
+            const {method, url, headers, fields} = entry.meta
+            xhr.open(method.toUpperCase(), url, true)
 
-            for (const [name, value] of Object.entries(entry.meta.headers)) {
+            for (const [name, value] of Object.entries(headers)) {
               xhr.setRequestHeader(name, value)
             }
 
-            xhr.send(entry.file)
+            if (method === "post") {
+              const form = new FormData()
+              for (const [name, value] of fields) form.append(name, value)
+              form.append("file", entry.file)
+              xhr.send(form)
+            } else {
+              xhr.send(entry.file)
+            }
           }
         }
       </script>

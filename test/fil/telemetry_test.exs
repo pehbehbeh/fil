@@ -1,10 +1,9 @@
 defmodule Fil.TelemetryTest do
   alias Fil.Adapter.Memory
   alias Fil.Op
+  alias Fil.TelemetryHelper
 
   use ExUnit.Case, async: true
-
-  import Fil.TelemetryHelper
 
   @events [
     [:fil, :op, :start],
@@ -19,7 +18,7 @@ defmodule Fil.TelemetryTest do
 
   setup do
     :ok = Memory.checkout()
-    :ok = attach(@events)
+    :ok = TelemetryHelper.attach(@events)
     {:ok, disk: Fil.disk(adapter: Memory)}
   end
 
@@ -30,7 +29,7 @@ defmodule Fil.TelemetryTest do
       assert [
                {[:fil, :op, :start], start_measurements, start},
                {[:fil, :op, :stop], stop_measurements, stop}
-             ] = events()
+             ] = TelemetryHelper.events()
 
       assert start_measurements
              |> Map.keys()
@@ -59,10 +58,10 @@ defmodule Fil.TelemetryTest do
 
     test "copies and renames have a destination", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "a.txt", "content")
-      _ = events()
+      _ = TelemetryHelper.events()
 
       assert {:ok, _} = Fil.cp(disk, "a.txt", "./copies//b.txt")
-      assert [_start, {[:fil, :op, :stop], _, stop}] = events()
+      assert [_start, {[:fil, :op, :stop], _, stop}] = TelemetryHelper.events()
       assert %{op: :cp, path: "a.txt", dest: "copies/b.txt", dest_disk: ^disk} = stop
     end
 
@@ -99,7 +98,7 @@ defmodule Fil.TelemetryTest do
         assert_raise ArgumentError, ~r/got a list that isn't iodata/, fn -> Fil.write(disk, "a.txt", content) end
       end
 
-      assert events() == []
+      assert TelemetryHelper.events() == []
     end
 
     test "bytes count what a plugin read of the caller's stream", %{disk: disk} do
@@ -132,7 +131,8 @@ defmodule Fil.TelemetryTest do
     test "bang variants emit a stop, not an exception", %{disk: disk} do
       assert_raise Fil.NotFoundError, fn -> Fil.read!(disk, "nope.txt") end
 
-      assert [{[:fil, :op, :start], _, _}, {[:fil, :op, :stop], _, %{error: %Fil.NotFoundError{}}}] = events()
+      assert [{[:fil, :op, :start], _, _}, {[:fil, :op, :stop], _, %{error: %Fil.NotFoundError{}}}] =
+               TelemetryHelper.events()
     end
 
     test "exists? and dir? are a stat", %{disk: disk} do
@@ -154,14 +154,14 @@ defmodule Fil.TelemetryTest do
       assert [
                {[:fil, :op, :start], _, %{telemetry_span_context: context}},
                {[:fil, :op, :exception], measurements, exception}
-             ] = events()
+             ] = TelemetryHelper.events()
 
       assert %{kind: :error, reason: %RuntimeError{message: "broken"}, stacktrace: [_ | _]} = exception
       assert %{op: :read, path: "a.txt", telemetry_span_context: ^context} = exception
       assert %{duration: _, monotonic_time: _} = measurements
 
       assert_raise ArgumentError, ~r/must return a %Fil.Op{}/, fn -> Fil.read(returning, "a.txt") end
-      assert [_start, {[:fil, :op, :exception], _, %{reason: %ArgumentError{}}}] = events()
+      assert [_start, {[:fil, :op, :exception], _, %{reason: %ArgumentError{}}}] = TelemetryHelper.events()
     end
 
     test "a plugin that answers itself emits the same events", %{disk: disk} do
@@ -189,7 +189,7 @@ defmodule Fil.TelemetryTest do
       content = Stream.map([:boom], fn _ -> raise "the upload broke off" end)
 
       assert_raise RuntimeError, fn -> Fil.write(disk, "a.txt", content) end
-      assert [_start, {[:fil, :op, :exception], _, %{op: :write, reason: %RuntimeError{}}}] = events()
+      assert [_start, {[:fil, :op, :exception], _, %{op: :write, reason: %RuntimeError{}}}] = TelemetryHelper.events()
     end
 
     test "a throw from the content ends the write with an exception and is thrown again", %{disk: disk} do
@@ -201,14 +201,14 @@ defmodule Fil.TelemetryTest do
       assert [
                _start,
                {[:fil, :op, :exception], _, %{op: :write, kind: :throw, reason: {:upload, :too_large}}}
-             ] = events()
+             ] = TelemetryHelper.events()
     end
   end
 
   describe "stream events" do
     setup %{disk: disk} do
       {:ok, _} = Fil.write(disk, "a.txt", "content")
-      _ = events()
+      _ = TelemetryHelper.events()
       :ok
     end
 
@@ -218,7 +218,7 @@ defmodule Fil.TelemetryTest do
       for {changed, halted} <- [{"more content", true}, {"short", false}] do
         source = Fil.stream!(disk, "a.txt")
         {:ok, _} = Fil.write(disk, "a.txt", changed)
-        _ = events()
+        _ = TelemetryHelper.events()
 
         assert {:error, %Fil.ConflictError{op: :read, path: "a.txt"} = error} = Fil.write(other, "b.txt", source)
 
@@ -227,7 +227,7 @@ defmodule Fil.TelemetryTest do
                  {[:fil, :stream, :start], _, %{op: :read}},
                  {[:fil, :stream, :stop], _, %{op: :read, halted: ^halted}},
                  {[:fil, :op, :stop], _, %{op: :write, error: ^error}}
-               ] = events()
+               ] = TelemetryHelper.events()
 
         {:ok, _} = Fil.write(disk, "a.txt", "content")
       end
@@ -236,7 +236,9 @@ defmodule Fil.TelemetryTest do
     test "the op ends when the stream is handed out, the stream span when it's read", %{disk: disk} do
       assert {:ok, stream} = Fil.stream(disk, "a.txt")
 
-      assert [{[:fil, :op, :start], _, op_start}, {[:fil, :op, :stop], op_measurements, op_stop}] = events()
+      assert [{[:fil, :op, :start], _, op_start}, {[:fil, :op, :stop], op_measurements, op_stop}] =
+               TelemetryHelper.events()
+
       assert %{op: :read, streaming: true, path: "a.txt"} = op_start
       assert op_stop.error == nil
       refute Map.has_key?(op_measurements, :bytes)
@@ -246,7 +248,7 @@ defmodule Fil.TelemetryTest do
       assert [
                {[:fil, :stream, :start], start_measurements, start},
                {[:fil, :stream, :stop], stop_measurements, stop}
-             ] = events()
+             ] = TelemetryHelper.events()
 
       assert %{monotonic_time: _, system_time: _} = start_measurements
       assert %{duration: _, monotonic_time: _, bytes: 7} = stop_measurements
@@ -274,14 +276,14 @@ defmodule Fil.TelemetryTest do
         end)
 
       assert {:ok, stream} = Fil.stream(failing, "a.txt")
-      _ = events()
+      _ = TelemetryHelper.events()
 
       assert_raise Fil.UnavailableError, fn -> Enum.to_list(stream) end
 
       assert [
                {[:fil, :stream, :start], _, _},
                {[:fil, :stream, :exception], %{duration: _}, %{kind: :error, reason: reason}}
-             ] = events()
+             ] = TelemetryHelper.events()
 
       assert %Fil.UnavailableError{op: :read, path: "a.txt", disk: ^failing} = reason
     end
@@ -298,7 +300,7 @@ defmodule Fil.TelemetryTest do
       assert [
                {[:fil, :stream, :exception], %{duration: _}, %{kind: :throw, reason: :closed, stacktrace: [_ | _]}},
                {[:fil, :stream, :exception], %{duration: _}, %{kind: :exit, reason: :closed}}
-             ] = for({[:fil, :stream, :exception], _, _} = event <- events(), do: event)
+             ] = for({[:fil, :stream, :exception], _, _} = event <- TelemetryHelper.events(), do: event)
     end
 
     test "an error of the consumer halts the stream", %{disk: disk} do
@@ -349,7 +351,7 @@ defmodule Fil.TelemetryTest do
                {[:fil, :stream, :start], _, %{op: :read}},
                {[:fil, :stream, :stop], %{bytes: 7}, %{op: :read}},
                {[:fil, :op, :stop], %{bytes: 7}, %{op: :write}}
-             ] = events()
+             ] = TelemetryHelper.events()
     end
   end
 
@@ -363,7 +365,7 @@ defmodule Fil.TelemetryTest do
                {[:fil, :op, :stop], %{duration: _}, %{op: :read, error: read_error}},
                {[:fil, :op, :start], _, %{op: :signed_url}},
                {[:fil, :op, :stop], _, %{op: :signed_url, error: %{reason: :ebadpath}}}
-             ] = events()
+             ] = TelemetryHelper.events()
 
       assert %Fil.InvalidRequestError{op: :read, path: "../escape.txt", disk: ^disk} = read_error
     end
@@ -379,7 +381,7 @@ defmodule Fil.TelemetryTest do
   describe "copies and renames across disks" do
     setup %{disk: disk} do
       {:ok, _} = Fil.write(disk, "a.txt", "content")
-      _ = events()
+      _ = TelemetryHelper.events()
       {:ok, other: Fil.disk(adapter: Memory, root: "other")}
     end
 
@@ -404,7 +406,7 @@ defmodule Fil.TelemetryTest do
                {[:fil, :stream, :stop], %{bytes: 7}, %{op: :read, halted: false}},
                {[:fil, :op, :stop], %{bytes: 7}, %{op: :write}},
                {[:fil, :op, :stop], cp_measurements, %{op: :cp, error: nil} = cp_stop}
-             ] = events()
+             ] = TelemetryHelper.events()
 
       assert cp_stop.telemetry_span_context == cp.telemetry_span_context
       refute Map.has_key?(cp_measurements, :bytes)
@@ -434,7 +436,7 @@ defmodule Fil.TelemetryTest do
       assert Enum.join(stream) == marker
       assert {:ok, url} = Fil.signed_url(disk, "a.txt")
 
-      for {_event, measurements, metadata} <- events() do
+      for {_event, measurements, metadata} <- TelemetryHelper.events() do
         refute inspect({measurements, metadata}) =~ marker
         refute inspect({measurements, metadata}) =~ url
       end
@@ -449,9 +451,10 @@ defmodule Fil.TelemetryTest do
     end)
   end
 
-  defp stops, do: for({[:fil, :op, :stop], measurements, metadata} <- events(), do: {measurements, metadata})
+  defp stops,
+    do: for({[:fil, :op, :stop], measurements, metadata} <- TelemetryHelper.events(), do: {measurements, metadata})
 
   defp stream_stops do
-    for {[:fil, :stream, :stop], measurements, metadata} <- events(), do: {measurements, metadata}
+    for {[:fil, :stream, :stop], measurements, metadata} <- TelemetryHelper.events(), do: {measurements, metadata}
   end
 end

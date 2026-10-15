@@ -2,13 +2,12 @@ defmodule Fil.Plugin.ThumbnailsTest do
   alias Fil.Adapter.Memory
   alias Fil.Op
   alias Fil.Plugin.Thumbnails
+  alias Fil.TelemetryHelper
   alias Vix.Vips.Image
   alias Vix.Vips.MutableImage
   alias Vix.Vips.Operation
 
   use ExUnit.Case, async: true
-
-  import Fil.TelemetryHelper
 
   setup do
     Memory.checkout()
@@ -232,7 +231,7 @@ defmodule Fil.Plugin.ThumbnailsTest do
 
     test "emit a :write event for the image and one for each variant" do
       disk = disk(variants: [small: [width: 100], large: [width: 200]])
-      attach([[:fil, :op, :stop]])
+      TelemetryHelper.attach([[:fil, :op, :stop]])
 
       Fil.write!(disk, "photo.png", image(400, 200))
 
@@ -240,7 +239,7 @@ defmodule Fil.Plugin.ThumbnailsTest do
                {_, _, %{op: :write, path: "thumbnails/small/photo.png"}},
                {_, _, %{op: :write, path: "thumbnails/large/photo.png"}},
                {_, _, %{op: :write, path: "photo.png"}}
-             ] = events()
+             ] = TelemetryHelper.events()
     end
   end
 

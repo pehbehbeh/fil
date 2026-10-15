@@ -12,9 +12,14 @@
 
 [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Ffil.hexdocs.pm%2Ftour.livemd)
 
+<!-- MDOC -->
+
 `Fil` is a pluggable file storage abstraction for Elixir.
 
-<!-- MDOC -->
+Adapters: [`Local`](https://fil.hexdocs.pm/Fil.Adapter.Local.html),
+[`Memory`](https://fil.hexdocs.pm/Fil.Adapter.Memory.html),
+[`S3`](https://fil.hexdocs.pm/Fil.Adapter.S3.html),
+[`AzureBlob`](https://fil.hexdocs.pm/Fil.Adapter.AzureBlob.html).
 
 ```elixir
 Mix.install([
@@ -33,26 +38,11 @@ With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes t
 
 To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html) in [Livebook](https://livebook.dev).
 
-<!-- /MDOC -->
-
-## Table of Contents
-
-- [Features and goals](#features-and-goals)
-- [Concepts](#concepts)
-- [Usage](#usage)
-- [Development](#development)
-- [Acknowledgments](#acknowledgments)
-
-> [!NOTE]
->
 > `Fil` is in early development, and the API may still change a lot.
-
-<!-- MDOC -->
 
 ## Features and goals
 
-- **One API for many kinds of storage.** Local disk, S3 (and S3-compatible stores) and an in-memory disk for async
-  tests, with the same behaviour on every adapter. `cp` and `rename` work across disks.
+- **One API for many kinds of storage.** The same behaviour on every adapter, and `cp` and `rename` work across disks.
 - **Just values.** A disk is a plain value: no application config, no registry, nothing to supervise. It works in a
   script or a Livebook with `Mix.install/1`.
 - **Pluggable.** Anything that isn't about where files are stored is a [plugin](https://fil.hexdocs.pm/plugins.html),
@@ -69,7 +59,7 @@ To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html)
   - Ecto: [`Fil.Ecto.Ref`](https://fil.hexdocs.pm/Fil.Ecto.Ref.html) stores refs in Ecto schemas.
   - Livebook: [`Fil.Kino`](https://fil.hexdocs.pm/Fil.Kino.html) browses a disk, uploads files to it, and adds a smart
     cell that builds one.
-- **URLs on every disk.** Public and signed GET and PUT URLs, from S3 itself or from
+- **URLs on every disk.** Public and signed GET and PUT URLs, from S3 and Azure themselves or from
   [`Fil.Plugin.URL`](https://fil.hexdocs.pm/Fil.Plugin.URL.html) and `Fil.Plug`.
 - **Safe by default.** Paths can't climb out of the disk root, `if_exists: :error` never replaces a file, and S3
   verifies checksums.
@@ -245,15 +235,15 @@ it's read, in one request. For other streams, pass `size:` if you know it, or S3
 {:ok, rest} = Fil.stream(s3, "videos/intro.mp4", offset: 4096)
 ```
 
-`url` returns the public URL of a file, and `signed_url` an expiring one, so clients can download or upload a file
-directly instead of going through your application code. S3 serves its URLs itself. For local and in-memory disks,
-`Fil.Plugin.URL` builds them and `Fil.Plug` serves them from your application, with etags, `304`s and range requests,
-so browsers can cache files and seek in videos:
+`url` returns the public URL of a file, `signed_url` an expiring one, and `signed_upload` an expiring URL with the
+headers to send, so clients can download or upload a file directly instead of going through your application code. S3
+and Azure serve their URLs themselves. For local and in-memory disks, `Fil.Plugin.URL` builds them and `Fil.Plug` serves
+them from your application, with etags, `304`s and range requests, so browsers can cache files and seek in videos:
 
 ```elixir
 {:ok, logo_url} = Fil.url(s3, "logo.png")
 {:ok, url} = Fil.signed_url(report, expires_in: 900)
-{:ok, upload_url} = Fil.signed_url(s3, "inbox/new.bin", method: :put)
+{:ok, %{url: upload_url, headers: headers}} = Fil.signed_upload(s3, "inbox/new.bin")
 ```
 
 With `checksum:`, a write sends a checksum of the content. S3 rejects the upload if what it received doesn't match,
@@ -287,8 +277,8 @@ report = Fil.tmp("report.pdf")
 
 ## Development
 
-`mix test` runs the unit tests, which need no network. The integration tests run the conformance suite against RustFS,
-started with Docker Compose:
+`mix test` runs the unit tests, which need no network. The integration tests run the conformance suite against RustFS
+(S3) and Azurite (Azure Blob Storage), started with Docker Compose:
 
 ```bash
 docker compose up -d
@@ -296,7 +286,8 @@ mix test.integration
 ```
 
 `FIL_S3_ENDPOINT`, `FIL_S3_ACCESS_KEY_ID`, `FIL_S3_SECRET_ACCESS_KEY` and `FIL_S3_REGION` point the integration tests
-at another S3 endpoint.
+at another S3 endpoint, and `FIL_AZURE_BLOB_ENDPOINT`, `FIL_AZURE_BLOB_ACCOUNT` and `FIL_AZURE_BLOB_ACCOUNT_KEY` at
+another Azure account.
 
 ## Acknowledgments
 

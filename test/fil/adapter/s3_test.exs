@@ -1,9 +1,10 @@
 defmodule Fil.Adapter.S3Test do
   alias Fil.Adapter.S3
+  alias Fil.AdapterCase
+  alias Fil.ReqStub
 
   use ExUnit.Case, async: true
 
-  import Fil.AdapterCase, only: [chunked: 2]
   import Plug.Conn
 
   setup {Req.Test, :verify_on_exit!}
@@ -576,7 +577,9 @@ defmodule Fil.Adapter.S3Test do
 
       content = :crypto.strong_rand_bytes(@part + 1)
 
-      assert {:ok, ref} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), content_type: "video/mp4")
+      assert {:ok, ref} =
+               Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(content, @mib), content_type: "video/mp4")
+
       assert ref.path == "a.bin"
 
       [create, first, second, complete] = requests()
@@ -610,7 +613,7 @@ defmodule Fil.Adapter.S3Test do
         response(200, completed_xml())
       ])
 
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(:binary.copy("a", 2 * @part), @mib))
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(:binary.copy("a", 2 * @part), @mib))
 
       assert [_create, _first, second, complete] = requests()
       assert byte_size(second.assigns.body) == @part
@@ -621,7 +624,7 @@ defmodule Fil.Adapter.S3Test do
       stub([response(200)])
       content = :binary.copy("a", @part)
 
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), content_type: "video/mp4")
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(content, @mib), content_type: "video/mp4")
 
       request = request!()
       assert {request.method, request.query_params} == {"PUT", %{}}
@@ -800,12 +803,12 @@ defmodule Fil.Adapter.S3Test do
         response(200, completed_xml())
       ])
 
-      assert {:ok, _} = Fil.write(disk, "a.bin", chunked(:binary.copy("a", 2 * @part), @mib))
+      assert {:ok, _} = Fil.write(disk, "a.bin", AdapterCase.chunked(:binary.copy("a", 2 * @part), @mib))
 
       stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
 
       assert {:error, %Fil.InvalidRequestError{reason: :too_many_parts}} =
-               Fil.write(disk, "a.bin", chunked(:binary.copy("a", 2 * @part + 1), @mib))
+               Fil.write(disk, "a.bin", AdapterCase.chunked(:binary.copy("a", 2 * @part + 1), @mib))
 
       assert_aborted(requests())
     end
@@ -877,7 +880,7 @@ defmodule Fil.Adapter.S3Test do
       content = :crypto.strong_rand_bytes(@part + 1)
       first_part = binary_part(content, 0, @part)
 
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), checksum: :crc32)
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(content, @mib), checksum: :crc32)
 
       [create, first, second, complete] = requests()
 
@@ -905,7 +908,8 @@ defmodule Fil.Adapter.S3Test do
       content = :crypto.strong_rand_bytes(@part + 1)
       digests = Enum.map([binary_part(content, 0, @part), binary_part(content, @part, 1)], &sha256_base64/1)
 
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), checksum: :sha256, size: @part + 1)
+      assert {:ok, _} =
+               Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(content, @mib), checksum: :sha256, size: @part + 1)
 
       [create, first, second, complete] = requests()
 
@@ -945,7 +949,9 @@ defmodule Fil.Adapter.S3Test do
           ] do
         stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
 
-        assert_raise ArgumentError, message, fn -> Fil.write(parts_disk(), "a.bin", chunked(nine_mib, @mib), opts) end
+        assert_raise ArgumentError, message, fn ->
+          Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(nine_mib, @mib), opts)
+        end
 
         requests = requests()
         assert Enum.map(requests, & &1.method) == ["POST", "PUT", "DELETE"]
@@ -1009,7 +1015,7 @@ defmodule Fil.Adapter.S3Test do
       assert_empty_mailbox()
 
       stub([response(200)])
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked("small", 2))
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", AdapterCase.chunked("small", 2))
       assert_empty_mailbox()
     end
 
@@ -1590,7 +1596,7 @@ defmodule Fil.Adapter.S3Test do
 
     test "presigns a PUT differently" do
       assert {:ok, get} = Fil.signed_url(disk(), "upload.bin")
-      assert {:ok, put} = Fil.signed_url(disk(), "upload.bin", method: :put)
+      assert {:ok, %{url: put}} = Fil.signed_upload(disk(), "upload.bin")
 
       refute signature(get) == signature(put)
       assert query(get)["X-Amz-Expires"] == "900"
@@ -1607,13 +1613,13 @@ defmodule Fil.Adapter.S3Test do
       assert URI.decode_query(uri.query)["X-Amz-Security-Token"] == "SESSION"
     end
 
-    test "validates the expiry and the method" do
+    test "validates the expiry" do
       assert_raise ArgumentError, ~r/invalid value for :expires_in option/, fn ->
         Fil.signed_url(disk(), "cv.pdf", expires_in: 8 * 24 * 60 * 60)
       end
 
-      assert_raise ArgumentError, ~r/invalid value for :method option/, fn ->
-        Fil.signed_url(disk(), "cv.pdf", method: :delete)
+      assert_raise ArgumentError, ~r/invalid value for :expires_in option/, fn ->
+        Fil.signed_upload(disk(), "cv.pdf", expires_in: 8 * 24 * 60 * 60)
       end
     end
 
@@ -1622,6 +1628,9 @@ defmodule Fil.Adapter.S3Test do
 
       assert {:error, %Fil.UnsupportedError{op: :signed_url, reason: :missing_credentials}} =
                Fil.signed_url(disk, "cv.pdf")
+
+      assert {:error, %Fil.UnsupportedError{op: :signed_upload, reason: :missing_credentials}} =
+               Fil.signed_upload(disk, "cv.pdf")
     end
 
     test "signs the disposition as response-content-disposition" do
@@ -1671,10 +1680,13 @@ defmodule Fil.Adapter.S3Test do
     end
 
     test "signs an upload's content type, size and if_exists as headers" do
-      opts = [method: :put, content_type: "image/png", size: 48_213, if_exists: :error]
+      opts = [content_type: "image/png", size: 48_213, if_exists: :error]
 
-      assert {:ok, url} = Fil.signed_url(disk(), "avatars/7f3a.png", opts)
-      assert {:ok, plain} = Fil.signed_url(disk(), "avatars/7f3a.png", method: :put)
+      assert {:ok, %{method: :put, url: url, headers: upload_headers}} =
+               Fil.signed_upload(disk(), "avatars/7f3a.png", opts)
+
+      assert {:ok, %{url: plain, headers: %{}}} = Fil.signed_upload(disk(), "avatars/7f3a.png")
+      assert upload_headers == %{"content-type" => "image/png", "if-none-match" => "*"}
 
       query = query(url)
       assert query["X-Amz-SignedHeaders"] == "content-length;content-type;host;if-none-match"
@@ -1690,10 +1702,10 @@ defmodule Fil.Adapter.S3Test do
     end
 
     test "signs only the upload options it gets" do
-      assert {:ok, url} = Fil.signed_url(disk(), "a.png", method: :put, content_type: "image/png")
+      assert {:ok, %{url: url}} = Fil.signed_upload(disk(), "a.png", content_type: "image/png")
       assert query(url)["X-Amz-SignedHeaders"] == "content-type;host"
 
-      assert {:ok, url} = Fil.signed_url(disk(), "a.png", method: :put, if_exists: :overwrite)
+      assert {:ok, %{url: url}} = Fil.signed_upload(disk(), "a.png", if_exists: :overwrite)
       assert query(url)["X-Amz-SignedHeaders"] == "host"
     end
 
@@ -1992,14 +2004,14 @@ defmodule Fil.Adapter.S3Test do
     @part
     |> Kernel.+(1)
     |> then(&:binary.copy("a", &1))
-    |> chunked(@mib)
+    |> AdapterCase.chunked(@mib)
   end
 
   # `size` bytes in chunks of 1 MiB, then calls `fun` for the next chunk.
   defp raising_after(size, fun) do
     size
     |> then(&:binary.copy("a", &1))
-    |> chunked(@mib)
+    |> AdapterCase.chunked(@mib)
     |> Stream.concat(Stream.map([:next], fn _next -> fun.() end))
   end
 
@@ -2247,81 +2259,15 @@ defmodule Fil.Adapter.S3Test do
   end
 
   ## ------------------------------------------------------------------
-  ## Stubbed requests
-  ##
-  ## Every disk in this module sends its requests to the `Req.Test` stub named after the module, so no request reaches
-  ## the network. `stub/1` expects one request per response, in order, and `Req.Test.verify_on_exit!/1` checks that
-  ## every response was used. Req runs the stub after all its own request steps, and the stub messages the test each
-  ## `Plug.Conn` it gets (the body read into `conn.assigns.body`), so the tests check what the adapter sent. It sends to
-  ## the pid `stub/1` bound, not `self()`, so a request from another process still reaches the test.
+  ## Stubbed requests (see `Fil.ReqStub`)
   ## ------------------------------------------------------------------
 
-  defp req_options, do: [plug: {Req.Test, __MODULE__}]
-
-  # Starts over: the responses of the previous `stub/1` must all have been used, and its requests are dropped.
-  defp stub(responses) do
-    Req.Test.verify!(__MODULE__)
-    _previous = requests()
-    test = self()
-
-    for response <- responses, do: Req.Test.expect(__MODULE__, &respond(&1, response, test))
-  end
-
-  # The request also notes the label of the process that sent it (`:undefined` for none).
-  defp respond(conn, response, test) do
-    {:ok, body, conn} = read_body(conn)
-
-    request =
-      conn
-      |> assign(:body, body)
-      |> assign(:label, :proc_lib.get_label(self()))
-
-    send(test, {__MODULE__, request})
-    reply(conn, response)
-  end
-
-  defp reply(conn, {:error, reason}), do: Req.Test.transport_error(conn, reason)
-
-  # A list body is sent in chunks, so a download gets them one by one.
-  defp reply(conn, %{status: status, body: chunks, headers: headers}) when is_list(chunks) do
-    conn =
-      conn
-      |> merge_resp_headers(headers)
-      |> send_chunked(status)
-
-    Enum.reduce(chunks, conn, fn chunk, conn ->
-      {:ok, conn} = chunk(conn, chunk)
-      conn
-    end)
-  end
-
-  defp reply(conn, %{status: status, body: body, headers: headers}) do
-    conn
-    |> merge_resp_headers(headers)
-    |> send_resp(status, body)
-  end
-
-  defp response(status, body \\ "", headers \\ []), do: %{status: status, body: body, headers: headers}
-
-  # The requests since the last `stub/1`, oldest first. Reading them takes them out of the mailbox.
-  defp requests(received \\ []) do
-    receive do
-      {__MODULE__, request} -> requests([request | received])
-    after
-      0 -> Enum.reverse(received)
-    end
-  end
-
-  defp request! do
-    case requests() do
-      [request] -> request
-      other -> flunk("expected exactly one request, got #{length(other)}")
-    end
-  end
-
-  defp header(request, name) do
-    request
-    |> get_req_header(name)
-    |> List.first()
-  end
+  defp req_options, do: ReqStub.req_options(__MODULE__)
+  defp stub(responses), do: ReqStub.stub(__MODULE__, responses)
+  defp respond(conn, response, test), do: ReqStub.respond(conn, response, __MODULE__, test)
+  defp reply(conn, response), do: ReqStub.reply(conn, response)
+  defp response(status, body \\ "", headers \\ []), do: ReqStub.response(status, body, headers)
+  defp requests, do: ReqStub.requests(__MODULE__)
+  defp request!, do: ReqStub.request!(__MODULE__)
+  defp header(request, name), do: ReqStub.header(request, name)
 end

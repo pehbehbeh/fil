@@ -11,12 +11,17 @@ defmodule Fil.Emulator do
   #     mix test.integration
 
   @emulators %{
-    s3: %{name: "RustFS", service: "rustfs", url: "http://127.0.0.1:9000"}
+    s3: %{name: "RustFS", service: "rustfs", url: "http://127.0.0.1:9000"},
+    azure_blob: %{name: "Azurite", service: "azurite", url: "http://127.0.0.1:10000/devstoreaccount1"}
   }
 
   @s3_access_key_id "filaccesskey"
   @s3_secret_access_key "filsecretkey"
   @s3_region "us-east-1"
+
+  # Azurite's well-known development account, the same in every installation.
+  @azure_account "devstoreaccount1"
+  @azure_account_key "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 
   @spec url(atom()) :: String.t()
   def url(kind) do
@@ -30,6 +35,14 @@ defmodule Fil.Emulator do
       access_key_id: System.get_env("FIL_S3_ACCESS_KEY_ID", @s3_access_key_id),
       secret_access_key: System.get_env("FIL_S3_SECRET_ACCESS_KEY", @s3_secret_access_key),
       region: System.get_env("FIL_S3_REGION", @s3_region)
+    ]
+  end
+
+  @spec azure_blob_credentials() :: keyword()
+  def azure_blob_credentials do
+    [
+      account: System.get_env("FIL_AZURE_BLOB_ACCOUNT", @azure_account),
+      account_key: System.get_env("FIL_AZURE_BLOB_ACCOUNT_KEY", @azure_account_key)
     ]
   end
 
@@ -205,5 +218,64 @@ defmodule Fil.Emulator do
       {:ok, element} -> XML.text(element, "Code")
       {:error, :invalid_xml} -> nil
     end
+  end
+
+  ## ------------------------------------------------------------------
+  ## Containers
+  ## ------------------------------------------------------------------
+
+  @spec create_azure_container(String.t()) :: :ok | {:error, term()}
+  def create_azure_container(container) do
+    :put
+    |> send_azure_request(container)
+    |> accept([201])
+  end
+
+  # Azure deletes a container with its blobs, so the blobs don't have to go first. `Fil.rm_rf/2` still runs, so a
+  # suite that leaves something behind it can't remove fails here.
+  @spec delete_azure_container(String.t()) :: :ok | {:error, term()}
+  def delete_azure_container(container) do
+    disk =
+      Fil.disk(
+        [adapter: Fil.Adapter.AzureBlob, container: container, endpoint: url(:azure_blob)] ++ azure_blob_credentials()
+      )
+
+    case Fil.rm_rf(disk, ".") do
+      {:ok, _count} ->
+        :delete
+        |> send_azure_request(container)
+        |> accept([202, 404])
+
+      {:error, %Fil.ConfigurationError{reason: "ContainerNotFound"}} ->
+        :ok
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp send_azure_request(method, container) do
+    credentials = azure_blob_credentials()
+    url = url(:azure_blob) <> "/" <> container
+    params = [{"restype", "container"}]
+
+    headers = [
+      {"x-ms-version", "2025-01-05"},
+      {"x-ms-date", Fil.Support.Timestamps.format_http_date(DateTime.utc_now())},
+      {"content-length", "0"}
+    ]
+
+    key = Base.decode64!(credentials[:account_key])
+    path = URI.parse(url).path
+    authorization = Fil.Adapter.AzureBlob.Signing.shared_key(credentials[:account], key, method, path, params, headers)
+
+    Req.request(
+      method: method,
+      url: url <> URL.encode_query(params),
+      headers: [{"authorization", authorization} | headers],
+      body: nil,
+      retry: false,
+      raw: true
+    )
   end
 end

@@ -46,26 +46,30 @@ The Hex package is `fil`.
   URLs) is an adapter option, not a plugin. So is addressing (root, bucket, prefix).
 - **Wording:** "adapter" is the module (`Fil.Adapter.S3`), "storage" is what's behind it (S3, the filesystem): "the same
   on every adapter", "the storage refused access". Don't say "backend".
-- **Namespaces:** `Fil.Adapter.*` is only for adapters, `Fil.Plugin.*` only for plugins. `Fil.Plug` is the Plug
-  that serves public and signed URLs (compiled only when the optional Plug dependency is there, listed under
-  Integrations in the docs). `Fil.Kino` is the Livebook integration, compiled only when the optional Kino dependency is
-  there, with its `@moduledoc false` modules under `Fil.Kino.*`. Their JS and CSS share `lib/fil/kino/assets/`, with
-  an entrypoint per module (`use Kino.JS, entrypoint: "browser.js"`) and Livebook's palette and fonts in `theme.css`,
-  which every widget imports first. `Fil.LiveView` is the LiveView integration, compiled only when the optional
-  `phoenix_live_view` dependency is there. Its JS for apps (the uploader of direct uploads) is colocated JS in a
-  `@moduledoc false` component that's never rendered (`Fil.LiveView.Uploader`), exported under a `key:`, so apps import
-  it from `"phoenix-colocated/fil"`. The 120 columns apply to it too. LiveView's compiler writes only the manifest of
-  the project it runs in, so `compilers:` in `mix.exs` adds it when LiveView is loaded, which is the case when an app
-  compiles Fil (not in Fil's own checkout). The upload component `upload_field/1` declares its attributes in
-  `Fil.LiveView`, so remote calls get their compile-time checks, and renders in `Fil.LiveView.UploadField`
-  (`@moduledoc false`): daisyUI classes by default, a class attribute per part that replaces its default, and every text
-  of its own through `translate`. `Fil.Ecto.Ref` is the Ecto type, compiled only when the optional Ecto dependency is
-  there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an MFA and turn it into a disk with
-  `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented by `Fil.Support.DiskOption`
-  (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}` for a directory (`Fil.LiveView`).
-  Options that end up in compiled code, such as a plug's or an Ecto field's, take a function only as a capture with its
-  module (`:remote_fun`), because they can't hold an anonymous function. `Fil.Ecto.Ref` takes no `%Fil.Disk{}` either,
-  so no credentials end up in the beam. Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
+- **Namespaces:** `Fil.Adapter.*` is only for adapters and their private parts, `Fil.Plugin.*` only for plugins. A large
+  adapter keeps the moduledoc, the schema and every callback in one module, and moves the concepts of its own into
+  `@moduledoc false` submodules: the wire (`Fil.Adapter.S3.Client`), signatures Fil computes itself
+  (`AzureBlob.Signing`), an upload with state and steps (`S3.MultipartUpload`), a process (`S3.UploadGuard`), a format
+  (`S3.Checksums`). Not groups of callbacks. `Fil.Plug` is the Plug that serves public and signed URLs (compiled only
+  when the optional Plug dependency is there, listed under Integrations in the docs). `Fil.Kino` is the Livebook
+  integration, compiled only when the optional Kino dependency is there, with its `@moduledoc false` modules under
+  `Fil.Kino.*`. Their JS and CSS share `lib/fil/kino/assets/`, with an entrypoint per module (`use Kino.JS, entrypoint:
+  "browser.js"`) and Livebook's palette and fonts in `theme.css`, which every widget imports first. `Fil.LiveView` is
+  the LiveView integration, compiled only when the optional `phoenix_live_view` dependency is there. Its JS for apps
+  (the uploader of direct uploads) is colocated JS in a `@moduledoc false` component that's never rendered
+  (`Fil.LiveView.Uploader`), exported under a `key:`, so apps import it from `"phoenix-colocated/fil"`. The 120 columns
+  apply to it too. LiveView's compiler writes only the manifest of the project it runs in, so `compilers:` in `mix.exs`
+  adds it when LiveView is loaded, which is the case when an app compiles Fil (not in Fil's own checkout). The upload
+  component `upload_field/1` declares its attributes in `Fil.LiveView`, so remote calls get their compile-time checks,
+  and renders in `Fil.LiveView.UploadField` (`@moduledoc false`): daisyUI classes by default, a class attribute per part
+  that replaces its default, and every text of its own through `translate`. `Fil.Ecto.Ref` is the Ecto type, compiled
+  only when the optional Ecto dependency is there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an
+  MFA and turn it into a disk with `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented
+  by `Fil.Support.DiskOption` (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}` for a
+  directory (`Fil.LiveView`). Options that end up in compiled code, such as a plug's or an Ecto field's, take a function
+  only as a capture with its module (`:remote_fun`), because they can't hold an anonymous function. `Fil.Ecto.Ref` takes
+  no `%Fil.Disk{}` either, so no credentials end up in the beam. Shared internal helpers go in `Fil.Support.*`
+  (`@moduledoc false`).
 - **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
   `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
   the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never
@@ -92,6 +96,8 @@ The Hex package is `fil`.
   `mix format` left unchanged files alone here.
 - **`do:` one-liners:** only for bodies that fit on one line without a pipe chain. Quokka puts each pipe on its own
   line, which turns a piped `do:` body into a multi-line `do:` block; write those as `do ... end` instead.
+- **Imports:** call `Fil`'s own modules qualified, with an `alias` where it helps, in tests too. `import` is for DSLs
+  and other libraries only, such as `Plug.Conn`, `Ecto.Query` or `Phoenix.LiveViewTest`.
 - **Nested calls:** `f(g(x))` is a credo error (`NestedFunctionCalls`), in tests too. Pipe it, bind a variable, or give
   the step a function of its own. Credo doesn't see calls nested inside a list literal, so watch for those by hand. Bind
   a variable before a `case` rather than writing `case x |> g() do`: Quokka turns that into `|> case do`, which credo
@@ -100,17 +106,20 @@ The Hex package is `fil`.
   tags, so never maintain function lists by hand.
 - **HTTP:** cloud adapters call Req directly, with a `req_options:` adapter option that's merged into every request.
   The adapter always sets `retry: false` and `raw: true`, so user options can't change the storage semantics. Req signs
-  requests (its `aws_sigv4:` option), presigned URLs use the private `Req.Utils.aws_sigv4_url/1` (Req is deliberately
-  not pinned for it; if a release drops it, presigning crashes), and XML is parsed with OTP's `:xmerl_sax_parser`.
-  There's no HTTP client behaviour. Bodiless requests send `body: nil`, never `""`: Req 0.8.0-rc.0 turns a GET with a
-  body into a POST.
+  S3 requests (its `aws_sigv4:` option), presigned URLs use the private `Req.Utils.aws_sigv4_url/1` (Req is deliberately
+  not pinned for it; if a release drops it, presigning crashes), and XML is parsed with OTP's `:xmerl_sax_parser`. Req
+  has no Azure signing, so `Fil.Adapter.AzureBlob.Signing` builds Shared Key signatures and service SAS tokens as pure
+  functions. The cloud adapters share `Fil.Support.Download` for streamed downloads and `Fil.Support.ObjectStore` for
+  the rest object stores have in common (names and prefixes, listings, request errors, response values), so a new
+  cloud adapter starts from those. There's no HTTP client behaviour. Bodiless requests send `body: nil`, never `""`:
+  Req 0.8.0-rc.0 turns a GET with a body into a POST.
 
 ## Commands
 
 ```sh
 mix deps.get
 mix test                    # unit tests only (no network)
-docker compose up -d        # RustFS (S3, verifies SigV4)
+docker compose up -d        # RustFS (S3, verifies SigV4) and Azurite (Azure Blob, verifies Shared Key and SAS)
 mix test.integration        # runs the @tag :integration suites against the compose.yml services
 mix format                  # 120 columns, Quokka plugin
 mix credo                   # strict, every check enabled (see .credo.exs)
@@ -124,9 +133,9 @@ bin/release 0.2.0           # releases main to Hex (see its header)
 `.github/workflows/ci.yml` checks formatting, `mix credo`, `mix docs --warnings-as-errors` and `bin/check-changelog` on
 the latest Elixir, and runs `mix test` on every supported Elixir minor version (1.18 and later), each with the newest
 OTP it supports. Fil supports the last three OTP releases, the ones OTP still maintains (27, 28 and 29 now), and the
-matrix covers each of them. The integration suite runs once, on the latest Elixir, against RustFS started from
-`compose.yml`. The notebooks job runs `bin/check-notebooks` on the latest Elixir. When `elixir:` in `mix.exs` changes or
-a new OTP release comes out, update the matrix.
+matrix covers each of them. The integration suites run once, on the latest Elixir, against RustFS and Azurite started
+from `compose.yml`. The notebooks job runs `bin/check-notebooks` on the latest Elixir. When `elixir:` in `mix.exs`
+changes or a new OTP release comes out, update the matrix.
 
 The checks job also compiles `fil` without its optional dependencies (`mix compile --no-optional-deps` in its own build
 path), so a module that uses Plug, Vix, Kino or Phoenix LiveView without a compile guard (`if Code.ensure_loaded?(...)`)
@@ -167,5 +176,6 @@ Releases, milestones and backports are in the header of `bin/release`, the testi
 - Only `guides/installation.md` calls `MyApp.Storage.uploads()`, because that module is one way to set up disks among
   many. Other examples take a disk in `disk`. Options that are compiled, such as a plug's or an Ecto field's `disk:`,
   can't hold a disk and keep the capture `&MyApp.Storage.uploads/0`.
-- The README links every module at its first mention, to its page on HexDocs (`File` to Elixir's docs). The parts
-  between `<!-- MDOC -->` and `<!-- /MDOC -->`, and everything after the last `<!-- MDOC -->`, are the `Fil` moduledoc.
+- The README links every module at its first mention, to its page on HexDocs (`File` to Elixir's docs). Everything
+  after `<!-- MDOC -->`, so all but the logo and the badges, is the `Fil` moduledoc, the front page on HexDocs. Write
+  it for both: no GitHub-only syntax such as `> [!NOTE]`, and no table of contents (both sites build one).

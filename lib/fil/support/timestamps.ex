@@ -1,7 +1,7 @@
 defmodule Fil.Support.Timestamps do
   @moduledoc false
 
-  # The two timestamp formats object stores use: RFC 1123 in headers, ISO 8601 in listings.
+  # The two timestamp formats object stores and HTTP use: RFC 1123 in headers, ISO 8601 in listings.
 
   @months %{
     "Jan" => 1,
@@ -17,6 +17,20 @@ defmodule Fil.Support.Timestamps do
     "Nov" => 11,
     "Dec" => 12
   }
+
+  @doc """
+  Formats a time as an HTTP date (IMF-fixdate), as headers such as `last-modified` and `x-ms-date` have it.
+
+      iex> Fil.Support.Timestamps.format_http_date(~U[1994-11-06 08:49:37Z])
+      "Sun, 06 Nov 1994 08:49:37 GMT"
+
+  """
+  @spec format_http_date(DateTime.t()) :: String.t()
+  def format_http_date(%DateTime{} = time) do
+    time
+    |> DateTime.shift_zone!("Etc/UTC")
+    |> Calendar.strftime("%a, %d %b %Y %H:%M:%S GMT")
+  end
 
   @doc ~S'Parses `"Wed, 21 Oct 2015 07:28:00 GMT"`; anything else is `nil`.'
   @spec parse_http_date(String.t() | nil) :: DateTime.t() | nil

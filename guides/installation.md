@@ -1,7 +1,8 @@
 # Installation
 
 This guide sets up `Fil` in an application with two disks, `uploads` and `backups`. They're local directories in
-development, in memory in tests and S3 buckets in production.
+development, in memory in tests and S3 buckets in production. For Azure Blob Storage, use `Fil.Adapter.AzureBlob` in
+production instead, with the options its page lists.
 
 > #### Info {: .info}
 >
@@ -131,11 +132,12 @@ end
 
 ## Signed URLs
 
-A signed URL lets a browser download or upload a file directly:
+A signed URL lets a browser download a file directly, and a signed upload lets it upload one:
 
 ```elixir
 disk = MyApp.Storage.uploads()
-Fil.signed_url(disk, "avatars/1.png", method: :put, expires_in: 300)
+Fil.signed_url(disk, "avatars/1.png", expires_in: 300)
+Fil.signed_upload(disk, "avatars/2.png", content_type: "image/png", expires_in: 300)
 ```
 
 S3 signs its own URLs. Local and memory disks can't, so `Fil.Plugin.URL` signs them and `Fil.Plug` serves them from
@@ -161,13 +163,15 @@ Then serve the URLs in your endpoint, above `Plug.Parsers`, at the path of `base
 plug Fil.Plug, at: "/uploads", disk: &MyApp.Storage.uploads/0
 ```
 
-Options that every URL of a disk shares go into its `signed_url:` option, and the options of a call replace them:
+Options that every URL of a disk shares go into its `signed_url:` and `signed_upload:` options, and the options of a
+call replace them:
 
 ```elixir
 uploads: [
   adapter: Fil.Adapter.Local,
   root: "priv/storage/uploads",
-  signed_url: [expires_in: 3600, disposition: :attachment]
+  signed_url: [expires_in: 3600, disposition: :attachment],
+  signed_upload: [if_exists: :error]
 ]
 ```
 
