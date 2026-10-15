@@ -12,7 +12,7 @@ overwrite_checks = [
   {
     Credo.Check.Readability.StrictModuleLayout,
     order: [:shortdoc, :moduledoc, :behaviour, :alias, :use, :import, :require],
-    ignore_module_attributes: [:external_resource, :doc_body, :schema]
+    ignore_module_attributes: [:external_resource, :doc_body, :schema, :active_types_option]
   },
   {Credo.Check.Refactor.CondInsteadOfIfElse, false},
   {Credo.Check.Refactor.ModuleDependencies, false},

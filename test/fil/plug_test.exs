@@ -714,8 +714,7 @@ defmodule Fil.PlugTest do
       end
     end
 
-    test "a URL signed with an attachment keeps its name, and one signed inline sends the file as stored",
-         %{disk: disk} do
+    test "a URL signed with an attachment keeps its name, and one signed inline is shown in a sandbox", %{disk: disk} do
       {:ok, _} = Fil.write(disk, "page.html", "<h1>Hi</h1>")
       {:ok, attachment} = Fil.signed_url(disk, "page.html", disposition: {:attachment, "Seite.html"})
       {:ok, inline} = Fil.signed_url(disk, "page.html", disposition: :inline)
@@ -723,21 +722,46 @@ defmodule Fil.PlugTest do
       saved = PlugHelper.request(:get, attachment, disk)
       assert get_resp_header(saved, "content-type") == ["application/octet-stream"]
       assert get_resp_header(saved, "content-disposition") == [~s(attachment; filename="Seite.html")]
+      assert get_resp_header(saved, "content-security-policy") == []
 
-      shown = PlugHelper.request(:get, inline, disk)
-      assert {shown.status, shown.resp_body} == {200, "<h1>Hi</h1>"}
-      assert get_resp_header(shown, "content-type") == ["text/html"]
-      assert get_resp_header(shown, "content-disposition") == ["inline"]
+      for conn <- [PlugHelper.request(:get, inline, disk), PlugHelper.request(:head, inline, disk)] do
+        assert conn.status == 200
+        assert get_resp_header(conn, "content-type") == ["text/html"]
+        assert get_resp_header(conn, "content-disposition") == ["inline"]
+        assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+      end
+
+      assert PlugHelper.request(:get, inline, disk).resp_body == "<h1>Hi</h1>"
     end
 
-    test "other types are sent as stored", %{disk: disk} do
+    test "a public plug ignores an inline disposition without a valid signature", %{disk: disk} do
+      {:ok, _} = Fil.write(disk, "page.html", "<h1>Hi</h1>")
+      {:ok, url} = Fil.signed_url(disk, "page.html", disposition: :inline)
+      %URI{path: path, query: query} = URI.parse(url)
+      tampered = String.replace(query, "expires=", "expires=1")
+
+      for request <- [path <> "?disposition=inline", path <> "?" <> tampered] do
+        conn = PlugHelper.public_request(:get, request, disk)
+
+        assert conn.status == 200
+        assert get_resp_header(conn, "content-type") == ["application/octet-stream"]
+        assert get_resp_header(conn, "content-disposition") == [~s(attachment; filename="page.html")]
+        assert get_resp_header(conn, "content-security-policy") == []
+      end
+    end
+
+    test "other types are sent as stored, inline without a sandbox", %{disk: disk} do
       for {path, type} <- [{"a.png", "image/png"}, {"a.pdf", "application/pdf"}, {"a.css", "text/css"}] do
         {:ok, _} = Fil.write(disk, path, "content")
         {:ok, url} = Fil.signed_url(disk, path)
+        {:ok, inline} = Fil.signed_url(disk, path, disposition: :inline)
         conn = PlugHelper.request(:get, url, disk)
+        shown = PlugHelper.request(:get, inline, disk)
 
         assert get_resp_header(conn, "content-type") == [type]
         assert get_resp_header(conn, "content-disposition") == []
+        assert get_resp_header(shown, "content-type") == [type]
+        assert get_resp_header(shown, "content-security-policy") == []
       end
     end
 
@@ -753,29 +777,86 @@ defmodule Fil.PlugTest do
 
       assert get_resp_header(get_with(page, disk, active_types: ["text/*sv"]), "content-type") == ["text/html"]
 
-      assert get_resp_header(get_with(data, disk, active_types: ["text/*sv"]), "content-type") == [
+      assert get_resp_header(get_with(data, disk, active_types: ["TEXT/*SV"]), "content-type") == [
+               "application/octet-stream"
+             ]
+
+      extended = ["text/csv" | Fil.Plug.default_active_types()]
+
+      assert get_resp_header(get_with(page, disk, active_types: extended), "content-type") == [
+               "application/octet-stream"
+             ]
+
+      assert get_resp_header(get_with(data, disk, active_types: extended), "content-type") == [
                "application/octet-stream"
              ]
     end
 
-    test "send_file/3 sends active types as downloads, unless it's told inline or the list is empty", %{disk: disk} do
+    test "send_file sends active types as downloads, shows them inline in a sandbox, or as stored with []",
+         %{disk: disk} do
       {:ok, page} = Fil.write(disk, "page.html", "<h1>Hi</h1>")
       request = conn(:get, "/")
+      attachment = [~s(attachment; filename="page.html")]
 
-      for {opts, type, disposition} <- [
-            {[], "application/octet-stream", [~s(attachment; filename="page.html")]},
-            {[disposition: :attachment], "application/octet-stream", [~s(attachment; filename="page.html")]},
-            {[content_type: "text/html"], "application/octet-stream", [~s(attachment; filename="page.html")]},
-            {[disposition: :inline], "text/html", ["inline"]},
-            {[active_types: []], "text/html", []}
+      for {opts, type, disposition, policy} <- [
+            {[], "application/octet-stream", attachment, []},
+            {[disposition: :attachment], "application/octet-stream", attachment, []},
+            {[content_type: "text/html"], "application/octet-stream", attachment, []},
+            {[disposition: :inline], "text/html", ["inline"], ["sandbox"]},
+            {[active_types: []], "text/html", [], []}
           ] do
         {:ok, conn} = Fil.Plug.send_file(request, page, opts)
 
         assert conn.resp_body == "<h1>Hi</h1>"
         assert get_resp_header(conn, "content-type") == [type]
         assert get_resp_header(conn, "content-disposition") == disposition
+        assert get_resp_header(conn, "content-security-policy") == policy
         assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
       end
+    end
+
+    test "send_file/4, send_file! and HEAD send an active type as a download", %{disk: disk} do
+      {:ok, page} = Fil.write(disk, "page.html", "<h1>Hi</h1>")
+
+      get = conn(:get, "/")
+      {:ok, by_path} = Fil.Plug.send_file(get, disk, "page.html", [])
+      raised = Fil.Plug.send_file!(get, page)
+
+      {:ok, head} =
+        :head
+        |> conn("/")
+        |> Fil.Plug.send_file(page)
+
+      for conn <- [by_path, raised, head] do
+        assert get_resp_header(conn, "content-type") == ["application/octet-stream"]
+        assert get_resp_header(conn, "content-disposition") == [~s(attachment; filename="page.html")]
+      end
+
+      assert head.resp_body == ""
+    end
+
+    test "send_file takes the disposition set on conn before, and keeps its content security policy", %{disk: disk} do
+      {:ok, page} = Fil.write(disk, "page.html", "<h1>Hi</h1>")
+
+      {:ok, inline} =
+        :get
+        |> conn("/")
+        |> put_resp_header("content-disposition", "inline")
+        |> put_resp_header("content-security-policy", "frame-ancestors 'self'")
+        |> Fil.Plug.send_file(page)
+
+      assert get_resp_header(inline, "content-type") == ["text/html"]
+      assert get_resp_header(inline, "content-disposition") == ["inline"]
+      assert get_resp_header(inline, "content-security-policy") == ["frame-ancestors 'self', sandbox"]
+
+      {:ok, named} =
+        :get
+        |> conn("/")
+        |> put_resp_header("content-disposition", ~s(attachment; filename="Seite.html"))
+        |> Fil.Plug.send_file(page)
+
+      assert get_resp_header(named, "content-type") == ["application/octet-stream"]
+      assert get_resp_header(named, "content-disposition") == [~s(attachment; filename="Seite.html")]
     end
   end
 
@@ -1310,20 +1391,61 @@ defmodule Fil.PlugTest.OneDisk do
           " text/html ",
           "image/png, text/html",
           "application/rss+xml",
-          "text/javascript1.5"
+          "text/javascript1.5",
+          "multipart/x-mixed-replace; boundary=frame"
         ] do
-      {:ok, _} = Fil.write(disk, "upload", "<script>alert(1)</script>", content_type: type)
-      {:ok, url} = Fil.signed_url(disk, "upload")
-      conn = PlugHelper.request(:get, url, disk)
+      conn = serve_stored(disk, type)
 
       assert get_resp_header(conn, "content-type") == ["application/octet-stream"]
       assert get_resp_header(conn, "content-disposition") == [~s(attachment; filename="upload")]
     end
 
-    {:ok, _} = Fil.write(disk, "upload", "png", content_type: "image/png; name=html")
-    {:ok, url} = Fil.signed_url(disk, "upload")
+    for type <- ["image/png; name=html", "application/ld+json", "text/htmlx"] do
+      assert get_resp_header(serve_stored(disk, type), "content-type") == [type]
+    end
+  end
 
-    assert get_resp_header(PlugHelper.request(:get, url, disk), "content-type") == ["image/png; name=html"]
+  test "sends a stored type that isn't valid as a download, unless :active_types is empty", %{memory: disk} do
+    for type <- ["", "html", "text/", "/html", "text/*", "*/*", "text/ html", "image/png,"] do
+      conn = serve_stored(disk, type)
+
+      assert get_resp_header(conn, "content-type") == ["application/octet-stream"]
+      assert get_resp_header(conn, "content-disposition") == [~s(attachment; filename="upload")]
+    end
+
+    assert get_resp_header(serve_stored(disk, "html", active_types: []), "content-type") == ["html"]
+  end
+
+  test "matches :active_types patterns exactly, or with * for any characters", %{memory: disk} do
+    for {type, patterns, active?} <- [
+          {"text/html", ["text/html"], true},
+          {"text/htmlx", ["text/html"], false},
+          {"text/html", ["TEXT/HTML"], true},
+          {"text/html", ["text/html; charset=utf-8"], false},
+          {"application/vnd.foo.v2+json", ["application/*.v2+*"], true},
+          {"application/vnd.foo.v1+json", ["application/*.v2+*"], false},
+          {"image/svg+xml", ["*/*+xml"], true},
+          {"image/png", ["*/*+xml"], false}
+        ] do
+      expected = if active?, do: "application/octet-stream", else: type
+
+      assert get_resp_header(serve_stored(disk, type, active_types: patterns), "content-type") == [expected]
+    end
+  end
+
+  test "shows an active type in a sandbox when the disk signs URLs inline by default" do
+    disk =
+      [adapter: Fil.Adapter.Memory, root: "inline", signed_url: [disposition: :inline]]
+      |> Fil.disk()
+      |> URL.attach(base_url: @base_url, secret: "inline-secret")
+
+    {:ok, _} = Fil.write(disk, "page.html", "<h1>Hi</h1>")
+    {:ok, url} = Fil.signed_url(disk, "page.html")
+    conn = PlugHelper.request(:get, url, disk)
+
+    assert get_resp_header(conn, "content-type") == ["text/html"]
+    assert get_resp_header(conn, "content-disposition") == ["inline"]
+    assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
   end
 
   test "refuses an :active_types that isn't a list of strings", %{memory: disk} do
@@ -1350,5 +1472,16 @@ defmodule Fil.PlugTest.OneDisk do
 
     assert get_resp_header(download, "content-type") == ["application/octet-stream"]
     assert get_resp_header(download, "content-disposition") == [~s(attachment; filename="avatar")]
+  end
+
+  # A GET of a file stored with `type`, served by the plug with more options.
+  defp serve_stored(disk, type, opts \\ []) do
+    {:ok, _} = Fil.write(disk, "upload", "<script>alert(1)</script>", content_type: type)
+    {:ok, url} = Fil.signed_url(disk, "upload")
+    uri = URI.parse(url)
+
+    :get
+    |> conn(uri.path <> "?" <> uri.query)
+    |> PlugHelper.call(disk, opts)
   end
 end

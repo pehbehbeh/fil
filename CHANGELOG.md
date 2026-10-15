@@ -41,11 +41,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
-- `Fil.Plug` and `Fil.Plug.send_file/3` send `x-content-type-options: nosniff` with every response, and send HTML,
-  XML, SVG and JavaScript files as `application/octet-stream` with `content-disposition: attachment`, so an uploaded
-  file can't run scripts on your application's domain. A URL signed with `disposition: :inline` and `send_file/3` with
-  `disposition: :inline` still send the file as stored. Apps that serve such files inline on purpose can change the
-  list with the new `active_types:` option, or turn it off with `active_types: []`.
+- `Fil.Plug` and `Fil.Plug.send_file` send `x-content-type-options: nosniff` with every response, and send HTML, XML,
+  SVG and JavaScript files, and files without a valid type, as `application/octet-stream` with
+  `content-disposition: attachment`, so an uploaded file can't run scripts on your application's domain. With an
+  `inline` disposition, such a file keeps its type and gets `content-security-policy: sandbox`, so the browser shows it
+  without running its scripts. The new `active_types:` option changes the list (`Fil.Plug.default_active_types/0`
+  returns the default), and `active_types: []` sends every file as stored.
 
 ## [0.2.0] - 2026-10-06
 
