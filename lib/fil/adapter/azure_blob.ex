@@ -677,7 +677,8 @@ defmodule Fil.Adapter.AzureBlob do
   def signed_url(state, path, opts) do
     with :ok <- check_signing(state, opts) do
       fields = %{permissions: "r", disposition: Keyword.get(opts, :disposition)}
-      {:ok, sas_url(state, path, fields, opts)}
+      {url, _expires_at} = sas_url(state, path, fields, opts)
+      {:ok, url}
     end
   end
 
@@ -695,7 +696,8 @@ defmodule Fil.Adapter.AzureBlob do
         |> put_if_exists(opts)
         |> Map.new()
 
-      {:ok, %Fil.SignedUpload{url: sas_url(state, path, %{permissions: permissions}, opts), headers: headers}}
+      {url, expires_at} = sas_url(state, path, %{permissions: permissions}, opts)
+      {:ok, %Fil.SignedUpload{url: url, headers: headers, expires_at: expires_at}}
     end
   end
 
@@ -706,16 +708,21 @@ defmodule Fil.Adapter.AzureBlob do
     if Keyword.get(opts, :query, []) == [], do: :ok, else: {:error, %Fil.UnsupportedError{reason: :unsigned_query}}
   end
 
-  # A URL for `http:` (Azurite) can't require HTTPS.
+  # The URL and when it expires. A URL for `http:` (Azurite) can't require HTTPS.
   defp sas_url(state, path, fields, opts) do
     base_url = public_base_url(state)
     key = key(state, path)
     protocol = if String.starts_with?(base_url, "https:"), do: "https"
-    expires = DateTime.add(DateTime.utc_now(), Keyword.get(opts, :expires_in, 900))
+
+    expires =
+      :second
+      |> DateTime.utc_now()
+      |> DateTime.add(Keyword.get(opts, :expires_in, 900))
+
     fields = Map.merge(fields, %{expires: expires, version: @version, protocol: protocol})
     query = AzureSigning.service_sas(state.account, state.account_key, state.container, key, fields)
 
-    blob_url(base_url, key, query)
+    {blob_url(base_url, key, query), expires}
   end
 
   ## ------------------------------------------------------------------

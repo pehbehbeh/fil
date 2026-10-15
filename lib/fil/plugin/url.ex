@@ -86,11 +86,12 @@ defmodule Fil.Plugin.URL do
 
   @doc false
   # Builds a signed URL for `path` under `base_url`. The URL path is signed exactly as it's sent, so `Fil.Plug` can
-  # verify `conn.request_path` without knowing where it's mounted or which disk root the URL was built for.
+  # verify `conn.request_path` without knowing where it's mounted or which disk root the URL was built for. `:expires`
+  # (Unix seconds) replaces the expiry from `:expires_in`, for a caller that needs to know it.
   @spec sign(String.t(), String.t(), String.t(), keyword()) :: String.t()
   def sign(base_url, secret, path, opts) do
     method = Keyword.get(opts, :method, :get)
-    expires = System.os_time(:second) + Keyword.get(opts, :expires_in, 900)
+    expires = Keyword.get_lazy(opts, :expires, fn -> System.os_time(:second) + Keyword.get(opts, :expires_in, 900) end)
     base_url = String.trim_trailing(base_url, "/")
     url_path = (URI.parse(base_url).path || "") <> "/" <> URL.encode_path(path)
     params = signed_params(opts)
@@ -167,9 +168,13 @@ defmodule Fil.Plugin.URL do
   # `Fil.Plug` takes the `content-type` and `if_exists` from the signed URL, so the headers are only what a client
   # sends to S3 too.
   defp signed_upload(op, base_url, secret) do
+    expires = System.os_time(:second) + Keyword.get(op.options, :expires_in, 900)
+
     with {:ok, path} <- normalize(op.path) do
-      url = sign(base_url, secret, path, [{:method, :put} | op.options])
-      {:ok, %Fil.SignedUpload{url: url, headers: upload_headers(op.options)}}
+      url = sign(base_url, secret, path, [method: :put, expires: expires] ++ op.options)
+      expires_at = DateTime.from_unix!(expires)
+
+      {:ok, %Fil.SignedUpload{url: url, headers: upload_headers(op.options), expires_at: expires_at}}
     end
   end
 

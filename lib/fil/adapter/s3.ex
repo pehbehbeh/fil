@@ -715,7 +715,8 @@ defmodule Fil.Adapter.S3 do
   @impl Fil.Adapter
   def signed_upload(state, path, opts) do
     with :ok <- check_credentials(state) do
-      url = presign(state, key(state, path), :put, opts)
+      now = DateTime.utc_now(:second)
+      url = presign(state, key(state, path), :put, opts, now)
 
       headers =
         opts
@@ -723,7 +724,8 @@ defmodule Fil.Adapter.S3 do
         |> Map.new()
         |> Map.delete("content-length")
 
-      {:ok, %Fil.SignedUpload{url: url, headers: headers}}
+      expires_at = DateTime.add(now, Keyword.get(opts, :expires_in, 900))
+      {:ok, %Fil.SignedUpload{url: url, headers: headers, expires_at: expires_at}}
     end
   end
 
@@ -1218,7 +1220,7 @@ defmodule Fil.Adapter.S3 do
   # It has no option for a session token, but it signs any extra query parameters, so the token goes in that way, and so
   # do the `response-content-disposition` S3 answers the download with and the caller's `:query`. An upload's
   # `:content_type`, `:size` and `if_exists: :error` become signed headers, which the client has to send as they are.
-  defp presign(state, key, method, opts) do
+  defp presign(state, key, method, opts, now \\ DateTime.utc_now()) do
     query =
       Enum.reject(
         [
@@ -1234,7 +1236,7 @@ defmodule Fil.Adapter.S3 do
       secret_access_key: state.secret_access_key,
       region: state.region,
       service: :s3,
-      datetime: DateTime.utc_now(),
+      datetime: now,
       method: method,
       url: object_url(state, key, [], public_base_url(state)),
       expires: Keyword.get(opts, :expires_in, 900),

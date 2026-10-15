@@ -227,8 +227,9 @@ defmodule Fil.Adapter do
   `Fil.Plugin.URL` signs uploads for the disk instead.
 
   `opts` has `:expires_in` and `:query`, as for `c:signed_url/3`, and may have `:content_type`, `:size` and
-  `:if_exists`. The headers of the result are the ones the client has to send: `content-type` for `:content_type`,
-  `if-none-match: *` for `if_exists: :error`, and any the storage needs. The storage refuses an upload with another
+  `:if_exists`. The result is a `PUT` with the file as the body, or a `POST` with form fields before it. Its headers are
+  the ones the client has to send: `content-type` for `:content_type`, `if-none-match: *` for `if_exists: :error`, and
+  any the storage needs. `:expires_at` is when the URL stops working. The storage refuses an upload with another
   `content-type` or `content-length` where it can, and with `if_exists: :error` one that finds a file at the path. A
   request with another path or method, or a changed parameter, writes nothing.
   """

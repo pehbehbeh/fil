@@ -1465,6 +1465,13 @@ defmodule Fil.AdapterCase do
         assert {:ok, %Fil.SignedUpload{headers: plain}} = Fil.signed_upload(disk, "a.png")
         refute Map.has_key?(plain, "content-type")
         refute Map.has_key?(plain, "if-none-match")
+      end
+
+      test "a signed upload says when it expires", %{disk: disk} do
+        assert {:ok, %Fil.SignedUpload{method: :put, fields: [], expires_at: expires_at}} =
+                 Fil.signed_upload(disk, "a.png", expires_in: 300)
+
+        assert_in_delta DateTime.diff(expires_at, DateTime.utc_now()), 300, 5
 
         for {name, value} <- [content_type: "image/png", size: 3, if_exists: :error] do
           assert_raise ArgumentError, ~r/unknown options/, fn ->

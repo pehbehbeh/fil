@@ -476,6 +476,7 @@ defmodule Fil.LiveViewTest.OneDisk do
       assert %{uploader: "Fil", path: "0b2e8b8e.png", url: url, signed_at: signed_at} = meta
       assert_in_delta signed_at, System.os_time(:second), 5
       assert meta.headers == %{"content-type" => "image/png", "if-none-match" => "*"}
+      assert %{method: :put, fields: []} = meta
 
       %URI{path: path, query: query} = URI.parse(url)
       assert path == "/storage/0b2e8b8e.png"

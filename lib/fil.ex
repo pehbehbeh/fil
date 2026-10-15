@@ -1063,8 +1063,9 @@ defmodule Fil do
   @doc """
   Signs an upload to a file, for a client that sends the file to the storage itself, such as a browser.
 
-  Returns a `Fil.SignedUpload`: the method, the URL, and the headers the client has to send with the file as the body.
-  The headers differ between disks, so pass them on as they are.
+  Returns a `Fil.SignedUpload`: the method, the URL, the headers and form fields the client has to send with the file,
+  and when the URL expires. They differ between disks, so pass them on as they are, and send a form when the method is
+  `:post` (see `Fil.SignedUpload`).
 
   ## Options
 
@@ -1080,7 +1081,9 @@ defmodule Fil do
       #=>  %Fil.SignedUpload{
       #=>    method: :put,
       #=>    url: "https://bucket.s3.eu-central-1.amazonaws.com/avatars/7f3a.png?X-Amz-Algorithm=...",
-      #=>    headers: %{"content-type" => "image/png", "if-none-match" => "*"}
+      #=>    headers: %{"content-type" => "image/png", "if-none-match" => "*"},
+      #=>    fields: [],
+      #=>    expires_at: ~U[2026-10-15 12:15:00Z]
       #=>  }}
 
   As with `signed_url/3`, local and memory disks need `Fil.Plugin.URL` with a `:secret`, and `Fil.Plug` takes the
