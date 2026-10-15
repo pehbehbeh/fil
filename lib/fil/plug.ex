@@ -41,6 +41,35 @@ if Code.ensure_loaded?(Plug) do
                 Uploads are streamed into the disk, so the limit is about storage, not memory. S3 keeps one part of an
                 upload without a `content-length` in memory (see `Fil.Adapter.S3`).
                 """
+              ],
+              # The content types a browser runs: HTML, XML (which can hold XHTML with scripts, and XSLT) and JavaScript
+              # (the JavaScript MIME types of the WHATWG MIME Sniffing standard).
+              active_types: [
+                type: {:list, :string},
+                default: [
+                  "text/html",
+                  "text/xml",
+                  "application/xml",
+                  "*/*+xml",
+                  "text/xsl",
+                  "text/javascript*",
+                  "application/javascript",
+                  "application/x-javascript",
+                  "application/ecmascript",
+                  "application/x-ecmascript",
+                  "text/ecmascript",
+                  "text/x-ecmascript",
+                  "text/x-javascript",
+                  "text/jscript",
+                  "text/livescript"
+                ],
+                doc: """
+                The content types a browser runs: HTML, XML (SVG and XHTML included) and JavaScript. A file of one of
+                these types goes out as `application/octet-stream` with `content-disposition: attachment`, unless it's
+                sent with an `inline` disposition (see [Security](#module-security)). `*` matches any characters, and
+                the types match without their parameters and whatever their case. `[]` sends every file with its own
+                type.
+                """
               ]
             )
 
@@ -124,8 +153,9 @@ if Code.ensure_loaded?(Plug) do
     ## Responses
 
       * `GET` and `HEAD` on a URL signed for `:get` return the file, with its stored content type or one guessed from
-        the extension, and the `content-disposition` the URL was signed with (`disposition:`). The file is streamed
-        as a chunked response, so it never has to fit in memory
+        the extension, and the `content-disposition` the URL was signed with (`disposition:`). A type a browser runs
+        changes both (see [Security](#module-security)). The file is streamed as a chunked response, so it never has to
+        fit in memory
       * downloads send `etag` and `last-modified` from `Fil.stat/3` and `accept-ranges: bytes`. A request whose
         `if-none-match` lists the etag (or is `*`) gets a `304` without a body, and so does one without `if-none-match`
         whose `if-modified-since` isn't older than the file. The etag is sent as a strong validator on every adapter,
@@ -157,6 +187,26 @@ if Code.ensure_loaded?(Plug) do
       * an upload a plugin refuses with a `Fil.InvalidContentError`, before or while the body is read, gets a `413` for
         content that's too large, a `415` for a content type or an extension the disk doesn't take, and a `422` for
         anything else. Nothing is written, and the body doesn't say which rule the upload broke
+
+    ## Security
+
+    An uploaded HTML or SVG file can contain scripts. Served from your application's domain, they would run with access
+    to its cookies and pages (stored cross-site scripting). So the plug and `send_file/3` protect every response:
+
+      * every response has `x-content-type-options: nosniff`, so browsers take the content type as sent instead of
+        guessing one from the content
+      * a file whose type is in `:active_types` (HTML, XML, SVG, JavaScript) goes out as `application/octet-stream`
+        with `content-disposition: attachment`, so the browser saves it instead of running it, and a page can't load it
+        as a script either. A URL signed with `disposition: {:attachment, filename}` keeps its file name. A URL signed
+        with `disposition: :inline`, or `send_file/3` with `disposition: :inline`, sends the file as it's stored, for
+        files you trust
+
+    The type is the one stored with the file. On S3, Azure and memory disks, an upload through the plug stores the
+    request's `content-type`, so the client picks it, unless the upload was signed with `content_type:` or the disk
+    checks it with `Fil.Plugin.Validation`. A local disk stores no type, so it comes from the extension.
+
+    URLs that S3 and Azure sign themselves go to the storage, not through the plug. Sign downloads of files you don't
+    trust with `disposition: :attachment` there, or store them with a type that browsers don't run.
     """
 
     @behaviour Plug
@@ -181,9 +231,11 @@ if Code.ensure_loaded?(Plug) do
                           doc: """
                           The `content-disposition` of the response. `:inline` lets the browser show the file,
                           `:attachment` saves it under the file's name, and `{:attachment, filename}` under another
-                          name, which can be any UTF-8 string. Without it, no `content-disposition` is sent.
+                          name, which can be any UTF-8 string. Without it, no `content-disposition` is sent, except
+                          `attachment` for a type in `:active_types`.
                           """
-                        ]
+                        ],
+                        active_types: Keyword.fetch!(@schema.schema, :active_types)
                       )
 
     # The most an upload is read at a time.
@@ -215,6 +267,7 @@ if Code.ensure_loaded?(Plug) do
            secret = Fil.Plugin.URL.secret(disk),
            true <- opts[:public] or secret != nil do
         conn
+        |> put_resp_header("x-content-type-options", "nosniff")
         |> Map.update!(:path_info, &Enum.drop(&1, length(at)))
         |> handle(disk, secret, opts)
         |> Map.put(:path_info, conn.path_info)
@@ -264,7 +317,9 @@ if Code.ensure_loaded?(Plug) do
           {"content-disposition", disposition_header(disposition, ref)}
         end
 
-      send_download(conn, ref, opts[:content_type], headers)
+      conn
+      |> put_resp_header("x-content-type-options", "nosniff")
+      |> send_download(ref, %{content_type: opts[:content_type], headers: headers, active_types: opts[:active_types]})
     end
 
     @doc "Sends a file as the response. See `send_file/2`."
@@ -306,7 +361,7 @@ if Code.ensure_loaded?(Plug) do
         # `path_info` keeps the percent-encoding of the request, and the disk wants the path itself.
         path = Enum.map_join(conn.path_info, "/", &URI.decode/1)
 
-        serve(conn, method, disk, path, signed, opts[:max_body_size])
+        serve(conn, method, disk, path, signed, opts)
       else
         {:error, reason} -> send_refusal(conn, reason)
       end
@@ -354,10 +409,11 @@ if Code.ensure_loaded?(Plug) do
 
     # A signed URL's disposition is already the header value. A failed stat or stream is answered here, because nothing
     # has been sent yet.
-    defp serve(conn, :get, disk, path, signed, _max_body_size) do
+    defp serve(conn, :get, disk, path, signed, opts) do
       headers = for disposition <- List.wrap(signed["disposition"]), do: {"content-disposition", disposition}
+      response = %{content_type: nil, headers: headers, active_types: opts[:active_types]}
 
-      case send_download(conn, Fil.ref(disk, path), nil, headers) do
+      case send_download(conn, Fil.ref(disk, path), response) do
         {:ok, conn} -> conn
         {:error, error} -> send_fil_error(conn, error)
       end
@@ -366,7 +422,9 @@ if Code.ensure_loaded?(Plug) do
     # The request body is streamed into `Fil.write/4` as it's read, with the `content-length` as `size:`. A body that
     # breaks a rule while it's read stops the write with a throw, before the stream ends, so nothing is written. A URL
     # signed with `if_exists: :error` writes with it, whether the client sent `if-none-match: *` or not.
-    defp serve(conn, :put, disk, path, signed, max_body_size) do
+    defp serve(conn, :put, disk, path, signed, opts) do
+      max_body_size = opts[:max_body_size]
+
       content_type =
         conn
         |> get_req_header("content-type")
@@ -393,8 +451,9 @@ if Code.ensure_loaded?(Plug) do
     # The file is streamed to the client (`Fil.stream/3`), so its size doesn't matter. The response is chunked, because
     # plugins can change the content, and then the stored size isn't the size sent. The stat gives the validators, so a
     # `304` or a `416` reads nothing. Errors before the status line are returned. An error while streaming comes after
-    # it, so it raises and the client gets a truncated response.
-    defp send_download(conn, ref, content_type, headers) do
+    # it, so it raises and the client gets a truncated response. `response` has the content type and the headers the
+    # caller asked for, and the active types.
+    defp send_download(conn, ref, response) do
       with {:ok, stat} <- Fil.stat(ref),
            :ok <- check_regular(stat, ref) do
         conn = put_validators(conn, stat)
@@ -402,7 +461,7 @@ if Code.ensure_loaded?(Plug) do
         if not_modified?(conn, stat) do
           {:ok, send_resp(conn, 304, "")}
         else
-          file = %{ref: ref, stat: stat, content_type: content_type, headers: headers}
+          file = Map.merge(response, %{ref: ref, stat: stat})
 
           send_range(conn, file, range(conn, stat))
         end
@@ -467,12 +526,75 @@ if Code.ensure_loaded?(Plug) do
     end
 
     defp put_file_headers(conn, file) do
-      content_type = file.content_type || file.stat.content_type || MIME.from_path(file.ref.path)
+      stored_type = file.content_type || file.stat.content_type || MIME.from_path(file.ref.path)
+
+      {content_type, headers} =
+        if active?(stored_type, file.active_types) and not inline?(file.headers) do
+          {"application/octet-stream", attachment(file.headers, file.ref)}
+        else
+          {stored_type, file.headers}
+        end
 
       conn
       |> put_resp_content_type(content_type, nil)
-      |> merge_resp_headers(file.headers)
+      |> merge_resp_headers(headers)
     end
+
+    # A file of a type a browser runs is sent as a download, under the name it was signed with, if any.
+    defp attachment([], ref), do: [{"content-disposition", disposition_header(:attachment, ref)}]
+    defp attachment(headers, _ref), do: headers
+
+    defp inline?(headers) do
+      Enum.any?(headers, fn {_name, value} ->
+        value
+        |> String.downcase()
+        |> String.starts_with?("inline")
+      end)
+    end
+
+    # Browsers read a `content-type` with commas as a list and use the last valid type in it (the Fetch standard), so
+    # every type in the value is checked, without its parameters and whatever its case.
+    defp active?(content_type, patterns) do
+      essences =
+        content_type
+        |> String.split(",")
+        |> Enum.map(&essence/1)
+
+      Enum.any?(patterns, fn pattern ->
+        pattern = String.downcase(pattern)
+        Enum.any?(essences, &matches?(&1, pattern))
+      end)
+    end
+
+    defp essence(type) do
+      type
+      |> String.split(";", parts: 2)
+      |> hd()
+      |> String.trim()
+      |> String.downcase()
+    end
+
+    # `*` in a pattern matches any characters. A regex would do it too, but options holding one can't be compiled into
+    # an endpoint on OTP 28.
+    defp matches?(type, pattern) do
+      case String.split(pattern, "*") do
+        [exact] -> type == exact
+        [first | rest] -> String.starts_with?(type, first) and matches_rest?(drop_prefix(type, first), rest)
+      end
+    end
+
+    defp matches_rest?(type, [last]), do: String.ends_with?(type, last)
+    defp matches_rest?(type, ["" | rest]), do: matches_rest?(type, rest)
+
+    defp matches_rest?(type, [part | rest]) do
+      case :binary.match(type, part) do
+        {start, length} -> matches_rest?(drop_prefix(type, start + length), rest)
+        :nomatch -> false
+      end
+    end
+
+    defp drop_prefix(type, prefix) when is_binary(prefix), do: drop_prefix(type, byte_size(prefix))
+    defp drop_prefix(type, size), do: binary_part(type, size, byte_size(type) - size)
 
     defp send_content(%{method: "HEAD"} = conn, status, _content), do: {:ok, send_resp(conn, status, "")}
 
