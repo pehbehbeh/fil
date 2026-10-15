@@ -1,7 +1,8 @@
 <h1>
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img alt="Fil" src="assets/logo-light.svg" width="240">
+    <source media="(prefers-color-scheme: dark)"
+      srcset="https://raw.githubusercontent.com/pehbehbeh/fil/main/assets/logo-dark.svg">
+    <img alt="Fil" src="https://raw.githubusercontent.com/pehbehbeh/fil/main/assets/logo-light.svg" width="240">
   </picture>
 </h1>
 
