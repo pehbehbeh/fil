@@ -67,10 +67,11 @@ defmodule Fil.Adapter do
 
   `Fil.AdapterCase` (internal for now) tests this contract against a live disk.
 
-  Every adapter `Fil` ships reads, writes and streams files, lists, copies and checks checksums, and every disk builds
-  public and signed URLs (S3 and Azure themselves, the others with `Fil.Plugin.URL`), so code written against one disk
-  runs on the others. What's left are edge cases, such as whether directories exist on their own, and each adapter lists
-  them under Operations on its own page.
+  Every adapter `Fil` ships reads, writes and streams files, lists, copies and checks checksums (except
+  `Fil.Adapter.Null`, whose writes never read back), and every disk builds public and signed URLs (S3 and Azure
+  themselves, the others with `Fil.Plugin.URL`), so code written against one disk runs on the others. What's left are
+  edge cases, such as whether directories exist on their own, and each adapter lists them under Operations on its own
+  page.
 
   ## Errors
 

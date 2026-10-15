@@ -9,12 +9,12 @@ defmodule Fil.Adapter.Null do
       {:ok, _report} = Fil.write(disk, "reports/q3.pdf", pdf)
       {:error, %Fil.NotFoundError{}} = Fil.read(disk, "reports/q3.pdf")
 
-  Use it where code has to write files that nobody reads back: a dry run, an environment with storage turned off, or
-  tests that don't check the files. Plugins run as on every other disk, so a dry run still validates the content.
-  Tests that read files back need `Fil.Adapter.Memory`.
+  Use it where code writes files that nobody reads back: a dry run, an environment with storage turned off, or tests
+  that don't check the files. Plugins run as on every other disk, so a dry run still validates the content.
 
-  Writes that never read back break the [contract](Fil.Adapter.html#module-contract), so this adapter doesn't run the
-  conformance suite that every other adapter passes.
+  Anything that reads a file after writing it fails, because the file isn't there. Direct uploads through
+  `Fil.LiveView.external/2` fail when they're consumed, because that checks the stored file with `Fil.stat/3`. Uploads
+  through LiveView's channel and `PUT`s to `Fil.Plug` succeed. Tests that read files back need `Fil.Adapter.Memory`.
 
   ## Options
 
@@ -22,34 +22,52 @@ defmodule Fil.Adapter.Null do
 
   ## Operations
 
-  For each `Fil` function, this section says what the adapter does instead of storing files. Anything it doesn't mention
-  follows the [contract](Fil.Adapter.html#module-contract) that every adapter follows.
+  For each `Fil` function, this section says what the adapter does instead of storing files and where it departs from
+  the [contract](Fil.Adapter.html#module-contract) that every adapter follows. Anything it doesn't mention follows the
+  contract.
 
-  ### `Fil.read/3` and `Fil.stream/3`
+  ### `Fil.read/3`
 
-    * Return a `Fil.NotFoundError` for every path.
+    * Calls no storage and returns a `Fil.NotFoundError` for every path, the root included.
+
+  ### `Fil.stream/3`
+
+    * Calls no storage and returns a `Fil.NotFoundError` for every path, the root included.
 
   ### `Fil.write/4`
 
-    * Drops the content and succeeds, also with `if_exists: :error`, because no file exists.
-    * Reads a stream to the end first, so a stream that fails, or a plugin that refuses the content while it's read
-      (`Fil.Op.scan_content/4`), fails the write as it would on another disk.
+    * Calls no storage. Drops the content and succeeds, also with `if_exists: :error`, because no file exists.
+    * Reads a stream to the end first (see [Streams](#module-streams)).
     * Ignores `checksum:`, as storage without checksums does.
 
-  ### `Fil.rm/3` and `Fil.rm_rf/3`
+  ### `Fil.rm/3`
 
-    * Succeed and remove nothing. `Fil.rm_rf/3` returns `{:ok, 0}`.
+    * Calls no storage and succeeds for every path.
 
-  ### `Fil.stat/3`, `Fil.exists?/3` and `Fil.ls/3`
+  ### `Fil.rm_rf/3`
 
-    * The disk root is an empty directory, so `Fil.ls/3` returns `{:ok, []}` for every path, and `Fil.stat/3` on
-      `"."` returns `%Fil.Stat{type: :directory}`.
+    * Calls no storage and returns `{:ok, 0}` for every path, the root included.
+
+  ### `Fil.stat/3`
+
+    * Calls no storage. The root is an empty directory, so a stat on `"."` returns `%Fil.Stat{type: :directory}`, and
+      `Fil.exists?/3` is `true` for it.
     * Every other path returns a `Fil.NotFoundError`.
 
-  ### `Fil.cp/4` and `Fil.rename/4`
+  ### `Fil.ls/3`
 
-    * Return a `Fil.NotFoundError` for the missing source. A copy from another disk onto a null disk is a write, so it
-      succeeds.
+    * Calls no storage and returns `{:ok, []}` for every path.
+
+  ### `Fil.cp/4`
+
+    * Calls no storage and returns a `Fil.NotFoundError` for the source.
+    * A copy from another disk onto a null disk is a write, so it succeeds.
+
+  ### `Fil.rename/4`
+
+    * Calls no storage and returns a `Fil.NotFoundError` for the source.
+    * A move from another disk onto a null disk is a write followed by a removal of the source, so it succeeds and the
+      file is gone.
 
   ### `Fil.url/3`, `Fil.signed_url/3` and `Fil.signed_upload/3`
 
@@ -60,13 +78,27 @@ defmodule Fil.Adapter.Null do
 
     * Returns `true` for any two null disks.
 
+  ## Details
+
+  ### Conformance
+
+  Writes never read back, which breaks the [contract](Fil.Adapter.html#module-contract), so this adapter doesn't run
+  the conformance suite that every other adapter passes.
+
+  ### Streams
+
+  A stream is read to the end before its content is dropped, because the size check of `size:` and the scans of
+  plugins (`Fil.Op.scan_content/4`) run while it's read. A stream that fails, or content a plugin refuses, fails the
+  write as on another disk. So dropped content still costs a full read: a large `{:file, path}` is read whole.
+
   ## Errors
 
   `:reason` is the POSIX atom `Fil.Adapter.Local` would return for a missing file.
 
   | Situation | `Fil` error | `:reason` |
   | --- | --- | --- |
-  | any path but the root, on a read, a stream, a stat, a copy or a move | `Fil.NotFoundError` | `:enoent` |
+  | a read, a stream, a copy or a move, on any path | `Fil.NotFoundError` | `:enoent` |
+  | a stat on any path but the root | `Fil.NotFoundError` | `:enoent` |
   """
 
   @behaviour Fil.Adapter
