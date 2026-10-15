@@ -1,7 +1,8 @@
 defmodule Fil.Support.Parts do
   @moduledoc false
 
-  # Splits a stream into parts of one size, for storage that takes large content in parts (S3's multipart uploads).
+  # Splits a stream into parts of one size, for storage that takes large content in parts (S3's multipart uploads,
+  # Azure's blocks).
   # Every part but the last has exactly the part size, because some S3-compatible services (Cloudflare R2) require
   # that. A part is iodata: the chunks as they came, and only the chunk that crosses a part boundary is split, with
   # `binary_part/3`, so nothing is copied. Memory is about one part plus one chunk.

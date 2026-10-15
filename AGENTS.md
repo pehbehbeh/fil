@@ -46,26 +46,30 @@ The Hex package is `fil`.
   URLs) is an adapter option, not a plugin. So is addressing (root, bucket, prefix).
 - **Wording:** "adapter" is the module (`Fil.Adapter.S3`), "storage" is what's behind it (S3, the filesystem): "the same
   on every adapter", "the storage refused access". Don't say "backend".
-- **Namespaces:** `Fil.Adapter.*` is only for adapters, `Fil.Plugin.*` only for plugins. `Fil.Plug` is the Plug
-  that serves public and signed URLs (compiled only when the optional Plug dependency is there, listed under
-  Integrations in the docs). `Fil.Kino` is the Livebook integration, compiled only when the optional Kino dependency is
-  there, with its `@moduledoc false` modules under `Fil.Kino.*`. Their JS and CSS share `lib/fil/kino/assets/`, with
-  an entrypoint per module (`use Kino.JS, entrypoint: "browser.js"`) and Livebook's palette and fonts in `theme.css`,
-  which every widget imports first. `Fil.LiveView` is the LiveView integration, compiled only when the optional
-  `phoenix_live_view` dependency is there. Its JS for apps (the uploader of direct uploads) is colocated JS in a
-  `@moduledoc false` component that's never rendered (`Fil.LiveView.Uploader`), exported under a `key:`, so apps import
-  it from `"phoenix-colocated/fil"`. The 120 columns apply to it too. LiveView's compiler writes only the manifest of
-  the project it runs in, so `compilers:` in `mix.exs` adds it when LiveView is loaded, which is the case when an app
-  compiles Fil (not in Fil's own checkout). The upload component `upload_field/1` declares its attributes in
-  `Fil.LiveView`, so remote calls get their compile-time checks, and renders in `Fil.LiveView.UploadField`
-  (`@moduledoc false`): daisyUI classes by default, a class attribute per part that replaces its default, and every text
-  of its own through `translate`. `Fil.Ecto.Ref` is the Ecto type, compiled only when the optional Ecto dependency is
-  there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an MFA and turn it into a disk with
-  `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented by `Fil.Support.DiskOption`
-  (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}` for a directory (`Fil.LiveView`).
-  Options that end up in compiled code, such as a plug's or an Ecto field's, take a function only as a capture with its
-  module (`:remote_fun`), because they can't hold an anonymous function. `Fil.Ecto.Ref` takes no `%Fil.Disk{}` either,
-  so no credentials end up in the beam. Shared internal helpers go in `Fil.Support.*` (`@moduledoc false`).
+- **Namespaces:** `Fil.Adapter.*` is only for adapters and their private parts, `Fil.Plugin.*` only for plugins. A large
+  adapter keeps the moduledoc, the schema and every callback in one module, and moves the concepts of its own into
+  `@moduledoc false` submodules: the wire (`Fil.Adapter.S3.Client`), signatures Fil computes itself
+  (`AzureBlob.Signing`), an upload with state and steps (`S3.MultipartUpload`), a process (`S3.UploadGuard`), a format
+  (`S3.Checksums`). Not groups of callbacks. `Fil.Plug` is the Plug that serves public and signed URLs (compiled only
+  when the optional Plug dependency is there, listed under Integrations in the docs). `Fil.Kino` is the Livebook
+  integration, compiled only when the optional Kino dependency is there, with its `@moduledoc false` modules under
+  `Fil.Kino.*`. Their JS and CSS share `lib/fil/kino/assets/`, with an entrypoint per module (`use Kino.JS, entrypoint:
+  "browser.js"`) and Livebook's palette and fonts in `theme.css`, which every widget imports first. `Fil.LiveView` is
+  the LiveView integration, compiled only when the optional `phoenix_live_view` dependency is there. Its JS for apps
+  (the uploader of direct uploads) is colocated JS in a `@moduledoc false` component that's never rendered
+  (`Fil.LiveView.Uploader`), exported under a `key:`, so apps import it from `"phoenix-colocated/fil"`. The 120 columns
+  apply to it too. LiveView's compiler writes only the manifest of the project it runs in, so `compilers:` in `mix.exs`
+  adds it when LiveView is loaded, which is the case when an app compiles Fil (not in Fil's own checkout). The upload
+  component `upload_field/1` declares its attributes in `Fil.LiveView`, so remote calls get their compile-time checks,
+  and renders in `Fil.LiveView.UploadField` (`@moduledoc false`): daisyUI classes by default, a class attribute per part
+  that replaces its default, and every text of its own through `translate`. `Fil.Ecto.Ref` is the Ecto type, compiled
+  only when the optional Ecto dependency is there. Integrations take a disk as a `%Fil.Disk{}`, a 0-arity function or an
+  MFA and turn it into a disk with `Fil.Disk.resolve/1` each time they use it: as a `disk:` option typed and documented
+  by `Fil.Support.DiskOption` (`Fil.Plug`, `Fil.Ecto.Ref`), or as an argument that may also be a `%Fil.Ref{}` for a
+  directory (`Fil.LiveView`). Options that end up in compiled code, such as a plug's or an Ecto field's, take a function
+  only as a capture with its module (`:remote_fun`), because they can't hold an anonymous function. `Fil.Ecto.Ref` takes
+  no `%Fil.Disk{}` either, so no credentials end up in the beam. Shared internal helpers go in `Fil.Support.*`
+  (`@moduledoc false`).
 - **Errors:** every `{:error, _}` contains an exception struct, one per thing the caller can do about it, such as
   `Fil.NotFoundError` or `Fil.UnavailableError`. Adapters return the structs with `:reason` set (the POSIX atom,
   the S3 error code), and `Fil.Op` fills in `:op`, `:path` and `:disk`. Messages are built in `message/1`, never
@@ -102,7 +106,7 @@ The Hex package is `fil`.
   The adapter always sets `retry: false` and `raw: true`, so user options can't change the storage semantics. Req signs
   S3 requests (its `aws_sigv4:` option), presigned URLs use the private `Req.Utils.aws_sigv4_url/1` (Req is deliberately
   not pinned for it; if a release drops it, presigning crashes), and XML is parsed with OTP's `:xmerl_sax_parser`. Req
-  has no Azure signing, so `Fil.Support.AzureSigning` builds Shared Key signatures and service SAS tokens as pure
+  has no Azure signing, so `Fil.Adapter.AzureBlob.Signing` builds Shared Key signatures and service SAS tokens as pure
   functions. The cloud adapters share `Fil.Support.Download` for streamed downloads and `Fil.Support.ObjectStore` for
   the rest object stores have in common (names and prefixes, listings, request errors, response values), so a new
   cloud adapter starts from those. There's no HTTP client behaviour. Bodiless requests send `body: nil`, never `""`:

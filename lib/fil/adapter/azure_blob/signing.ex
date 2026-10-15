@@ -1,4 +1,4 @@
-defmodule Fil.Support.AzureSigning do
+defmodule Fil.Adapter.AzureBlob.Signing do
   @moduledoc false
 
   # Azure Storage's two signatures, as `Fil.Adapter.AzureBlob` needs them: Shared Key for the requests the disk sends
@@ -17,7 +17,7 @@ defmodule Fil.Support.AzureSigning do
 
       iex> headers = [{"x-ms-date", "Thu, 15 Oct 2026 12:00:00 GMT"}, {"x-ms-version", "2025-01-05"}]
       iex> key = Base.decode64!("a2V5")
-      iex> Fil.Support.AzureSigning.shared_key("acct", key, :get, "/c/a.txt", [], headers)
+      iex> Fil.Adapter.AzureBlob.Signing.shared_key("acct", key, :get, "/c/a.txt", [], headers)
       "SharedKey acct:6e+X/GJfDkP0dPAMJLEwAaUdpDH9oukVJCiKtRH30nQ="
 
   """
@@ -118,10 +118,6 @@ defmodule Fil.Support.AzureSigning do
       fn {_name, value} -> is_nil(value) end
     )
   end
-
-  @doc ~S'Formats a `DateTime` the way the `x-ms-date` header has it, e.g. `"Thu, 15 Oct 2026 12:00:00 GMT"`.'
-  @spec http_date(DateTime.t()) :: String.t()
-  def http_date(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%a, %d %b %Y %H:%M:%S GMT")
 
   defp iso8601(datetime) do
     datetime

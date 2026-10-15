@@ -1,12 +1,13 @@
 defmodule Fil.Support.XML do
   @moduledoc false
 
-  # The little XML that object stores need. S3 responds in XML, and `Fil` only ever asks for the children named X or
-  # the text of Y. The one document `Fil` sends, the part list that completes a multipart upload, uses `escape/1`.
+  # The little XML that object stores need. S3 and Azure respond in XML, and `Fil` only ever asks for the children
+  # named X or the text of Y. The documents `Fil` sends, such as the part list that completes a multipart upload, use
+  # `escape/1`.
   #
   # Parsing uses OTP's `:xmerl_sax_parser`, built into plain `{name, attributes, children}` tuples of strings. The SAX
   # parser reports names as charlists, so no atoms are created from what the server sent. Documents with a DTD are
-  # rejected before parsing: S3 never sends one, and without it there are no entities to expand.
+  # rejected before parsing: object stores never send one, and without it there are no entities to expand.
 
   @type element :: {String.t(), [{String.t(), String.t()}], [element() | String.t()]}
 

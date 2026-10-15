@@ -261,13 +261,13 @@ defmodule Fil.Emulator do
 
     headers = [
       {"x-ms-version", "2025-01-05"},
-      {"x-ms-date", Fil.Support.AzureSigning.http_date(DateTime.utc_now())},
+      {"x-ms-date", Fil.Support.Timestamps.format_http_date(DateTime.utc_now())},
       {"content-length", "0"}
     ]
 
     key = Base.decode64!(credentials[:account_key])
     path = URI.parse(url).path
-    authorization = Fil.Support.AzureSigning.shared_key(credentials[:account], key, method, path, params, headers)
+    authorization = Fil.Adapter.AzureBlob.Signing.shared_key(credentials[:account], key, method, path, params, headers)
 
     Req.request(
       method: method,
