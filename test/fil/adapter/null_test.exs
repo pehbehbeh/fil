@@ -25,11 +25,20 @@ defmodule Fil.Adapter.NullTest do
 
     test "read a stream to the end", %{disk: disk} do
       test = self()
-      stream = Stream.map(["ab", "cd"], &send(test, {:pulled, &1}))
+      stream = Stream.each(["ab", "cd"], &send(test, {:pulled, &1}))
 
-      assert {:ok, _} = Fil.write(disk, "a.txt", Stream.map(stream, fn {:pulled, chunk} -> chunk end))
+      assert {:ok, _} = Fil.write(disk, "a.txt", stream)
       assert_received {:pulled, "ab"}
       assert_received {:pulled, "cd"}
+    end
+
+    @tag :tmp_dir
+    test "take a local file", %{disk: disk, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "report.txt")
+      File.write!(path, "q3")
+
+      assert {:ok, %Fil.Ref{path: "report.txt"}} = Fil.write(disk, "report.txt", {:file, path})
+      assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "report.txt")
     end
 
     test "fail when the stream raises", %{disk: disk} do
@@ -39,7 +48,9 @@ defmodule Fil.Adapter.NullTest do
     end
 
     test "fail when the stream has another size than declared", %{disk: disk} do
-      assert_raise ArgumentError, fn -> Fil.write(disk, "a.txt", Stream.map(["ab"], & &1), size: 3) end
+      stream = Stream.map(["ab"], & &1)
+
+      assert_raise ArgumentError, fn -> Fil.write(disk, "a.txt", stream, size: 3) end
     end
 
     test "run the plugins, which can refuse the content", %{disk: disk} do
@@ -56,34 +67,59 @@ defmodule Fil.Adapter.NullTest do
           |> next.()
         end)
 
-      assert {:ok, _} = Fil.write(disk, "a.txt", Stream.map(["fine"], & &1))
+      fine = Stream.map(["fine"], & &1)
+      secret = Stream.map(["a secret"], & &1)
 
-      assert {:error, %Fil.InvalidContentError{op: :write, reason: :secret}} =
-               Fil.write(disk, "a.txt", Stream.map(["a secret"], & &1))
+      assert {:ok, _} = Fil.write(disk, "a.txt", fine)
+      assert {:error, %Fil.InvalidContentError{op: :write, reason: :secret}} = Fil.write(disk, "a.txt", secret)
     end
+  end
 
-    test "succeed for a copy from another disk", %{disk: disk} do
+  describe "copies and moves from another disk" do
+    setup do
       Fil.Adapter.Memory.checkout()
       memory = Fil.disk(adapter: Fil.Adapter.Memory)
       {:ok, report} = Fil.write(memory, "report.txt", "q3")
 
-      assert {:ok, %Fil.Ref{path: "copy.txt"}} = Fil.cp(report, Fil.ref(disk, "copy.txt"))
-      assert {:ok, %Fil.Ref{path: "moved.txt"}} = Fil.rename(report, Fil.ref(disk, "moved.txt"))
+      [memory: memory, report: report]
+    end
+
+    test "a copy succeeds and keeps the source", %{disk: disk, memory: memory, report: report} do
+      copy = Fil.ref(disk, "copy.txt")
+
+      assert {:ok, %Fil.Ref{path: "copy.txt"}} = Fil.cp(report, copy)
+      assert Fil.exists?(memory, "report.txt")
+      refute Fil.exists?(copy)
+    end
+
+    test "a move succeeds, removes the source, and the file is gone", %{disk: disk, memory: memory, report: report} do
+      moved = Fil.ref(disk, "moved.txt")
+
+      assert {:ok, %Fil.Ref{path: "moved.txt"}} = Fil.rename(report, moved)
       refute Fil.exists?(memory, "report.txt")
+      refute Fil.exists?(moved)
     end
   end
 
   describe "reads" do
     test "find no file", %{disk: disk} do
       assert {:error, %Fil.NotFoundError{op: :read, reason: :enoent}} = Fil.read(disk, "a.txt")
+      assert {:error, %Fil.NotFoundError{op: :read, reason: :enoent}} = Fil.read(disk, "a.txt", offset: 1, length: 2)
       assert {:error, %Fil.NotFoundError{op: :read, reason: :enoent}} = Fil.stream(disk, "a.txt")
       assert {:error, %Fil.NotFoundError{op: :stat, reason: :enoent}} = Fil.stat(disk, "a.txt")
       refute Fil.exists?(disk, "a.txt")
       refute Fil.dir?(disk, "reports")
     end
 
+    test "find no file at the root", %{disk: disk} do
+      assert {:error, %Fil.NotFoundError{op: :read, reason: :enoent}} = Fil.read(disk, ".")
+      assert {:error, %Fil.NotFoundError{op: :read, reason: :enoent}} = Fil.stream(disk, ".")
+    end
+
     test "see the root as an empty directory", %{disk: disk} do
       assert {:ok, %Fil.Stat{type: :directory}} = Fil.stat(disk, ".")
+      assert {:error, %Fil.NotFoundError{op: :stat}} = Fil.stat(disk, ".", type: :regular)
+      assert Fil.exists?(disk, ".")
       assert Fil.dir?(disk, ".")
       assert {:ok, []} = Fil.ls(disk, ".")
       assert {:ok, []} = Fil.ls(disk, "reports", recursive: true)
@@ -95,6 +131,7 @@ defmodule Fil.Adapter.NullTest do
     test "succeed and remove nothing", %{disk: disk} do
       assert {:ok, _} = Fil.rm(disk, "a.txt")
       assert {:ok, 0} = Fil.rm_rf(disk, "reports")
+      assert {:ok, 0} = Fil.rm_rf(disk, ".")
     end
   end
 
@@ -104,6 +141,11 @@ defmodule Fil.Adapter.NullTest do
 
       assert {:error, %Fil.NotFoundError{op: :rename, path: "a.txt", reason: :enoent}} =
                Fil.rename(disk, "a.txt", "b.txt")
+    end
+
+    test "find no source at the root", %{disk: disk} do
+      assert {:error, %Fil.NotFoundError{op: :cp, reason: :enoent}} = Fil.cp(disk, ".", "b.txt")
+      assert {:error, %Fil.NotFoundError{op: :rename, reason: :enoent}} = Fil.rename(disk, ".", "b.txt")
     end
   end
 
