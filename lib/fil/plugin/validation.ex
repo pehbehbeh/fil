@@ -112,8 +112,8 @@ defmodule Fil.Plugin.Validation do
   An upload through `Fil.Plug` (a disk with `Fil.Plugin.URL` and a `:secret`) is an ordinary write, and is checked
   like any other. A presigned PUT on S3 goes to the storage directly, so this plugin never sees its content. It checks
   what it can when the upload is signed with `Fil.signed_upload/3`: `check:`, the extension, and the signed `size:` and
-  `content_type:`, which S3 enforces (see [Binding](Fil.html#signed_upload/1-binding)). What it can't check depends on
-  `:presigned_uploads`:
+  `content_type:` where the storage enforces them, as S3 does (see [Binding](Fil.html#signed_upload/1-binding)). Azure
+  doesn't, so there they count as missing. What it can't check depends on `:presigned_uploads`:
 
     * `:refuse` (the default) refuses to sign the URL with a `Fil.UnsupportedError` when `content_types:` is set,
       because nobody checks the magic bytes, with `reason: {:unchecked, :content_types}`. So does a URL without `size:`
@@ -264,12 +264,19 @@ defmodule Fil.Plugin.Validation do
   # and its content never comes through here: what the signature can't enforce is refused, or for `:check_declared`,
   # the content type is taken from the signature.
   defp check_presigned(op, opts) do
-    if Fil.Plugin.URL.secret(op.disk) == nil do
-      opts
-      |> unchecked_rule(declared_size(op), declared_type(op))
-      |> unchecked()
-    else
-      :ok
+    cond do
+      Fil.Plugin.URL.secret(op.disk) != nil ->
+        :ok
+
+      Fil.Disk.binds_uploads?(op.disk) ->
+        opts
+        |> unchecked_rule(declared_size(op), declared_type(op))
+        |> unchecked()
+
+      true ->
+        opts
+        |> unchecked_rule(nil, nil)
+        |> unchecked()
     end
   end
 

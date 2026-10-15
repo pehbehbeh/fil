@@ -152,7 +152,8 @@ defmodule Fil.Adapter.AzureBlob do
   ### `Fil.cp/4`
 
     * Uses Copy Blob from the same account. Azure copies within an account right away. A copy it reports as pending is
-      checked with Get Blob Properties every 100 ms until it's done.
+      checked with Get Blob Properties every 100 ms until it's done, for a minute at most. After that the call returns a
+      `Fil.UnavailableError` with `reason: :copy_pending`, and Azure finishes the copy on its own.
     * With `if_exists: :error`, sends `If-None-Match: *`.
     * Copying a directory returns a `Fil.NotFoundError`.
     * The copy keeps the content type and the metadata, so a stored checksum too.
@@ -252,6 +253,7 @@ defmodule Fil.Adapter.AzureBlob do
   | `ServerBusy`, `OperationTimedOut`, `InternalError`, `429`, `5xx` | `Fil.UnavailableError` |
   | timeouts, failed connections, an unreadable listing | `Fil.UnavailableError` |
   | a copy that Azure reports as failed or aborted | `Fil.UnknownError`, `reason: {:copy_status, status}` |
+  | a copy still pending after a minute | `Fil.UnavailableError`, `reason: :copy_pending` |
   | anything else | `Fil.UnknownError` |
   """
 
@@ -275,6 +277,7 @@ defmodule Fil.Adapter.AzureBlob do
   # How long a failed block waits before it's sent again, and how often a pending copy is checked.
   @retry_delay to_timeout(second: 1)
   @copy_poll 100
+  @copy_timeout to_timeout(minute: 1)
 
   @derive {Inspect, only: [:account, :container, :prefix, :endpoint, :public_endpoint]}
   defstruct [
@@ -289,7 +292,8 @@ defmodule Fil.Adapter.AzureBlob do
     :req_options,
     max_blocks: @max_blocks,
     retry_delay: @retry_delay,
-    copy_poll: @copy_poll
+    copy_poll: @copy_poll,
+    copy_timeout: @copy_timeout
   ]
 
   @type t :: %__MODULE__{}
@@ -335,16 +339,29 @@ defmodule Fil.Adapter.AzureBlob do
 
   defp read_blob(state, path, opts) do
     case Client.request(state, :get, ObjectStore.key(state, path)) do
-      {:ok, %{status: 200, body: body} = response} -> verify(body, response.headers, opts)
-      {:ok, response} -> {:error, Client.error(response)}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{status: 200, body: body} = response} ->
+        with :ok <- check_file(response), do: verify(body, response.headers, opts)
+
+      {:ok, response} ->
+        {:error, Client.error(response)}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  # A directory of a hierarchical namespace is an empty blob with `hdi_isfolder` metadata, and isn't read as a file.
+  defp check_file(%{headers: headers}) do
+    if folder?(ObjectStore.header(headers, "x-ms-meta-hdi_isfolder")),
+      do: {:error, %Fil.NotFoundError{reason: :eisdir}},
+      else: :ok
   end
 
   # Azure answers a range that starts at or after the end, and any range of an empty blob, with `416 InvalidRange`: the
   # range is empty then.
   defp read_range(state, path, range) do
-    with {:ok, response} <- Client.request(state, :get, ObjectStore.key(state, path), headers: [range_header(range)]) do
+    with {:ok, response} <- Client.request(state, :get, ObjectStore.key(state, path), headers: [range_header(range)]),
+         :ok <- check_file(response) do
       case response.status do
         206 -> {:ok, response.body}
         416 -> {:ok, ""}
@@ -435,7 +452,7 @@ defmodule Fil.Adapter.AzureBlob do
     key = ObjectStore.key(state, path)
 
     case Client.request(state, :head, key) do
-      {:ok, %{status: 200} = response} -> download(state, key, response, opts)
+      {:ok, %{status: 200} = response} -> with :ok <- check_file(response), do: download(state, key, response, opts)
       {:ok, response} -> {:error, Client.error(response)}
       {:error, reason} -> {:error, reason}
     end
@@ -582,19 +599,29 @@ defmodule Fil.Adapter.AzureBlob do
   end
 
   # A copy within the account is done when Copy Blob answers. One Azure still runs is checked until it's done.
-  defp copied(_state, _dest, status) when status in [nil, "success"], do: :ok
+  defp copied(state, dest, status), do: copied(state, dest, status, state.copy_timeout)
 
-  defp copied(state, dest, "pending") do
+  defp copied(_state, _dest, status, _left) when status in [nil, "success"], do: :ok
+
+  # A copy still pending after `copy_timeout` milliseconds is left to Azure, and the call gives up.
+  defp copied(_state, _dest, "pending", left) when left <= 0, do: {:error, %Fil.UnavailableError{reason: :copy_pending}}
+
+  defp copied(state, dest, "pending", left) do
     Process.sleep(state.copy_poll)
 
     case Client.request(state, :head, ObjectStore.key(state, dest)) do
-      {:ok, %{status: 200, headers: headers}} -> copied(state, dest, ObjectStore.header(headers, "x-ms-copy-status"))
-      {:ok, response} -> {:error, Client.error(response)}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{status: 200, headers: headers}} ->
+        copied(state, dest, ObjectStore.header(headers, "x-ms-copy-status"), left - max(state.copy_poll, 1))
+
+      {:ok, response} ->
+        {:error, Client.error(response)}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp copied(_state, _dest, status), do: {:error, %Fil.UnknownError{reason: {:copy_status, status}}}
+  defp copied(_state, _dest, status, _left), do: {:error, %Fil.UnknownError{reason: {:copy_status, status}}}
 
   # A move onto itself is a copy onto itself, which keeps the file (or finds it there with `if_exists: :error`), without
   # the Delete Blob that would remove it.

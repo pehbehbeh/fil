@@ -370,6 +370,16 @@ defmodule Fil.Adapter.AzureBlobTest do
       assert {:error, %Fil.ConfigurationError{reason: "ContainerNotFound"}} = Fil.stat(disk(), "docs")
     end
 
+    test "a directory of a hierarchical namespace isn't read as a file" do
+      folder = [{"x-ms-meta-hdi_isfolder", "true"}, {"content-length", "0"}]
+
+      stub([response(200, "", folder)])
+      assert {:error, %Fil.NotFoundError{reason: :eisdir}} = Fil.read(disk(), "docs")
+
+      stub([response(200, "", folder)])
+      assert {:error, %Fil.NotFoundError{reason: :eisdir}} = Fil.stream(disk(), "docs")
+    end
+
     test "a directory of a hierarchical namespace is a directory" do
       stub([response(200, "", [{"x-ms-meta-hdi_isfolder", "true"}])])
 
@@ -427,6 +437,13 @@ defmodule Fil.Adapter.AzureBlobTest do
       assert header(copy, "content-length") == "0"
     end
 
+    test "a copy that stays pending gives up" do
+      stub([response(202, "", [{"x-ms-copy-status", "pending"}])])
+      disk = put_state(copy_disk(), copy_timeout: 0)
+
+      assert {:error, %Fil.UnavailableError{reason: :copy_pending}} = Fil.cp(disk, "a.txt", "c.txt")
+    end
+
     test "a failed copy is an error" do
       stub([response(202, "", [{"x-ms-copy-status", "pending"}]), response(200, "", [{"x-ms-copy-status", "failed"}])])
 
@@ -457,6 +474,14 @@ defmodule Fil.Adapter.AzureBlobTest do
 
       stub([response(404, "", [{"x-ms-error-code", "ContainerNotFound"}])])
       assert {:error, %Fil.ConfigurationError{}} = Fil.rm(disk(), "a.txt")
+    end
+
+    test "keeps the marker of the disk root" do
+      stub([response(200, list_xml(["r/", "r/a.txt"], [])), response(202)])
+
+      root = disk(root: "r")
+      assert Fil.rm_rf(root, ".") == {:ok, 1}
+      assert [_list, %{request_path: "/c/r/a.txt"}] = requests()
     end
 
     test "removes the blobs under the prefix, not its siblings and not directories of a hierarchical namespace" do

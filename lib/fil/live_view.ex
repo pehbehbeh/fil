@@ -162,6 +162,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         time in whole seconds
       * one larger than the upload's `max_file_size` (the URL takes only the size the browser reported) gives a
         `Fil.InvalidRequestError` with `reason: :too_large`
+      * on storage that doesn't enforce the signed size and content type (Azure), one of another size than the browser
+        reported, or with another content type than the path's, gives a `Fil.InvalidRequestError` with `reason: :size`
+        or `reason: :content_type`
 
     A failed consume never deletes the file of a direct upload, because it may be someone else's, and the form can be
     submitted again.
@@ -747,7 +750,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     # made, so the file at the path may be one that was there before: a file older than the URL isn't this upload's,
     # and neither is one over the size the URL was bound to. Both stay where they are, because they may be someone
     # else's.
-    defp store(target, %{uploader: "Fil", path: path, signed_at: signed_at}, _entry, opts) do
+    defp store(target, %{uploader: "Fil", path: path, signed_at: signed_at}, entry, opts) do
       ref =
         case target do
           %Fil.Ref{disk: disk} ->
@@ -762,7 +765,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       with {:ok, stat} <- Fil.stat(ref),
            :ok <- check_regular(ref, stat.type),
            :ok <- check_uploaded(ref, stat.mtime, signed_at),
-           :ok <- check_content_type(ref, stat.content_type) do
+           :ok <- check_unbound(ref, stat, entry) do
         check_size(ref, stat.size, opts[:max_file_size])
       end
     end
@@ -801,23 +804,35 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     defp check_uploaded(_ref, nil, _signed_at), do: :ok
 
-    # The upload was signed with the content type of the path, which not every storage enforces (Azure doesn't). A
-    # storage that stores no content type has nothing to check.
-    defp check_content_type(_ref, nil), do: :ok
+    # The upload was signed with the content type of the path and the size the browser reported. Storage that doesn't
+    # enforce them (`Fil.Disk.binds_uploads?/1`, Azure) may hold another file, which is checked here. Where they're
+    # enforced, plugins may still have changed what's stored (`Fil.Plug` writes through them), so nothing is checked.
+    defp check_unbound(ref, stat, entry) do
+      cond do
+        Fil.Disk.binds_uploads?(ref.disk) ->
+          :ok
 
-    defp check_content_type(ref, content_type) do
-      stored =
-        content_type
-        |> String.split(";")
-        |> hd()
-        |> String.trim()
-        |> String.downcase()
+        stat.size != entry.client_size ->
+          refuse_upload(ref, :size)
 
-      if stored == MIME.from_path(ref.path) do
-        :ok
-      else
-        {:error, %Fil.InvalidRequestError{reason: :content_type, op: :stat, path: ref.path, disk: ref.disk}}
+        stat.content_type != nil and base_type(stat.content_type) != MIME.from_path(ref.path) ->
+          refuse_upload(ref, :content_type)
+
+        true ->
+          :ok
       end
+    end
+
+    defp base_type(content_type) do
+      content_type
+      |> String.split(";")
+      |> hd()
+      |> String.trim()
+      |> String.downcase()
+    end
+
+    defp refuse_upload(ref, reason) do
+      {:error, %Fil.InvalidRequestError{reason: reason, op: :stat, path: ref.path, disk: ref.disk}}
     end
 
     defp check_size(ref, size, max_file_size) when is_integer(max_file_size) and size > max_file_size do

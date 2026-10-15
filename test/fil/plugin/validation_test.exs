@@ -371,6 +371,30 @@ defmodule Fil.Plugin.ValidationTest do
       assert {:error, %Fil.UnsupportedError{reason: {:unchecked, :max_size}}} =
                Fil.signed_upload(limited, "a.png")
     end
+
+    test "storage that doesn't bind the signed size and type is refused for the rules that need them" do
+      azure =
+        [adapter: Fil.Adapter.AzureBlob, account: "acct", container: "c", account_key: Base.encode64("key")]
+        |> Fil.disk()
+        |> Validation.attach(max_size: 10, content_types: ["image/png"], presigned_uploads: :check_declared)
+
+      assert {:error, %Fil.UnsupportedError{reason: {:unchecked, :content_types}}} =
+               Fil.signed_upload(azure, "a.png", size: 5, content_type: "image/png")
+
+      named =
+        [adapter: Fil.Adapter.AzureBlob, account: "acct", container: "c", account_key: Base.encode64("key")]
+        |> Fil.disk()
+        |> Validation.attach(max_size: 10, extensions: ["png"])
+
+      assert {:error, %Fil.UnsupportedError{reason: {:unchecked, :max_size}}} =
+               Fil.signed_upload(named, "a.png", size: 5)
+
+      assert {:ok, _upload} =
+               [adapter: Fil.Adapter.AzureBlob, account: "acct", container: "c", account_key: Base.encode64("key")]
+               |> Fil.disk()
+               |> Validation.attach(extensions: ["png"])
+               |> Fil.signed_upload("a.png")
+    end
   end
 
   describe "options" do

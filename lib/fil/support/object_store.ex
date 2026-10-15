@@ -141,9 +141,12 @@ defmodule Fil.Support.ObjectStore do
   @spec rm_rf(%{prefix: String.t()}, fetch(), String.t(), (String.t() -> :ok | {:error, term()})) ::
           {:ok, non_neg_integer()} | {:error, term()}
   def rm_rf(state, fetch, path, rm) do
-    with {:ok, objects, _prefixes} <- list_all(fetch, base_prefix(state, path), nil) do
+    prefix = base_prefix(state, path)
+
+    # The marker of the disk root itself stays, as the root does.
+    with {:ok, objects, _prefixes} <- list_all(fetch, prefix, nil) do
       objects
-      |> Enum.reject(fn {name, stat} -> stat.type == :directory and not String.ends_with?(name, "/") end)
+      |> Enum.reject(fn {name, stat} -> marker?(name, prefix) or folder?(name, stat) end)
       |> Enum.map(&relative(state, elem(&1, 0)))
       |> Enum.filter(&under_prefix?(&1, path))
       |> delete_each(rm)
@@ -151,6 +154,9 @@ defmodule Fil.Support.ObjectStore do
   end
 
   defp directory, do: {:ok, %Stat{type: :directory}}
+
+  # A directory of a hierarchical namespace: listed as a directory, with a name that doesn't end in `/`.
+  defp folder?(name, stat), do: stat.type == :directory and not String.ends_with?(name, "/")
 
   defp list_all(fetch, prefix, delimiter, token \\ nil, objects \\ [], prefixes \\ []) do
     with {:ok, page_objects, page_prefixes, next} <- fetch.(prefix, delimiter, token, nil) do

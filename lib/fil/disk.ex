@@ -228,6 +228,15 @@ defmodule Fil.Disk do
   @spec adapter(t()) :: module()
   def adapter(%__MODULE__{adapter: {module, _state}}), do: module
 
+  @doc false
+  # Whether an upload from `Fil.signed_upload/3` can only store the size and content type it was signed with:
+  # `Fil.Plug` enforces them for `Fil.Plugin.URL`, and an adapter says so with `c:Fil.Adapter.binds_uploads?/1`.
+  @spec binds_uploads?(t()) :: boolean()
+  def binds_uploads?(%__MODULE__{adapter: {module, state}} = disk) do
+    Fil.Plugin.URL.secret(disk) != nil or
+      (Code.ensure_loaded?(module) and function_exported?(module, :binds_uploads?, 1) and module.binds_uploads?(state))
+  end
+
   @doc """
   A short, human readable label for the disk's adapter.
 

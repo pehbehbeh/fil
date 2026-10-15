@@ -128,6 +128,13 @@ defmodule Fil.Adapter.AzureBlobIntegrationTest do
 
       assert {:error, %Fil.InvalidRequestError{reason: :content_type}} =
                Fil.LiveView.store_entry(disk, meta, other, max_file_size: 3)
+
+      larger = %{entry | uuid: "9a7f"}
+      assert {:ok, meta, _socket} = external.(larger, socket)
+      assert {:ok, %{status: 201}} = put(meta.url, "pngs", Map.to_list(meta.headers))
+
+      assert {:error, %Fil.InvalidRequestError{reason: :size}} =
+               Fil.LiveView.store_entry(disk, meta, larger, max_file_size: 10)
     end
   end
 

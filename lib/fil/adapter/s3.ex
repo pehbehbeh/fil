@@ -641,6 +641,10 @@ defmodule Fil.Adapter.S3 do
     end
   end
 
+  # The signature covers `content-type` and `content-length`, so S3 refuses an upload with others.
+  @impl Fil.Adapter
+  def binds_uploads?(_state), do: true
+
   # The headers the client sends are the signed ones but `content-length`, which a browser sets from the body.
   @impl Fil.Adapter
   def signed_upload(state, path, opts) do

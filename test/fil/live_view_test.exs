@@ -426,7 +426,7 @@ defmodule Fil.LiveViewTest do
     end
 
     test "store_entry/4 refuses a file older than the upload URL", %{disk: disk} do
-      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png", client_size: 3}
       Fil.write!(disk, "a.png", "png")
       now = System.os_time(:second)
 
@@ -636,7 +636,7 @@ defmodule Fil.LiveViewTest.OneDisk do
     @tag :tmp_dir
     test "store_entry/4 refuses a file older than the upload URL on a local disk", %{tmp_dir: tmp_dir} do
       disk = Fil.disk(adapter: Fil.Adapter.Local, root: tmp_dir)
-      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png", client_size: 3}
       Fil.write!(disk, "a.png", "png")
 
       assert {:ok, %Fil.Ref{}} = Fil.LiveView.store_entry(disk, LiveViewHelper.direct_meta("a.png"), entry)
