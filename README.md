@@ -1,9 +1,8 @@
 <h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)"
-      srcset="https://raw.githubusercontent.com/pehbehbeh/fil/main/assets/logo-dark.svg">
-    <img alt="Fil" src="https://raw.githubusercontent.com/pehbehbeh/fil/main/assets/logo-light.svg" width="240">
-  </picture>
+  <img alt="Fil" width="240"
+    src="https://raw.githubusercontent.com/pehbehbeh/fil/main/assets/logo-light.svg#gh-light-mode-only">
+  <img alt="Fil" width="240"
+    src="https://raw.githubusercontent.com/pehbehbeh/fil/main/assets/logo-dark.svg#gh-dark-mode-only">
 </h1>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/pehbehbeh/fil/ci.yml?branch=main&label=CI)](https://github.com/pehbehbeh/fil/actions/workflows/ci.yml?query=branch%3Amain)
