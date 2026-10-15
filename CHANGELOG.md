@@ -28,8 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `{:array, Fil.Ecto.Ref}` fields. It implements Backpex's upload callbacks itself and gets the disk from the schema,
   so a LiveResource gives it no callbacks. It writes the new files after the save, deletes the files the save drops,
   and refuses a file whose path has an extension that `accept:` or `extensions:` doesn't allow before the record is
-  saved. `direct: true` needs a Backpex release whose upload field takes `upload_error:`. Backpex is a new optional
-  dependency.
+  saved. `direct: true` needs the `upload_error/4` callback of `Backpex.Field`
+  ([naymspace/backpex#2348](https://github.com/naymspace/backpex/pull/2348), in no release yet). Backpex is a new
+  optional dependency.
   ([#29](https://github.com/pehbehbeh/fil/pull/29))
 
 ### Changed

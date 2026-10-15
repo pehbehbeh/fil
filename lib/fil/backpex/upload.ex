@@ -71,9 +71,7 @@ if Code.ensure_loaded?(Backpex.Field) do
         stays the same between uploads needs `:overwrite`. With `direct: true`, `:overwrite` raises (see
         [Paths](#module-paths)).
         """
-      ],
-      # Read by `Backpex.Fields.Upload.render_form/1` on Backpex releases that have the option, ignored by the others.
-      upload_error: [type: {:fun, 2}, default: &Fil.LiveView.upload_error/2, doc: false]
+      ]
     ]
 
     @moduledoc """
@@ -120,8 +118,8 @@ if Code.ensure_loaded?(Backpex.Field) do
     A single file is replaced by uploading a new one: the stored file stays in the list until the record is saved, and
     the save deletes it. Its remove button clears the field.
 
-    Needs a Backpex release whose `Backpex.Field` has the upload callbacks (`consume_upload/5` and the others), an
-    optional dependency of `Fil`, and an adapter with a `:schema` such as `Backpex.Adapters.Ecto`.
+    Needs Backpex 0.22.0 or later, whose `Backpex.Field` has the upload callbacks (`consume_upload/5` and the others),
+    an optional dependency of `Fil`, and an adapter with a `:schema` such as `Backpex.Adapters.Ecto`.
 
     ## Paths
 
@@ -192,9 +190,11 @@ if Code.ensure_loaded?(Backpex.Field) do
     error in the form or at the field, the uploaded files stay on the disk without a record, and a new submit uploads
     them again under new paths. The [Phoenix guide](phoenix.md#files-nobody-consumes) shows how to clean those up.
 
-    `direct: true` needs the `upload_error:` option of `Backpex.Fields.Upload`, which the field sets to
-    `Fil.LiveView.upload_error/2`. Backpex releases without it, 0.21.0 and earlier, crash the form when a direct upload
-    fails or is refused, because they have no text for those errors, so `direct: true` raises there.
+    `direct: true` needs the `c:Backpex.Field.upload_error/4` callback, which gives the form the text of each upload
+    error. The field implements it with the texts of `Fil.LiveView.upload_error/2`. No Backpex release has the callback
+    yet ([naymspace/backpex#2348](https://github.com/naymspace/backpex/pull/2348) adds it). Backpex releases without
+    it, 0.22.0 and earlier, crash the form when a direct upload fails or is refused, because they have no text for those
+    errors, so `direct: true` raises there.
 
     ## Deleting files
 
@@ -230,8 +230,9 @@ if Code.ensure_loaded?(Backpex.Field) do
     An upload error keeps the record from being saved, and shows at the field with Fil's texts from
     `Fil.LiveView.upload_error/2`, as `{msgid, bindings}` for the `error_translator_function` in Backpex's config:
 
-      * a file LiveView refused, as too large, not accepted or one too many, until it's cancelled. Backpex shows a text
-        of its own next to the file too
+      * a file LiveView refused, as too large, not accepted or one too many, until it's cancelled. Backpex shows the
+        error at the file or below the upload too, with the text of `c:Backpex.Field.upload_error/4` (its own text on
+        releases without the callback)
       * a file whose path has an extension `:extensions` doesn't allow
       * in an array field, a new file whose path another new or kept file has
       * a file that isn't uploaded yet when the form is saved, which only a modified client sends
@@ -266,16 +267,28 @@ if Code.ensure_loaded?(Backpex.Field) do
 
     require Logger
 
-    # Whether `Backpex.Fields.Upload` takes `upload_error:`, a function that gives the text of an upload error. Without
-    # it, Backpex crashes the form on the errors of external uploads, so `direct: true` needs it.
+    # Whether `Backpex.Field` has the `upload_error/4` callback, which `Backpex.Fields.Upload` implements and calls on
+    # the field's module for the text of an upload error. Without it, Backpex crashes the form on the errors of external
+    # uploads, so `direct: true` needs it.
     @upload_error? Code.ensure_loaded?(Backpex.Fields.Upload) and
-                     Keyword.has_key?(Backpex.Fields.Upload.config_schema(), :upload_error)
+                     function_exported?(Backpex.Fields.Upload, :upload_error, 4)
 
     @impl Backpex.Field
     defdelegate render_value(assigns), to: Backpex.Fields.Upload
 
     @impl Backpex.Field
     defdelegate render_form(assigns), to: Backpex.Fields.Upload
+
+    # The text of an upload error in the form, next to the file or below the upload, with Fil's texts. `@impl` only
+    # where `Backpex.Field` has the callback, because it warns for a function that isn't one.
+    @doc false
+    if @upload_error?, do: @impl(Backpex.Field)
+
+    def upload_error(_field, error, upload, _assigns) do
+      error
+      |> Fil.LiveView.upload_error(upload)
+      |> Backpex.translate_error()
+    end
 
     @impl Backpex.Field
     def assign_uploads({name, _options} = field, socket) do
@@ -286,8 +299,7 @@ if Code.ensure_loaded?(Backpex.Field) do
     # The options `Backpex.Fields.Upload.assign_uploads/2` passes to `allow_upload/3`, with what the field derives from
     # the schema: `accept` from the extensions, `max_entries` for a single file, `external` for direct uploads. The
     # checks need the schema too, so a field with invalid options raises when its form opens. `upload_error?` says
-    # whether Backpex takes `upload_error:`; the tests pass `true` to test direct uploads before a Backpex release has
-    # it.
+    # whether Backpex has the `upload_error/4` callback; the tests pass `false` to test the check.
     @doc false
     def __upload_options__({name, options} = field, socket, upload_error?) do
       # Resource actions build their forms from fields Backpex never validates.
@@ -491,8 +503,8 @@ if Code.ensure_loaded?(Backpex.Field) do
     end
 
     defp direct_error(_conf, false) do
-      "can't use direct: true, because this Backpex version has no upload_error: option in Backpex.Fields.Upload, " <>
-        "and crashes the form on errors of direct uploads"
+      "can't use direct: true, because this Backpex version has no upload_error/4 callback in Backpex.Field, and " <>
+        "crashes the form on errors of direct uploads"
     end
 
     defp direct_error(_conf, true), do: nil
@@ -574,20 +586,25 @@ if Code.ensure_loaded?(Backpex.Field) do
       end
     end
 
+    # With `upload_error/4`, Backpex shows Fil's text of each refusal at the file or below the upload, so the changeset
+    # gets one text that only asks to remove them, instead of the same text a second time.
     defp refused_errors(upload) do
       refused =
         for {_ref, error} <- upload.errors do
-          upload_error(error, upload, :upload)
+          field_error(error, upload, :upload)
         end
 
-      # An invalid entry without an error of its own, which LiveView doesn't leave, but it must not be saved either.
-      if refused == [] and Enum.any?(upload.entries, &(not &1.valid?)),
-        do: [upload_error(:invalid, upload, :upload)],
-        else: refused
+      cond do
+        refused != [] and @upload_error? -> [{"Remove the files that can't be uploaded", validation: :upload}]
+        refused != [] -> refused
+        # An invalid entry without an error of its own, which LiveView doesn't leave, but it must not be saved either.
+        Enum.any?(upload.entries, &(not &1.valid?)) -> [field_error(:invalid, upload, :upload)]
+        true -> []
+      end
     end
 
     defp in_progress_errors(upload, conf, attrs) do
-      if Map.has_key?(attrs, in_progress_key(conf)), do: [upload_error(:in_progress, upload, :upload)], else: []
+      if Map.has_key?(attrs, in_progress_key(conf)), do: [field_error(:in_progress, upload, :upload)], else: []
     end
 
     # A path of the field's own can give two new files, or a new and a kept file, the same path in an array field.
@@ -605,13 +622,14 @@ if Code.ensure_loaded?(Backpex.Field) do
         end
 
       if Enum.uniq(new) != new or Enum.any?(new, &(&1 in kept)),
-        do: [upload_error(%Fil.AlreadyExistsError{}, upload, :unique_path)],
+        do: [field_error(%Fil.AlreadyExistsError{}, upload, :unique_path)],
         else: []
     end
 
     defp path_errors(_upload, _conf, _assigns), do: []
 
-    defp upload_error(error, upload, validation) do
+    # An error for the changeset, with Fil's text untranslated, which Backpex translates as any error of the field.
+    defp field_error(error, upload, validation) do
       {message, bindings} = Fil.LiveView.upload_error(error, upload)
       {message, Keyword.put(bindings, :validation, validation)}
     end
@@ -620,7 +638,7 @@ if Code.ensure_loaded?(Backpex.Field) do
       for entry <- upload.entries,
           entry.valid?,
           {:error, error} <- [check_extension(conf, entry, assigns)] do
-        upload_error(error, upload, :extension)
+        field_error(error, upload, :extension)
       end
     end
 
