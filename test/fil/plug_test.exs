@@ -1,9 +1,9 @@
 defmodule Fil.PlugTest do
+  alias Fil.PlugHelper
   alias Fil.Plugin.URL
 
   use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()
 
-  import Fil.PlugHelper
   import Plug.Conn
   import Plug.Test
 
@@ -25,7 +25,7 @@ defmodule Fil.PlugTest do
       {:ok, _} = Fil.write(disk, "7f3a.txt", "content")
       {:ok, url} = Fil.signed_url(disk, "7f3a.txt", disposition: {:attachment, "Rechnung März.txt"})
 
-      conn = request(:head, url, disk)
+      conn = PlugHelper.request(:head, url, disk)
 
       assert conn.status == 200
       assert conn.resp_body == ""
@@ -43,8 +43,8 @@ defmodule Fil.PlugTest do
 
       conn =
         url
-        |> put("png", headers)
-        |> call(disk)
+        |> PlugHelper.put("png", headers)
+        |> PlugHelper.call(disk)
 
       assert conn.status == 200
       assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
@@ -53,8 +53,8 @@ defmodule Fil.PlugTest do
       for headers <- [headers, List.keydelete(headers, "if-none-match", 0)] do
         conn =
           url
-          |> put("new", headers)
-          |> call(disk)
+          |> PlugHelper.put("new", headers)
+          |> PlugHelper.call(disk)
 
         assert conn.status == 409
       end
@@ -74,8 +74,8 @@ defmodule Fil.PlugTest do
           ] do
         conn =
           url
-          |> put(body, headers)
-          |> call(disk)
+          |> PlugHelper.put(body, headers)
+          |> PlugHelper.call(disk)
 
         assert conn.status == 403
         assert conn.resp_body == "the upload doesn't match its signed URL"
@@ -90,19 +90,19 @@ defmodule Fil.PlugTest do
       {:ok, url} = Fil.signed_url(disk, "a.txt")
       {:ok, new_url} = Fil.signed_url(disk, "new.txt")
 
-      assert request(:get, String.replace(url, "a.txt", "b.txt"), disk).status == 403
-      assert request(:put, new_url, disk, "nope").status == 403
+      assert PlugHelper.request(:get, String.replace(url, "a.txt", "b.txt"), disk).status == 403
+      assert PlugHelper.request(:put, new_url, disk, "nope").status == 403
       refute Fil.exists?(disk, "new.txt")
-      assert request(:get, String.replace(url, ~r/expires=\d+/, "expires=9999999999"), disk).status == 403
-      assert request(:get, String.replace(url, ~r/&signature=.*/, ""), disk).status == 403
+      assert PlugHelper.request(:get, String.replace(url, ~r/expires=\d+/, "expires=9999999999"), disk).status == 403
+      assert PlugHelper.request(:get, String.replace(url, ~r/&signature=.*/, ""), disk).status == 403
     end
 
     test "query parameters that aren't strings are rejected", %{disk: disk} do
       {:ok, _} = Fil.write(disk, "a.txt", "a")
       {:ok, url} = Fil.signed_url(disk, "a.txt")
 
-      assert request(:get, String.replace(url, "expires=", "expires[]="), disk).status == 403
-      assert request(:get, String.replace(url, "signature=", "signature[]="), disk).status == 403
+      assert PlugHelper.request(:get, String.replace(url, "expires=", "expires[]="), disk).status == 403
+      assert PlugHelper.request(:get, String.replace(url, "signature=", "signature[]="), disk).status == 403
     end
 
     test "an expired URL is rejected", %{disk: disk} do
@@ -112,9 +112,9 @@ defmodule Fil.PlugTest do
       # Signed with an expiry in the past: the same signature a URL gets once its time is up.
       expired = URL.sign(@base_url, URL.secret(disk), "a.txt", expires_in: -1)
 
-      assert request(:get, url, disk).status == 200
+      assert PlugHelper.request(:get, url, disk).status == 200
 
-      conn = request(:get, expired, disk)
+      conn = PlugHelper.request(:get, expired, disk)
       assert conn.status == 403
       assert conn.resp_body == "the URL has expired"
     end
@@ -124,10 +124,16 @@ defmodule Fil.PlugTest do
       {:ok, plain} = Fil.signed_url(disk, "a.txt")
       {:ok, url} = Fil.signed_url(disk, "a.txt", disposition: :inline)
 
-      assert request(:get, String.replace(url, "disposition=inline", "disposition=attachment"), disk).status == 403
-      assert request(:get, String.replace(plain, "&signature", "&disposition=inline&signature"), disk).status == 403
-      assert request(:get, String.replace(url, "disposition=inline&", ""), disk).status == 403
-      assert request(:get, String.replace(url, "disposition=inline", "disposition[]=inline"), disk).status == 403
+      changed = String.replace(url, "disposition=inline", "disposition=attachment")
+      assert PlugHelper.request(:get, changed, disk).status == 403
+
+      added = String.replace(plain, "&signature", "&disposition=inline&signature")
+      assert PlugHelper.request(:get, added, disk).status == 403
+
+      assert PlugHelper.request(:get, String.replace(url, "disposition=inline&", ""), disk).status == 403
+
+      assert PlugHelper.request(:get, String.replace(url, "disposition=inline", "disposition[]=inline"), disk).status ==
+               403
     end
 
     test "changed, unsigned or repeated query parameters are a 403", %{disk: disk} do
@@ -135,22 +141,25 @@ defmodule Fil.PlugTest do
       {:ok, plain} = Fil.signed_url(disk, "index.html")
       {:ok, url} = Fil.signed_url(disk, "index.html", query: [{"trackingInfo", "7-42"}])
 
-      assert request(:get, String.replace(url, "trackingInfo=7-42", "trackingInfo=8-42"), disk).status == 403
-      assert request(:get, String.replace(url, "&signature", "&trackingInfo=7-42&signature"), disk).status == 403
-      assert request(:get, String.replace(plain, "&signature", "&v=2&signature"), disk).status == 403
-      assert request(:get, String.replace(plain, "expires=", "expires=1&expires="), disk).status == 403
+      assert PlugHelper.request(:get, String.replace(url, "trackingInfo=7-42", "trackingInfo=8-42"), disk).status == 403
+
+      assert PlugHelper.request(:get, String.replace(url, "&signature", "&trackingInfo=7-42&signature"), disk).status ==
+               403
+
+      assert PlugHelper.request(:get, String.replace(plain, "&signature", "&v=2&signature"), disk).status == 403
+      assert PlugHelper.request(:get, String.replace(plain, "expires=", "expires=1&expires="), disk).status == 403
     end
 
     test "a missing file is a 404", %{disk: disk} do
       {:ok, url} = Fil.signed_url(disk, "nope.txt")
 
-      assert request(:get, url, disk).status == 404
+      assert PlugHelper.request(:get, url, disk).status == 404
     end
 
     test "other methods are not allowed", %{disk: disk} do
       {:ok, url} = Fil.signed_url(disk, "a.txt")
 
-      assert request(:delete, url, disk).status == 405
+      assert PlugHelper.request(:delete, url, disk).status == 405
     end
   end
 
@@ -171,10 +180,10 @@ defmodule Fil.PlugTest do
             {%Fil.StorageFullError{reason: :enospc}, 507},
             {%Fil.UnavailableError{reason: :timeout}, 503}
           ] do
-        failing = failing_writes(disk, error)
+        failing = PlugHelper.failing_writes(disk, error)
         {:ok, %{url: url}} = Fil.signed_upload(failing, "a.txt")
 
-        assert request(:put, url, failing, "content").status == status
+        assert PlugHelper.request(:put, url, failing, "content").status == status
       end
     end
 
@@ -196,8 +205,8 @@ defmodule Fil.PlugTest do
         for headers <- [[{"content-length", "7"}], []] do
           conn =
             url
-            |> put("content", headers)
-            |> call(rejecting)
+            |> PlugHelper.put("content", headers)
+            |> PlugHelper.call(rejecting)
 
           assert {conn.status, conn.resp_body} == {status, body}
         end
@@ -220,17 +229,17 @@ defmodule Fil.PlugTest do
 
       {:ok, url} = Fil.signed_url(denied, "secret.txt")
 
-      assert request(:get, url, denied).status == 404
+      assert PlugHelper.request(:get, url, denied).status == 404
     end
 
     @tag :capture_log
     test "any other error is a 500 that keeps the details in the log", %{disk: disk} do
-      failing = failing_writes(disk, %Fil.UnknownError{reason: "InvalidArgument"})
+      failing = PlugHelper.failing_writes(disk, %Fil.UnknownError{reason: "InvalidArgument"})
       {:ok, %{url: url}} = Fil.signed_upload(failing, "a.txt")
 
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          conn = request(:put, url, failing, "content")
+          conn = PlugHelper.request(:put, url, failing, "content")
 
           assert conn.status == 500
           assert conn.resp_body == "internal server error"
@@ -260,7 +269,7 @@ defmodule Fil.PlugTest do
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           for {method, url, body} <- [{:put, put_url, "content"}, {:get, get_url, nil}] do
-            conn = request(method, url, failing, body)
+            conn = PlugHelper.request(method, url, failing, body)
 
             assert conn.status == 500
             assert conn.resp_body == "internal server error"
@@ -278,8 +287,8 @@ defmodule Fil.PlugTest do
 
       conn =
         url
-        |> put("0123456789", [{"content-length", "10"}])
-        |> call(disk, max_body_size: 5)
+        |> PlugHelper.put("0123456789", [{"content-length", "10"}])
+        |> PlugHelper.call(disk, max_body_size: 5)
 
       assert conn.status == 413
       assert conn.resp_body == "the request body is larger than 5 bytes"
@@ -290,8 +299,8 @@ defmodule Fil.PlugTest do
       {:ok, %{url: url}} = Fil.signed_upload(disk, "big.bin")
 
       assert (url
-              |> put("0123456789")
-              |> call(disk, max_body_size: 5)).status == 413
+              |> PlugHelper.put("0123456789")
+              |> PlugHelper.call(disk, max_body_size: 5)).status == 413
 
       refute Fil.exists?(disk, "big.bin")
     end
@@ -300,8 +309,8 @@ defmodule Fil.PlugTest do
       {:ok, %{url: url}} = Fil.signed_upload(disk, "small.bin")
 
       assert (url
-              |> put("01234", [{"content-length", "5"}])
-              |> call(disk, max_body_size: 5)).status == 200
+              |> PlugHelper.put("01234", [{"content-length", "5"}])
+              |> PlugHelper.call(disk, max_body_size: 5)).status == 200
 
       assert Fil.read(disk, "small.bin") == {:ok, "01234"}
     end
@@ -312,9 +321,9 @@ defmodule Fil.PlugTest do
 
       conn =
         url
-        |> put(~s({"a":1}), [{"content-type", "application/json"}, {"content-length", "7"}])
+        |> PlugHelper.put(~s({"a":1}), [{"content-type", "application/json"}, {"content-length", "7"}])
         |> Plug.Parsers.call(parsers)
-        |> call(disk)
+        |> PlugHelper.call(disk)
 
       assert conn.status == 400
       assert conn.resp_body =~ "already read"
@@ -346,8 +355,8 @@ defmodule Fil.PlugTest do
 
       conn =
         url
-        |> put(content, [{"content-length", "2500000"}])
-        |> call(recording)
+        |> PlugHelper.put(content, [{"content-length", "2500000"}])
+        |> PlugHelper.call(recording)
 
       assert conn.status == 200
       assert Fil.read(disk, "big.bin") == {:ok, content}
@@ -362,8 +371,8 @@ defmodule Fil.PlugTest do
 
       conn =
         url
-        |> put("0123456789", [{"content-length", "5"}])
-        |> call(disk)
+        |> PlugHelper.put("0123456789", [{"content-length", "5"}])
+        |> PlugHelper.call(disk)
 
       assert conn.status == 400
       assert conn.resp_body == "the request body could not be read"
@@ -375,7 +384,7 @@ defmodule Fil.PlugTest do
       {:ok, _} = Fil.write(disk, "big.bin", content)
       {:ok, url} = Fil.signed_url(disk, "big.bin")
 
-      conn = request(:get, url, disk)
+      conn = PlugHelper.request(:get, url, disk)
 
       assert conn.status == 200
       assert conn.state == :chunked
@@ -499,7 +508,7 @@ defmodule Fil.PlugTest do
         :get
         |> conn(uri.path <> "?" <> uri.query)
         |> put_req_header("range", "bytes=20-")
-        |> call(disk)
+        |> PlugHelper.call(disk)
 
       assert outside.status == 416
       assert get_resp_header(outside, "content-disposition") == []
@@ -576,15 +585,15 @@ defmodule Fil.PlugTest do
       {:ok, _} = Fil.write(disk, "avatars/a 1.png", "png")
       {:ok, url} = Fil.url(disk, "avatars/a 1.png")
 
-      assert public_request(:get, URI.parse(url).path, disk).resp_body == "png"
+      assert PlugHelper.public_request(:get, URI.parse(url).path, disk).resp_body == "png"
     end
 
     test "answers 404 for missing files and directories", %{disk: disk} do
       {:ok, _} = Fil.write(disk, "avatars/1.png", "png")
 
-      assert public_request(:get, "/storage/avatars/2.png", disk).status == 404
-      assert public_request(:get, "/storage/avatars", disk).status == 404
-      assert public_request(:get, "/storage", disk).status == 404
+      assert PlugHelper.public_request(:get, "/storage/avatars/2.png", disk).status == 404
+      assert PlugHelper.public_request(:get, "/storage/avatars", disk).status == 404
+      assert PlugHelper.public_request(:get, "/storage", disk).status == 404
     end
 
     test "serves ranges and 304s", %{disk: disk} do
@@ -614,14 +623,14 @@ defmodule Fil.PlugTest do
       {:ok, url} = Fil.signed_url(disk, "avatars/1.png", disposition: :attachment)
       %URI{path: path, query: query} = URI.parse(url)
 
-      signed = public_request(:get, path <> "?" <> query, disk)
+      signed = PlugHelper.public_request(:get, path <> "?" <> query, disk)
       assert get_resp_header(signed, "content-disposition") == [~s(attachment; filename="1.png")]
 
-      unsigned = public_request(:get, path <> "?disposition=attachment", disk)
+      unsigned = PlugHelper.public_request(:get, path <> "?disposition=attachment", disk)
       assert unsigned.status == 200
       assert get_resp_header(unsigned, "content-disposition") == []
 
-      tampered = public_request(:get, path <> "?" <> String.replace(query, "attachment", "inline"), disk)
+      tampered = PlugHelper.public_request(:get, path <> "?" <> String.replace(query, "attachment", "inline"), disk)
       assert tampered.status == 200
       assert get_resp_header(tampered, "content-disposition") == []
     end
@@ -792,18 +801,18 @@ defmodule Fil.PlugTest do
 
     headers
     |> Enum.reduce(conn, fn {name, value}, conn -> put_req_header(conn, name, value) end)
-    |> call(disk)
+    |> PlugHelper.call(disk)
   end
 
   defp http_date(time), do: Calendar.strftime(time, "%a, %d %b %Y %H:%M:%S GMT")
 end
 
 defmodule Fil.PlugTest.OneDisk do
+  alias Fil.PlugHelper
   alias Fil.Plugin.URL
 
   use ExUnit.Case, async: true
 
-  import Fil.PlugHelper
   import Plug.Conn
   import Plug.Test
 
@@ -838,13 +847,13 @@ defmodule Fil.PlugTest.OneDisk do
       :put
       |> conn(URI.parse(put_url).path <> "?" <> URI.parse(put_url).query, "{}")
       |> put_req_header("content-type", "application/json")
-      |> call(disk)
+      |> PlugHelper.call(disk)
 
     assert conn.status == 200
     assert {:ok, %Fil.Stat{content_type: "application/json"}} = Fil.stat(disk, "data")
 
     {:ok, get_url} = Fil.signed_url(disk, "data")
-    assert get_resp_header(request(:get, get_url, disk), "content-type") == ["application/json"]
+    assert get_resp_header(PlugHelper.request(:get, get_url, disk), "content-type") == ["application/json"]
   end
 
   test "a body over :max_body_size leaves nothing behind on a local disk", %{local: disk, tmp_dir: tmp_dir} do
@@ -853,8 +862,8 @@ defmodule Fil.PlugTest.OneDisk do
 
     conn =
       url
-      |> put(body)
-      |> call(disk, max_body_size: 2_000_000)
+      |> PlugHelper.put(body)
+      |> PlugHelper.call(disk, max_body_size: 2_000_000)
 
     # No file, no temporary file, and not the directory the write created either.
     assert conn.status == 413
@@ -875,8 +884,8 @@ defmodule Fil.PlugTest.OneDisk do
 
     conn =
       url
-      |> put(:crypto.strong_rand_bytes(3_000_000), [{"content-length", "3000000"}])
-      |> call(rejecting)
+      |> PlugHelper.put(:crypto.strong_rand_bytes(3_000_000), [{"content-length", "3000000"}])
+      |> PlugHelper.call(rejecting)
 
     assert conn.status == 422
     assert File.ls!(tmp_dir) == []
@@ -894,8 +903,8 @@ defmodule Fil.PlugTest.OneDisk do
       for headers <- [[{"content-length", "2008"}], []] do
         conn =
           url
-          |> put(png, headers)
-          |> call(disk)
+          |> PlugHelper.put(png, headers)
+          |> PlugHelper.call(disk)
 
         assert {conn.status, conn.resp_body} == {413, "the content is too large"}
       end
@@ -908,8 +917,8 @@ defmodule Fil.PlugTest.OneDisk do
 
       conn =
         url
-        |> put("GIF89a" <> :binary.copy(<<0>>, 500), [{"content-type", "image/png"}])
-        |> call(disk)
+        |> PlugHelper.put("GIF89a" <> :binary.copy(<<0>>, 500), [{"content-type", "image/png"}])
+        |> PlugHelper.call(disk)
 
       assert {conn.status, conn.resp_body} == {415, "the content type is not allowed"}
       assert File.ls!(tmp_dir) == []
@@ -920,13 +929,13 @@ defmodule Fil.PlugTest.OneDisk do
     {:ok, _} = Fil.write(disk, "a.txt", "a")
     {:ok, url} = Fil.signed_url(disk, "a.txt")
 
-    assert request(:get, url, &__MODULE__.memory/0).status == 200
-    assert request(:get, url, {Function, :identity, [disk]}).status == 200
+    assert PlugHelper.request(:get, url, &__MODULE__.memory/0).status == 200
+    assert PlugHelper.request(:get, url, {Function, :identity, [disk]}).status == 200
   end
 
   test "raises when the disk function returns something else" do
     assert_raise ArgumentError, ~r/to return a Fil.Disk, got: :nope/, fn ->
-      request(:get, "/storage/a.txt", &__MODULE__.nope/0)
+      PlugHelper.request(:get, "/storage/a.txt", &__MODULE__.nope/0)
     end
   end
 
@@ -978,20 +987,20 @@ defmodule Fil.PlugTest.OneDisk do
     {:ok, url} = Fil.signed_url(disk, "q3.pdf")
     assert String.starts_with?(url, @base_url)
 
-    conn = request(:get, url, disk)
+    conn = PlugHelper.request(:get, url, disk)
     assert conn.status == 200
     assert conn.resp_body == "%PDF"
     assert get_resp_header(conn, "content-type") == ["application/pdf"]
 
     {:ok, %{url: put_url}} = Fil.signed_upload(disk, "inbox/new.bin")
-    assert request(:put, put_url, disk, "uploaded").status == 200
+    assert PlugHelper.request(:put, put_url, disk, "uploaded").status == 200
     # Without a content-length, the upload is collected and signed with its hash. With one, it goes to S3 as it's read.
     assert_received {:put, "https://bucket.s3.us-east-1.amazonaws.com/inbox/new.bin", "uploaded", [hash]}
     assert hash =~ ~r/^[0-9a-f]{64}$/
 
     assert (put_url
-            |> put("streamed", [{"content-length", "8"}])
-            |> call(disk)).status == 200
+            |> PlugHelper.put("streamed", [{"content-length", "8"}])
+            |> PlugHelper.call(disk)).status == 200
 
     assert_received {:put, "https://bucket.s3.us-east-1.amazonaws.com/inbox/new.bin", "streamed", ["UNSIGNED-PAYLOAD"]}
   end
@@ -1104,8 +1113,8 @@ defmodule Fil.PlugTest.OneDisk do
     # Without a content-length, the size is only known once the body has been read.
     conn =
       url
-      |> put(:binary.copy("a", 7_000_000))
-      |> call(disk, max_body_size: 6_500_000)
+      |> PlugHelper.put(:binary.copy("a", 7_000_000))
+      |> PlugHelper.call(disk, max_body_size: 6_500_000)
 
     assert conn.status == 413
     assert_received {:part, "1", 5_242_880}
@@ -1118,7 +1127,7 @@ defmodule Fil.PlugTest.OneDisk do
     s3 = Fil.disk(adapter: Fil.Adapter.S3, bucket: "bucket")
 
     for disk <- [local, s3] do
-      conn = request(:get, "http://localhost/storage/a.txt?expires=1&signature=x", disk)
+      conn = PlugHelper.request(:get, "http://localhost/storage/a.txt?expires=1&signature=x", disk)
 
       assert conn.state == :unset
       refute conn.halted
@@ -1132,12 +1141,12 @@ defmodule Fil.PlugTest.OneDisk do
       {:ok, _} = Fil.write(plain, "avatars/1.png", "png")
 
       for disk <- [plain, signing] do
-        conn = public_request(:get, "/storage/avatars/1.png", disk)
+        conn = PlugHelper.public_request(:get, "/storage/avatars/1.png", disk)
 
         assert conn.status == 200
         assert conn.resp_body == "png"
         assert get_resp_header(conn, "content-type") == ["image/png"]
-        assert public_request(:head, "/storage/avatars/1.png", disk).resp_body == ""
+        assert PlugHelper.public_request(:head, "/storage/avatars/1.png", disk).resp_body == ""
       end
     end
 
@@ -1148,23 +1157,23 @@ defmodule Fil.PlugTest.OneDisk do
 
       disk = Fil.disk(adapter: Fil.Adapter.Local, root: Path.join(tmp_dir, "public"))
 
-      assert public_request(:get, "/storage/../secret.txt", disk).status == 404
-      assert public_request(:get, "/storage/%2E%2E/secret.txt", disk).status == 404
+      assert PlugHelper.public_request(:get, "/storage/../secret.txt", disk).status == 404
+      assert PlugHelper.public_request(:get, "/storage/%2E%2E/secret.txt", disk).status == 404
     end
 
     test "uploads still need a signed URL", %{tmp_dir: tmp_dir, memory: signing} do
       plain = Fil.disk(adapter: Fil.Adapter.Local, root: tmp_dir)
 
-      conn = public_request(:put, "/storage/new.txt", plain, "nope")
+      conn = PlugHelper.public_request(:put, "/storage/new.txt", plain, "nope")
       assert conn.status == 403
       assert conn.resp_body == "uploads need a signed URL"
       refute Fil.exists?(plain, "new.txt")
 
-      assert public_request(:put, "/storage/new.txt", signing, "nope").status == 403
+      assert PlugHelper.public_request(:put, "/storage/new.txt", signing, "nope").status == 403
 
       {:ok, %{url: put_url}} = Fil.signed_upload(signing, "new.txt")
       uri = URI.parse(put_url)
-      assert public_request(:put, uri.path <> "?" <> uri.query, signing, "yes").status == 200
+      assert PlugHelper.public_request(:put, uri.path <> "?" <> uri.query, signing, "yes").status == 200
       assert Fil.read(signing, "new.txt") == {:ok, "yes"}
     end
   end

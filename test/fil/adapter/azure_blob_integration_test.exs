@@ -13,6 +13,7 @@ defmodule Fil.Adapter.AzureBlobIntegrationTest do
   """
 
   alias Fil.Adapter.AzureBlob
+  alias Fil.AdapterCase
   alias Fil.Emulator
   alias Phoenix.LiveView.UploadEntry
 
@@ -132,10 +133,13 @@ defmodule Fil.Adapter.AzureBlobIntegrationTest do
 
   describe "uploads in blocks" do
     test "commit with the content type and the checksum of the whole file", %{disk: disk} do
-      content = :crypto.strong_rand_bytes(large())
+      content = :crypto.strong_rand_bytes(AdapterCase.large())
 
       assert {:ok, _} =
-               Fil.write(disk, "video.mp4", chunked(content, 65_536), content_type: "video/mp4", checksum: :sha256)
+               Fil.write(disk, "video.mp4", AdapterCase.chunked(content, 65_536),
+                 content_type: "video/mp4",
+                 checksum: :sha256
+               )
 
       sha256 = Fil.Support.Checksum.digest(:sha256, content)
 
@@ -149,8 +153,8 @@ defmodule Fil.Adapter.AzureBlobIntegrationTest do
     test "a failed upload writes nothing", %{disk: disk} do
       broken =
         "a"
-        |> :binary.copy(large())
-        |> chunked(65_536)
+        |> :binary.copy(AdapterCase.large())
+        |> AdapterCase.chunked(65_536)
         |> Stream.concat(Stream.map([:next], fn _next -> raise "broken" end))
 
       assert_raise RuntimeError, "broken", fn -> Fil.write(disk, "broken.bin", broken) end

@@ -13,6 +13,7 @@ defmodule Fil.Adapter.S3IntegrationTest do
   """
 
   alias Fil.Adapter.S3
+  alias Fil.AdapterCase
   alias Fil.Emulator
   alias Phoenix.LiveView.UploadEntry
 
@@ -170,9 +171,9 @@ defmodule Fil.Adapter.S3IntegrationTest do
 
   describe "uploads in parts" do
     test "complete with the content type, and an ETag that counts the parts", %{disk: disk} do
-      content = :crypto.strong_rand_bytes(large())
+      content = :crypto.strong_rand_bytes(AdapterCase.large())
 
-      assert {:ok, _} = Fil.write(disk, "video.mp4", chunked(content, 65_536), content_type: "video/mp4")
+      assert {:ok, _} = Fil.write(disk, "video.mp4", AdapterCase.chunked(content, 65_536), content_type: "video/mp4")
       assert {:ok, %Fil.Stat{content_type: "video/mp4", etag: etag}} = Fil.stat(disk, "video.mp4")
       assert String.ends_with?(etag, "-2")
     end
@@ -212,9 +213,9 @@ defmodule Fil.Adapter.S3IntegrationTest do
     end
 
     test "a SHA-256 of an upload in parts covers the parts", %{disk: disk} do
-      content = :crypto.strong_rand_bytes(large())
+      content = :crypto.strong_rand_bytes(AdapterCase.large())
 
-      assert {:ok, _} = Fil.write(disk, "sha.bin", chunked(content, 65_536), checksum: :sha256)
+      assert {:ok, _} = Fil.write(disk, "sha.bin", AdapterCase.chunked(content, 65_536), checksum: :sha256)
 
       # S3 stores a checksum of the parts' checksums, which isn't the checksum of the file.
       assert {:ok, %Fil.Stat{checksum: nil}} = Fil.stat(disk, "sha.bin", checksum: :sha256)
@@ -237,8 +238,8 @@ defmodule Fil.Adapter.S3IntegrationTest do
 
   defp large_chunks do
     "a"
-    |> :binary.copy(large())
-    |> chunked(65_536)
+    |> :binary.copy(AdapterCase.large())
+    |> AdapterCase.chunked(65_536)
   end
 
   # `chunks`, then a chunk that runs `fun`.

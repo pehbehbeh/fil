@@ -1,10 +1,10 @@
 defmodule Fil.Adapter.S3Test do
   alias Fil.Adapter.S3
+  alias Fil.AdapterCase
   alias Fil.ReqStub
 
   use ExUnit.Case, async: true
 
-  import Fil.AdapterCase, only: [chunked: 2]
   import Plug.Conn
 
   setup {Req.Test, :verify_on_exit!}
@@ -577,7 +577,9 @@ defmodule Fil.Adapter.S3Test do
 
       content = :crypto.strong_rand_bytes(@part + 1)
 
-      assert {:ok, ref} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), content_type: "video/mp4")
+      assert {:ok, ref} =
+               Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(content, @mib), content_type: "video/mp4")
+
       assert ref.path == "a.bin"
 
       [create, first, second, complete] = requests()
@@ -611,7 +613,7 @@ defmodule Fil.Adapter.S3Test do
         response(200, completed_xml())
       ])
 
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(:binary.copy("a", 2 * @part), @mib))
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(:binary.copy("a", 2 * @part), @mib))
 
       assert [_create, _first, second, complete] = requests()
       assert byte_size(second.assigns.body) == @part
@@ -622,7 +624,7 @@ defmodule Fil.Adapter.S3Test do
       stub([response(200)])
       content = :binary.copy("a", @part)
 
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), content_type: "video/mp4")
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(content, @mib), content_type: "video/mp4")
 
       request = request!()
       assert {request.method, request.query_params} == {"PUT", %{}}
@@ -801,12 +803,12 @@ defmodule Fil.Adapter.S3Test do
         response(200, completed_xml())
       ])
 
-      assert {:ok, _} = Fil.write(disk, "a.bin", chunked(:binary.copy("a", 2 * @part), @mib))
+      assert {:ok, _} = Fil.write(disk, "a.bin", AdapterCase.chunked(:binary.copy("a", 2 * @part), @mib))
 
       stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
 
       assert {:error, %Fil.InvalidRequestError{reason: :too_many_parts}} =
-               Fil.write(disk, "a.bin", chunked(:binary.copy("a", 2 * @part + 1), @mib))
+               Fil.write(disk, "a.bin", AdapterCase.chunked(:binary.copy("a", 2 * @part + 1), @mib))
 
       assert_aborted(requests())
     end
@@ -878,7 +880,7 @@ defmodule Fil.Adapter.S3Test do
       content = :crypto.strong_rand_bytes(@part + 1)
       first_part = binary_part(content, 0, @part)
 
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), checksum: :crc32)
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(content, @mib), checksum: :crc32)
 
       [create, first, second, complete] = requests()
 
@@ -906,7 +908,8 @@ defmodule Fil.Adapter.S3Test do
       content = :crypto.strong_rand_bytes(@part + 1)
       digests = Enum.map([binary_part(content, 0, @part), binary_part(content, @part, 1)], &sha256_base64/1)
 
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked(content, @mib), checksum: :sha256, size: @part + 1)
+      assert {:ok, _} =
+               Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(content, @mib), checksum: :sha256, size: @part + 1)
 
       [create, first, second, complete] = requests()
 
@@ -946,7 +949,9 @@ defmodule Fil.Adapter.S3Test do
           ] do
         stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
 
-        assert_raise ArgumentError, message, fn -> Fil.write(parts_disk(), "a.bin", chunked(nine_mib, @mib), opts) end
+        assert_raise ArgumentError, message, fn ->
+          Fil.write(parts_disk(), "a.bin", AdapterCase.chunked(nine_mib, @mib), opts)
+        end
 
         requests = requests()
         assert Enum.map(requests, & &1.method) == ["POST", "PUT", "DELETE"]
@@ -1010,7 +1015,7 @@ defmodule Fil.Adapter.S3Test do
       assert_empty_mailbox()
 
       stub([response(200)])
-      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", chunked("small", 2))
+      assert {:ok, _} = Fil.write(parts_disk(), "a.bin", AdapterCase.chunked("small", 2))
       assert_empty_mailbox()
     end
 
@@ -1999,14 +2004,14 @@ defmodule Fil.Adapter.S3Test do
     @part
     |> Kernel.+(1)
     |> then(&:binary.copy("a", &1))
-    |> chunked(@mib)
+    |> AdapterCase.chunked(@mib)
   end
 
   # `size` bytes in chunks of 1 MiB, then calls `fun` for the next chunk.
   defp raising_after(size, fun) do
     size
     |> then(&:binary.copy("a", &1))
-    |> chunked(@mib)
+    |> AdapterCase.chunked(@mib)
     |> Stream.concat(Stream.map([:next], fn _next -> fun.() end))
   end
 

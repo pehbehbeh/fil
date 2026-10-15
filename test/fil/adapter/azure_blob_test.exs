@@ -1,11 +1,10 @@
 defmodule Fil.Adapter.AzureBlobTest do
   alias Fil.Adapter.AzureBlob
+  alias Fil.AdapterCase
   alias Fil.ReqStub
   alias Fil.Support.Checksum
 
   use ExUnit.Case, async: true
-
-  import Fil.AdapterCase, only: [chunked: 2]
 
   setup {Req.Test, :verify_on_exit!}
 
@@ -192,7 +191,7 @@ defmodule Fil.Adapter.AzureBlobTest do
       content = :binary.copy("a", @mib + 1)
 
       assert {:ok, _} =
-               Fil.write(blocks_disk(), "big.bin", chunked(content, 65_536),
+               Fil.write(blocks_disk(), "big.bin", AdapterCase.chunked(content, 65_536),
                  content_type: "video/mp4",
                  checksum: :crc32,
                  if_exists: :error
@@ -235,7 +234,7 @@ defmodule Fil.Adapter.AzureBlobTest do
     test "content that ends within the first block is one Put Blob" do
       stub([response(201)])
 
-      assert {:ok, _} = Fil.write(blocks_disk(), "small.bin", chunked("small", 2), checksum: :sha1)
+      assert {:ok, _} = Fil.write(blocks_disk(), "small.bin", AdapterCase.chunked("small", 2), checksum: :sha1)
 
       request = request!()
       assert request.query_string == ""
@@ -263,7 +262,7 @@ defmodule Fil.Adapter.AzureBlobTest do
       disk = put_state(blocks_disk(), max_blocks: 2)
 
       assert {:error, %Fil.InvalidRequestError{reason: :too_many_parts}} =
-               Fil.write(disk, "big.bin", chunked(:binary.copy("a", 2 * @mib + 1), @mib))
+               Fil.write(disk, "big.bin", AdapterCase.chunked(:binary.copy("a", 2 * @mib + 1), @mib))
 
       assert length(requests()) == 1
     end
@@ -574,7 +573,7 @@ defmodule Fil.Adapter.AzureBlobTest do
   defp large_chunks do
     "a"
     |> :binary.copy(@mib + 1)
-    |> chunked(@mib)
+    |> AdapterCase.chunked(@mib)
   end
 
   defp sas_signature(permissions, expires, resource, protocol, disposition) do

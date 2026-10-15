@@ -1,11 +1,12 @@
 defmodule Fil.Kino.UploadTest do
+  alias Fil.KinoHelper
+
   use ExUnit.Case, async: true
 
-  import Fil.KinoHelper
   import Kino.Test
 
   setup :configure_livebook_bridge
-  setup :configure_uploads
+  setup {Fil.KinoHelper, :configure_uploads}
 
   setup do
     Fil.Adapter.Memory.checkout()
@@ -14,20 +15,26 @@ defmodule Fil.Kino.UploadTest do
   end
 
   test "writes an upload to the directory", %{disk: disk} do
-    {input, frame} = upload_field(Fil.Kino.upload(disk, "reports"))
+    {input, frame} =
+      disk
+      |> Fil.Kino.upload("reports")
+      |> KinoHelper.upload_field()
 
-    upload(input, "q3.pdf", "%PDF")
+    KinoHelper.upload(input, "q3.pdf", "%PDF")
 
-    assert status(frame) == "Wrote reports/q3.pdf (4 B)"
+    assert KinoHelper.status(frame) == "Wrote reports/q3.pdf (4 B)"
     assert Fil.read(disk, "reports/q3.pdf") == {:ok, "%PDF"}
   end
 
   test "writes to the root", %{disk: disk} do
-    {input, frame} = upload_field(Fil.Kino.upload(disk))
+    {input, frame} =
+      disk
+      |> Fil.Kino.upload()
+      |> KinoHelper.upload_field()
 
-    upload(input, "a.txt", "a")
+    KinoHelper.upload(input, "a.txt", "a")
 
-    assert status(frame) == "Wrote a.txt (1 B)"
+    assert KinoHelper.status(frame) == "Wrote a.txt (1 B)"
     assert Fil.exists?(disk, "a.txt")
   end
 
@@ -36,42 +43,53 @@ defmodule Fil.Kino.UploadTest do
       disk
       |> Fil.ref("inbox")
       |> Fil.Kino.upload()
-      |> upload_field()
+      |> KinoHelper.upload_field()
 
-    upload(input, "b.txt", String.duplicate("b", 1500))
+    KinoHelper.upload(input, "b.txt", String.duplicate("b", 1500))
 
-    assert status(frame) == "Wrote inbox/b.txt (1.5 KB)"
+    assert KinoHelper.status(frame) == "Wrote inbox/b.txt (1.5 KB)"
     assert Fil.exists?(disk, "inbox/b.txt")
   end
 
   test "keeps an existing file by default, and stays usable", %{disk: disk} do
     Fil.write!(disk, "a.txt", "old")
-    {input, frame} = upload_field(Fil.Kino.upload(disk))
 
-    upload(input, "a.txt", "new")
-    assert status(frame) =~ "the file already exists"
+    {input, frame} =
+      disk
+      |> Fil.Kino.upload()
+      |> KinoHelper.upload_field()
+
+    KinoHelper.upload(input, "a.txt", "new")
+    assert KinoHelper.status(frame) =~ "the file already exists"
     assert Fil.read(disk, "a.txt") == {:ok, "old"}
 
-    upload(input, "b.txt", "b")
-    assert status(frame) == "Wrote b.txt (1 B)"
+    KinoHelper.upload(input, "b.txt", "b")
+    assert KinoHelper.status(frame) == "Wrote b.txt (1 B)"
   end
 
   test "overwrites with if_exists: :overwrite", %{disk: disk} do
     Fil.write!(disk, "a.txt", "old")
-    {input, frame} = upload_field(Fil.Kino.upload(disk, ".", if_exists: :overwrite))
 
-    upload(input, "a.txt", "new")
+    {input, frame} =
+      disk
+      |> Fil.Kino.upload(".", if_exists: :overwrite)
+      |> KinoHelper.upload_field()
 
-    assert status(frame) == "Wrote a.txt (3 B)"
+    KinoHelper.upload(input, "a.txt", "new")
+
+    assert KinoHelper.status(frame) == "Wrote a.txt (3 B)"
     assert Fil.read(disk, "a.txt") == {:ok, "new"}
   end
 
   test "refuses names that aren't plain file names", %{disk: disk} do
-    {input, frame} = upload_field(Fil.Kino.upload(disk, "reports"))
+    {input, frame} =
+      disk
+      |> Fil.Kino.upload("reports")
+      |> KinoHelper.upload_field()
 
     for name <- ["..", ".", "", "a/b", "a\\b", "../a.txt"] do
-      upload(input, name, "x")
-      assert status(frame) == "invalid file name: #{inspect(name)}"
+      KinoHelper.upload(input, name, "x")
+      assert KinoHelper.status(frame) == "invalid file name: #{inspect(name)}"
     end
 
     assert Fil.ls(disk, ".", recursive: true) == {:ok, []}
@@ -79,11 +97,15 @@ defmodule Fil.Kino.UploadTest do
 
   test "calls on_upload with the ref", %{disk: disk} do
     test = self()
-    {input, frame} = upload_field(Fil.Kino.upload(disk, "reports", on_upload: &send(test, {:uploaded, &1})))
 
-    upload(input, "q3.pdf", "%PDF")
+    {input, frame} =
+      disk
+      |> Fil.Kino.upload("reports", on_upload: &send(test, {:uploaded, &1}))
+      |> KinoHelper.upload_field()
 
-    assert status(frame) == "Wrote reports/q3.pdf (4 B)"
+    KinoHelper.upload(input, "q3.pdf", "%PDF")
+
+    assert KinoHelper.status(frame) == "Wrote reports/q3.pdf (4 B)"
     assert_receive {:uploaded, %Fil.Ref{path: "reports/q3.pdf"}}
   end
 
@@ -93,10 +115,14 @@ defmodule Fil.Kino.UploadTest do
         Fil.Op.put_result(op, {:error, %Fil.UnavailableError{reason: :timeout}})
       end)
 
-    {input, frame} = upload_field(Fil.Kino.upload(failing))
-    upload(input, "a.txt", "a")
+    {input, frame} =
+      failing
+      |> Fil.Kino.upload()
+      |> KinoHelper.upload_field()
 
-    assert status(frame) =~ "the storage is unavailable"
+    KinoHelper.upload(input, "a.txt", "a")
+
+    assert KinoHelper.status(frame) =~ "the storage is unavailable"
   end
 
   test "labels the field with the disk and the path", %{disk: disk} do
@@ -106,7 +132,10 @@ defmodule Fil.Kino.UploadTest do
   end
 
   test "passes accept: to the input", %{disk: disk} do
-    {input, _frame} = upload_field(Fil.Kino.upload(disk, ".", accept: [".pdf"]))
+    {input, _frame} =
+      disk
+      |> Fil.Kino.upload(".", accept: [".pdf"])
+      |> KinoHelper.upload_field()
 
     assert input.attrs.accept == [".pdf"]
   end
@@ -117,7 +146,7 @@ defmodule Fil.Kino.UploadTest do
   end
 
   defp label(field) do
-    {input, _frame} = upload_field(field)
+    {input, _frame} = KinoHelper.upload_field(field)
     input.attrs.label
   end
 end

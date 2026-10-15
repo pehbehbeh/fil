@@ -1,11 +1,10 @@
 defmodule Fil.Plugin.ValidationTest do
   alias Fil.Adapter.Memory
+  alias Fil.AdapterCase
   alias Fil.Op
   alias Fil.Plugin.Validation
 
   use ExUnit.Case, async: true
-
-  import Fil.AdapterCase, only: [chunked: 2]
 
   @png <<0x89, "PNG\r\n", 0x1A, "\n", 0, 0, 0, 13, "IHDR">> <> :binary.copy(<<0>>, 100)
   @gif "GIF89a" <> :binary.copy(<<0>>, 100)
@@ -52,14 +51,14 @@ defmodule Fil.Plugin.ValidationTest do
     test "a stream over a declared size never reaches the adapter", %{disk: disk} do
       disk = validating(disk, max_size: 5)
 
-      assert reason(Fil.write(disk, "a.txt", chunked("123456", 2), size: 6)) == {:too_large, 5}
+      assert reason(Fil.write(disk, "a.txt", AdapterCase.chunked("123456", 2), size: 6)) == {:too_large, 5}
       refute_received {:reached, _name, _size}
     end
 
     test "a stream without a size fails before the chunk that crosses max_size", %{disk: disk} do
       disk = validating(disk, max_size: 5)
 
-      assert reason(Fil.write(disk, "a.txt", chunked("1234567", 2))) == {:too_large, 5}
+      assert reason(Fil.write(disk, "a.txt", AdapterCase.chunked("1234567", 2))) == {:too_large, 5}
       assert_received {:chunk, "12"}
       assert_received {:chunk, "34"}
       refute_received {:chunk, "56"}
@@ -70,18 +69,18 @@ defmodule Fil.Plugin.ValidationTest do
       disk = validating(disk, min_size: 3)
 
       assert reason(Fil.write(disk, "a.txt", "")) == {:too_small, 3}
-      assert reason(Fil.write(disk, "a.txt", chunked("ab", 1), size: 2)) == {:too_small, 3}
+      assert reason(Fil.write(disk, "a.txt", AdapterCase.chunked("ab", 1), size: 2)) == {:too_small, 3}
       refute_received {:reached, _name, _size}
 
-      assert reason(Fil.write(disk, "a.txt", chunked("ab", 1))) == {:too_small, 3}
+      assert reason(Fil.write(disk, "a.txt", AdapterCase.chunked("ab", 1))) == {:too_small, 3}
       assert reason(Fil.write(disk, "a.txt", Stream.map([], & &1))) == {:too_small, 3}
-      assert {:ok, _} = Fil.write(disk, "a.txt", chunked("abc", 1))
+      assert {:ok, _} = Fil.write(disk, "a.txt", AdapterCase.chunked("abc", 1))
     end
 
     test "a stream keeps its size", %{disk: disk} do
       disk = validating(disk, max_size: 100, content_types: ["text/plain"])
 
-      assert {:ok, _} = Fil.write(disk, "a.txt", chunked("hello", 2), size: 5)
+      assert {:ok, _} = Fil.write(disk, "a.txt", AdapterCase.chunked("hello", 2), size: 5)
       assert_received {:reached, :write, 5}
     end
   end
@@ -115,7 +114,7 @@ defmodule Fil.Plugin.ValidationTest do
 
       assert {:ok, _} = Fil.write(disk, "a.png", @png)
       assert reason(Fil.write(disk, "b.png", @gif)) == {:content_type, "image/gif"}
-      assert reason(Fil.write(disk, "b.png", chunked(@gif, 1))) == {:content_type, "image/gif"}
+      assert reason(Fil.write(disk, "b.png", AdapterCase.chunked(@gif, 1))) == {:content_type, "image/gif"}
       refute Fil.exists?(disk, "b.png")
     end
 
@@ -152,7 +151,7 @@ defmodule Fil.Plugin.ValidationTest do
       disk = validating(disk, content_types: ["text/csv", "text/plain"])
 
       assert {:ok, _} = Fil.write(disk, "a.csv", @csv)
-      assert {:ok, _} = Fil.write(disk, "a.txt", chunked("hello", 1))
+      assert {:ok, _} = Fil.write(disk, "a.txt", AdapterCase.chunked("hello", 1))
       assert reason(Fil.write(disk, "data", @csv)) == {:content_type, nil}
       assert {:ok, _} = Fil.write(disk, "data", @csv, content_type: "text/csv")
     end
@@ -163,7 +162,7 @@ defmodule Fil.Plugin.ValidationTest do
       assert reason(Fil.write(disk, "a.txt", "\n<script>alert(1)</script>")) == {:content_type, "text/html"}
 
       svg = ~s{<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>}
-      assert reason(Fil.write(disk, "a.txt", chunked(svg, 1))) == {:content_type, "image/svg+xml"}
+      assert reason(Fil.write(disk, "a.txt", AdapterCase.chunked(svg, 1))) == {:content_type, "image/svg+xml"}
     end
 
     test "a type with a signature over content without one is a mismatch", %{disk: disk} do
@@ -178,7 +177,7 @@ defmodule Fil.Plugin.ValidationTest do
       disk = validating(disk, content_types: [xlsx])
 
       assert {:ok, _} = Fil.write(disk, "report.xlsx", @zip)
-      assert {:ok, _} = Fil.write(disk, "report", chunked(@zip, 7), content_type: xlsx)
+      assert {:ok, _} = Fil.write(disk, "report", AdapterCase.chunked(@zip, 7), content_type: xlsx)
       assert reason(Fil.write(disk, "report.zip", @zip)) == {:content_type, "application/zip"}
       assert reason(Fil.write(disk, "report", @zip)) == {:content_type, "application/zip"}
     end
@@ -228,12 +227,12 @@ defmodule Fil.Plugin.ValidationTest do
       disk = validating(disk, content_types: ["text/plain"])
       long = :binary.copy("a", 5_000)
 
-      assert {:ok, _} = Fil.write(disk, "a.txt", chunked(long, 1_000))
+      assert {:ok, _} = Fil.write(disk, "a.txt", AdapterCase.chunked(long, 1_000))
 
       # 1445 bytes are there with the second chunk, which isn't passed on.
       flush()
       late_html = "<html>" <> long
-      assert reason(Fil.write(disk, "b.txt", chunked(late_html, 1_000))) == {:content_type, "text/html"}
+      assert reason(Fil.write(disk, "b.txt", AdapterCase.chunked(late_html, 1_000))) == {:content_type, "text/html"}
       assert_received {:chunk, <<"<html>", _rest::binary>>}
       refute_received {:chunk, _chunk}
     end

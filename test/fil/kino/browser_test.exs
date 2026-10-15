@@ -1,11 +1,12 @@
 defmodule Fil.Kino.BrowserTest do
+  alias Fil.KinoHelper
+
   use ExUnit.Case, async: true
 
-  import Fil.KinoHelper
   import Kino.Test
 
   setup :configure_livebook_bridge
-  setup :configure_uploads
+  setup {Fil.KinoHelper, :configure_uploads}
 
   setup do
     Fil.Adapter.Memory.checkout()
@@ -280,7 +281,7 @@ defmodule Fil.Kino.BrowserTest do
     test "uploads into the current directory and lists it again", %{disk: disk} do
       Fil.write!(disk, "reports/q2.pdf", "%PDF-2")
       %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(disk, ".", writable: true)
-      {input, frame} = upload_field(field)
+      {input, frame} = KinoHelper.upload_field(field)
 
       assert %{writable: true} = connect(browser)
       assert input.attrs.label == "Upload to the current directory"
@@ -288,9 +289,9 @@ defmodule Fil.Kino.BrowserTest do
       push_event(browser, "open", %{"path" => "reports"})
       assert_broadcast_event(browser, "listing", %{path: "reports"})
 
-      upload(input, "q3.pdf", "%PDF-3")
+      KinoHelper.upload(input, "q3.pdf", "%PDF-3")
 
-      assert status(frame) == "Wrote reports/q3.pdf (6 B)"
+      assert KinoHelper.status(frame) == "Wrote reports/q3.pdf (6 B)"
       assert_broadcast_event(browser, "listing", %{path: "reports", entries: [%{name: "q2.pdf"}, %{name: "q3.pdf"}]})
       assert Fil.read(disk, "reports/q3.pdf") == {:ok, "%PDF-3"}
     end
@@ -298,24 +299,24 @@ defmodule Fil.Kino.BrowserTest do
     test "keeps an existing file on upload", %{disk: disk} do
       Fil.write!(disk, "a.txt", "old")
       %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(disk, ".", writable: true)
-      {input, frame} = upload_field(field)
+      {input, frame} = KinoHelper.upload_field(field)
       connect(browser)
 
-      upload(input, "a.txt", "new")
+      KinoHelper.upload(input, "a.txt", "new")
 
-      assert status(frame) =~ "already exists"
+      assert KinoHelper.status(frame) =~ "already exists"
       assert Fil.read(disk, "a.txt") == {:ok, "old"}
     end
 
     test "shows an error when the browser is gone", %{disk: disk} do
       %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(disk, ".", writable: true)
-      {input, frame} = upload_field(field)
+      {input, frame} = KinoHelper.upload_field(field)
       connect(browser)
 
       Process.exit(browser.pid, :kill)
-      upload(input, "a.txt", "a")
+      KinoHelper.upload(input, "a.txt", "a")
 
-      assert status(frame) == "the browser is gone, so there's no directory to upload to"
+      assert KinoHelper.status(frame) == "the browser is gone, so there's no directory to upload to"
       refute Fil.exists?(disk, "a.txt")
     end
 
@@ -333,12 +334,12 @@ defmodule Fil.Kino.BrowserTest do
         end)
 
       %Kino.Layout{items: [browser, field]} = Fil.Kino.browser(failing, ".", writable: true)
-      {input, frame} = upload_field(field)
+      {input, frame} = KinoHelper.upload_field(field)
       connect(browser)
 
-      upload(input, "fail", "x")
+      KinoHelper.upload(input, "fail", "x")
 
-      assert status(frame) == "Wrote fail (1 B)"
+      assert KinoHelper.status(frame) == "Wrote fail (1 B)"
       assert_broadcast_event(browser, "error", %{message: message})
       assert message =~ "the storage is unavailable"
     end

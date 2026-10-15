@@ -1,10 +1,10 @@
 defmodule Fil.LiveViewTest do
+  alias Fil.LiveViewHelper
   alias Fil.Plugin.URL
   alias Phoenix.LiveView.UploadEntry
 
   use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()
 
-  import Fil.LiveViewHelper
   import Phoenix.LiveViewTest
 
   @moduletag :tmp_dir
@@ -22,17 +22,24 @@ defmodule Fil.LiveViewTest do
     test "writes a file at filename/1", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
 
-      assert {:ok, [avatar]} = upload([%{name: "Me.PNG", content: "png"}], [accept: ~w(.png)], consume)
+      assert {:ok, [avatar]} = LiveViewHelper.upload([%{name: "Me.PNG", content: "png"}], [accept: ~w(.png)], consume)
 
       assert avatar.path =~ ~r/\A[0-9a-f-]{36}\.png\z/
       assert Fil.read(avatar) == {:ok, "png"}
     end
 
     test "returns the refs in the order of the file input", %{disk: disk} do
-      consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk, path: fn entry -> client_name(entry) end)
+      consume =
+        &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk,
+          path: fn entry -> LiveViewHelper.client_name(entry) end
+        )
+
       names = ~w(c.txt a.txt b.txt)
 
-      assert {:ok, refs} = upload(files(names), [accept: ~w(.txt), max_entries: 3], consume)
+      assert {:ok, refs} =
+               names
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: ~w(.txt), max_entries: 3], consume)
 
       assert Enum.map(refs, & &1.path) == names
 
@@ -42,9 +49,9 @@ defmodule Fil.LiveViewTest do
     end
 
     test "returns an empty list when nothing was uploaded", %{disk: disk} do
-      view = mount_upload([accept: :any], &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk))
+      view = LiveViewHelper.mount_upload([accept: :any], &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk))
 
-      assert submit(view) == {:ok, []}
+      assert LiveViewHelper.submit(view) == {:ok, []}
     end
 
     test "writes relative to a directory ref", %{disk: disk} do
@@ -52,7 +59,10 @@ defmodule Fil.LiveViewTest do
       path = &"avatars/#{&1.client_name}"
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, target, path: path)
 
-      assert {:ok, [avatar]} = upload(files(["a.txt"]), [accept: :any], consume)
+      assert {:ok, [avatar]} =
+               ["a.txt"]
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: :any], consume)
 
       assert avatar.path == "users/1/avatars/a.txt"
       assert Fil.read(disk, "users/1/avatars/a.txt") == {:ok, "content of a.txt"}
@@ -66,7 +76,11 @@ defmodule Fil.LiveViewTest do
         {expected, Fil.LiveView.consume_uploaded_entries(socket, :avatar, disk, path: &"avatars/#{&1.uuid}.txt")}
       end
 
-      assert {expected, {:ok, [avatar]}} = upload(files(["a.txt"]), [accept: :any], consume)
+      assert {expected, {:ok, [avatar]}} =
+               ["a.txt"]
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: :any], consume)
+
       assert avatar == expected
     end
 
@@ -75,7 +89,11 @@ defmodule Fil.LiveViewTest do
 
       # LiveView accepts the file for its type, which the browser sends.
       assert {:error, %Fil.InvalidRequestError{reason: :extension, op: :write} = error} =
-               upload([%{name: "evil.html", content: "<script>", type: "image/png"}], [accept: ~w(.png)], consume)
+               LiveViewHelper.upload(
+                 [%{name: "evil.html", content: "<script>", type: "image/png"}],
+                 [accept: ~w(.png)],
+                 consume
+               )
 
       assert error.path =~ ~r/\.html\z/
       assert Fil.ls(disk, ".") == {:ok, []}
@@ -85,24 +103,28 @@ defmodule Fil.LiveViewTest do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk, extensions: [".txt"])
 
       assert {:error, %Fil.InvalidRequestError{reason: :extension}} =
-               upload([%{name: "a.png", content: "png"}], [accept: ~w(image/*)], consume)
+               LiveViewHelper.upload([%{name: "a.png", content: "png"}], [accept: ~w(image/*)], consume)
 
       assert {:ok, [_ref]} =
-               upload([%{name: "a.TXT", content: "text", type: "image/png"}], [accept: ~w(image/*)], consume)
+               LiveViewHelper.upload(
+                 [%{name: "a.TXT", content: "text", type: "image/png"}],
+                 [accept: ~w(image/*)],
+                 consume
+               )
     end
 
     test "allows the extensions of the exact types in accept:, and refuses others", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
       accept = [accept: ~w(image/png image/jpeg)]
 
-      assert {:ok, [png]} = upload([%{name: "a.png", content: "png"}], accept, consume)
-      assert {:ok, [jpeg]} = upload([%{name: "a.JPEG", content: "jpeg"}], accept, consume)
+      assert {:ok, [png]} = LiveViewHelper.upload([%{name: "a.png", content: "png"}], accept, consume)
+      assert {:ok, [jpeg]} = LiveViewHelper.upload([%{name: "a.JPEG", content: "jpeg"}], accept, consume)
       assert png.path =~ ~r/\.png\z/
       assert jpeg.path =~ ~r/\.jpeg\z/
 
       # LiveView accepts the file for the type the browser sends.
       assert {:error, %Fil.InvalidRequestError{reason: :extension}} =
-               upload([%{name: "evil.html", content: "<script>", type: "image/png"}], accept, consume)
+               LiveViewHelper.upload([%{name: "evil.html", content: "<script>", type: "image/png"}], accept, consume)
 
       assert {:ok, [_png, _jpeg]} = Fil.ls(disk, ".")
     end
@@ -111,26 +133,31 @@ defmodule Fil.LiveViewTest do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
 
       assert {:error, %Fil.InvalidRequestError{reason: :extension}} =
-               upload([%{name: "a.png", content: "png"}], [accept: ~w(.pdf image/*)], consume)
+               LiveViewHelper.upload([%{name: "a.png", content: "png"}], [accept: ~w(.pdf image/*)], consume)
 
-      assert {:ok, [_pdf]} = upload([%{name: "a.pdf", content: "pdf"}], [accept: ~w(.pdf image/*)], consume)
+      assert {:ok, [_pdf]} =
+               LiveViewHelper.upload([%{name: "a.pdf", content: "pdf"}], [accept: ~w(.pdf image/*)], consume)
     end
 
     test "checks no extension when accept: has only wildcards", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
 
       assert {:ok, [ref]} =
-               upload([%{name: "noext", content: "png", type: "image/png"}], [accept: ~w(image/*)], consume)
+               LiveViewHelper.upload(
+                 [%{name: "noext", content: "png", type: "image/png"}],
+                 [accept: ~w(image/*)],
+                 consume
+               )
 
       refute ref.path =~ "."
     end
 
     test "keeps an existing file, deletes the others and keeps the entries", %{disk: disk} do
       Fil.write!(disk, "b.txt", "old")
-      view = mount_upload([accept: ~w(.txt), max_entries: 3], &consume_by_name(&1, disk))
-      select_and_upload(view, files(~w(a.txt b.txt c.txt)))
+      view = LiveViewHelper.mount_upload([accept: ~w(.txt), max_entries: 3], &LiveViewHelper.consume_by_name(&1, disk))
+      LiveViewHelper.select_and_upload(view, LiveViewHelper.files(~w(a.txt b.txt c.txt)))
 
-      assert {:error, %Fil.AlreadyExistsError{path: "b.txt"}} = submit(view)
+      assert {:error, %Fil.AlreadyExistsError{path: "b.txt"}} = LiveViewHelper.submit(view)
 
       assert Fil.read(disk, "b.txt") == {:ok, "old"}
       refute Fil.exists?(disk, "a.txt")
@@ -139,30 +166,41 @@ defmodule Fil.LiveViewTest do
       # The entries are still in the upload, so the form can be submitted again.
       Fil.rm!(disk, "b.txt")
 
-      assert {:ok, refs} = submit(view)
+      assert {:ok, refs} = LiveViewHelper.submit(view)
       assert Enum.map(refs, & &1.path) == ~w(a.txt b.txt c.txt)
       assert Fil.read(disk, "b.txt") == {:ok, "content of b.txt"}
     end
 
     test "replaces a file with if_exists: :overwrite", %{disk: disk} do
       Fil.write!(disk, "a.txt", "old")
-      consume = &consume_by_name(&1, disk, if_exists: :overwrite)
+      consume = &LiveViewHelper.consume_by_name(&1, disk, if_exists: :overwrite)
 
-      assert {:ok, [_ref]} = upload(files(["a.txt"]), [accept: :any], consume)
+      assert {:ok, [_ref]} =
+               ["a.txt"]
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: :any], consume)
+
       assert Fil.read(disk, "a.txt") == {:ok, "content of a.txt"}
     end
 
     test "refuses a path that leaves the disk root", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk, path: fn _entry -> "../escape.txt" end)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = upload(files(["a.txt"]), [accept: :any], consume)
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} =
+               ["a.txt"]
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: :any], consume)
     end
 
     test "refuses a path that leaves a directory target", %{disk: disk} do
       users = Fil.ref(disk, "users/1")
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, users, path: fn _entry -> "../x.png" end)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = upload(files(["a.png"]), [accept: :any], consume)
+      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} =
+               ["a.png"]
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: :any], consume)
+
       assert Fil.ls(disk, ".", recursive: true) == {:ok, []}
     end
 
@@ -170,14 +208,14 @@ defmodule Fil.LiveViewTest do
       path = fn entry -> if entry.client_name == "b.txt", do: :nope, else: entry.client_name end
 
       view =
-        mount_upload(
+        LiveViewHelper.mount_upload(
           [accept: :any, max_entries: 2],
           &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk, path: path)
         )
 
-      select_and_upload(view, files(~w(a.txt b.txt)))
+      LiveViewHelper.select_and_upload(view, LiveViewHelper.files(~w(a.txt b.txt)))
 
-      assert {:raised, %ArgumentError{message: message}} = submit(view)
+      assert {:raised, %ArgumentError{message: message}} = LiveViewHelper.submit(view)
       assert message =~ "expected the :path function to return a string, got: :nope"
       refute Fil.exists?(disk, "a.txt")
     end
@@ -193,7 +231,10 @@ defmodule Fil.LiveViewTest do
 
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, failing)
 
-      assert {:error, %Fil.UnavailableError{reason: :timeout}} = upload(files(["a.txt"]), [accept: :any], consume)
+      assert {:error, %Fil.UnavailableError{reason: :timeout}} =
+               ["a.txt"]
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: :any], consume)
     end
 
     test "deletes the files it wrote when an upload channel dies", %{disk: disk} do
@@ -216,12 +257,14 @@ defmodule Fil.LiveViewTest do
               next.(op)
           end)
 
-        consume_by_name(socket, stopping)
+        LiveViewHelper.consume_by_name(socket, stopping)
       end
 
       # Both files are written, and consuming the first entry finds its channel gone.
       assert {:exited, {:noproc, {GenServer, :call, [_pid, :consume_start, _timeout]}}} =
-               upload(files(~w(a.txt b.txt)), [accept: :any, max_entries: 2], consume)
+               ~w(a.txt b.txt)
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: :any, max_entries: 2], consume)
 
       refute Fil.exists?(disk, "a.txt")
       refute Fil.exists?(disk, "b.txt")
@@ -234,14 +277,17 @@ defmodule Fil.LiveViewTest do
 
       progress = fn :avatar, entry, socket ->
         if entry.done? do
-          send(test, {:stored, Fil.LiveView.consume_uploaded_entry(socket, entry, disk, path: &client_name/1)})
+          send(
+            test,
+            {:stored, Fil.LiveView.consume_uploaded_entry(socket, entry, disk, path: &LiveViewHelper.client_name/1)}
+          )
         end
 
         {:noreply, socket}
       end
 
-      view = mount_upload([accept: :any, auto_upload: true, progress: progress], fn _socket -> :ok end)
-      select_and_upload(view, files(["a.txt"]))
+      view = LiveViewHelper.mount_upload([accept: :any, auto_upload: true, progress: progress], fn _socket -> :ok end)
+      LiveViewHelper.select_and_upload(view, LiveViewHelper.files(["a.txt"]))
 
       assert_receive {:stored, {:ok, %Fil.Ref{path: "a.txt"}}}
       assert Fil.read(disk, "a.txt") == {:ok, "content of a.txt"}
@@ -252,13 +298,15 @@ defmodule Fil.LiveViewTest do
 
       consume = fn socket ->
         [entry] = socket.assigns.uploads.avatar.entries
-        result = Fil.LiveView.consume_uploaded_entry(socket, entry, disk, path: &client_name/1)
+        result = Fil.LiveView.consume_uploaded_entry(socket, entry, disk, path: &LiveViewHelper.client_name/1)
         Fil.rm!(disk, "a.txt")
-        {result, Fil.LiveView.consume_uploaded_entry(socket, entry, disk, path: &client_name/1)}
+        {result, Fil.LiveView.consume_uploaded_entry(socket, entry, disk, path: &LiveViewHelper.client_name/1)}
       end
 
       assert {{:error, %Fil.AlreadyExistsError{}}, {:ok, %Fil.Ref{path: "a.txt"}}} =
-               upload(files(["a.txt"]), [accept: :any], consume)
+               ["a.txt"]
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: :any], consume)
     end
   end
 
@@ -266,17 +314,19 @@ defmodule Fil.LiveViewTest do
     test "stores entries in LiveView's own consume_uploaded_entries/3", %{disk: disk} do
       consume = fn socket ->
         Phoenix.LiveView.consume_uploaded_entries(socket, :avatar, fn meta, entry ->
-          case Fil.LiveView.store_entry(disk, meta, entry, path: &client_name/1, extensions: [".txt"]) do
+          case Fil.LiveView.store_entry(disk, meta, entry, path: &LiveViewHelper.client_name/1, extensions: [".txt"]) do
             {:ok, ref} -> {:ok, ref.path}
             {:error, error} -> {:postpone, error}
           end
         end)
       end
 
-      assert upload(files(["a.txt"]), [accept: :any], consume) == ["a.txt"]
+      assert ["a.txt"]
+             |> LiveViewHelper.files()
+             |> LiveViewHelper.upload([accept: :any], consume) == ["a.txt"]
 
       assert [%Fil.InvalidRequestError{reason: :extension}] =
-               upload([%{name: "a.png", content: "png"}], [accept: :any], consume)
+               LiveViewHelper.upload([%{name: "a.png", content: "png"}], [accept: :any], consume)
     end
   end
 
@@ -286,22 +336,28 @@ defmodule Fil.LiveViewTest do
     end
 
     test "consume the file the browser uploaded through Fil.Plug", %{disk: disk} do
-      view = mount_direct(disk, [accept: ~w(.png)], &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk))
-      meta = select_direct(view, %{name: "Me.PNG", content: "png"})
+      view =
+        LiveViewHelper.mount_direct(disk, [accept: ~w(.png)], &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk))
 
-      assert put_direct(meta, "png", disk).status == 200
+      meta = LiveViewHelper.select_direct(view, %{name: "Me.PNG", content: "png"})
 
-      assert {:ok, [avatar]} = submit(view)
+      assert LiveViewHelper.put_direct(meta, "png", disk).status == 200
+
+      assert {:ok, [avatar]} = LiveViewHelper.submit(view)
       assert avatar.path == meta.path
       assert Fil.read(avatar) == {:ok, "png"}
 
       # The URL writes once.
-      assert put_direct(meta, "new", disk).status == 409
+      assert LiveViewHelper.put_direct(meta, "new", disk).status == 409
       assert Fil.read(avatar) == {:ok, "png"}
     end
 
     test "a refused extension is an upload error, and nothing is signed", %{disk: disk} do
-      view = mount_upload([accept: ~w(.png), external: Fil.LiveView.external(disk)], fn _socket -> :unused end)
+      view =
+        LiveViewHelper.mount_upload([accept: ~w(.png), external: Fil.LiveView.external(disk)], fn _socket ->
+          :unused
+        end)
+
       input = file_input(view, "#form", :avatar, [%{name: "evil.html", content: "<html>", type: "image/png"}])
 
       assert {:error, [[ref, %{reason: :extension}]]} = render_upload(input, "evil.html")
@@ -312,43 +368,49 @@ defmodule Fil.LiveViewTest do
     end
 
     test "a file that wasn't uploaded is a Fil.NotFoundError, and the entry stays", %{disk: disk} do
-      view = mount_direct(disk, [accept: ~w(.png)], &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk))
-      meta = select_direct(view, %{name: "a.png", content: "png"})
+      view =
+        LiveViewHelper.mount_direct(disk, [accept: ~w(.png)], &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk))
 
-      assert {:error, %Fil.NotFoundError{op: :stat}} = submit(view)
+      meta = LiveViewHelper.select_direct(view, %{name: "a.png", content: "png"})
 
-      assert put_direct(meta, "png", disk).status == 200
-      assert {:ok, [%Fil.Ref{}]} = submit(view)
+      assert {:error, %Fil.NotFoundError{op: :stat}} = LiveViewHelper.submit(view)
+
+      assert LiveViewHelper.put_direct(meta, "png", disk).status == 200
+      assert {:ok, [%Fil.Ref{}]} = LiveViewHelper.submit(view)
     end
 
     test "a failed consume doesn't delete the files the browser uploaded", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
-      view = mount_direct(disk, [accept: ~w(.png), max_entries: 2], consume)
-      [first, _second] = select_direct(view, [%{name: "a.png", content: "png"}, %{name: "b.png", content: "png"}])
+      view = LiveViewHelper.mount_direct(disk, [accept: ~w(.png), max_entries: 2], consume)
 
-      assert put_direct(first, "png", disk).status == 200
+      [first, _second] =
+        LiveViewHelper.select_direct(view, [%{name: "a.png", content: "png"}, %{name: "b.png", content: "png"}])
 
-      assert {:error, %Fil.NotFoundError{}} = submit(view)
+      assert LiveViewHelper.put_direct(first, "png", disk).status == 200
+
+      assert {:error, %Fil.NotFoundError{}} = LiveViewHelper.submit(view)
       assert Fil.read(disk, first.path) == {:ok, "png"}
     end
 
     test "a file larger than max_file_size is refused and kept", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
-      view = mount_direct(disk, [accept: ~w(.png), max_file_size: 3], consume)
-      meta = select_direct(view, %{name: "a.png", content: "png"})
+      view = LiveViewHelper.mount_direct(disk, [accept: ~w(.png), max_file_size: 3], consume)
+      meta = LiveViewHelper.select_direct(view, %{name: "a.png", content: "png"})
 
       # Something else wrote to the path, since the URL takes only 3 bytes. It may be someone else's file, so the
       # consume leaves it alone.
       Fil.write!(disk, meta.path, "larger")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :too_large, op: :stat, path: path, disk: ^disk}} = submit(view)
+      assert {:error, %Fil.InvalidRequestError{reason: :too_large, op: :stat, path: path, disk: ^disk}} =
+               LiveViewHelper.submit(view)
+
       assert path == meta.path
       assert Fil.read(disk, meta.path) == {:ok, "larger"}
     end
 
     test "store_entry/4 checks the file with :max_file_size", %{disk: disk} do
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
-      meta = direct_meta("avatars/a.png")
+      meta = LiveViewHelper.direct_meta("avatars/a.png")
       Fil.write!(disk, "avatars/a.png", "png")
 
       assert {:ok, %Fil.Ref{path: "avatars/a.png"}} = Fil.LiveView.store_entry(disk, meta, entry)
@@ -369,10 +431,10 @@ defmodule Fil.LiveViewTest do
       now = System.os_time(:second)
 
       # A URL signed within the allowance for clock differences takes the file, one signed later doesn't.
-      assert {:ok, %Fil.Ref{}} = Fil.LiveView.store_entry(disk, direct_meta("a.png", now + 20), entry)
+      assert {:ok, %Fil.Ref{}} = Fil.LiveView.store_entry(disk, LiveViewHelper.direct_meta("a.png", now + 20), entry)
 
       assert {:error, %Fil.AlreadyExistsError{reason: :before_upload, op: :stat, path: "a.png", disk: ^disk}} =
-               Fil.LiveView.store_entry(disk, direct_meta("a.png", now + 60), entry)
+               Fil.LiveView.store_entry(disk, LiveViewHelper.direct_meta("a.png", now + 60), entry)
 
       assert Fil.read(disk, "a.png") == {:ok, "png"}
     end
@@ -383,7 +445,7 @@ defmodule Fil.LiveViewTest do
 
       for opts <- [[], [max_file_size: 3]] do
         assert {:error, %Fil.NotFoundError{reason: :eisdir, op: :stat, path: "avatars"}} =
-                 Fil.LiveView.store_entry(disk, direct_meta("avatars"), entry, opts)
+                 Fil.LiveView.store_entry(disk, LiveViewHelper.direct_meta("avatars"), entry, opts)
       end
 
       assert Fil.read(disk, "avatars/a.png") == {:ok, "png"}
@@ -392,13 +454,13 @@ defmodule Fil.LiveViewTest do
 end
 
 defmodule Fil.LiveViewTest.OneDisk do
+  alias Fil.LiveViewHelper
   alias Fil.Plugin.URL
   alias Phoenix.LiveView.UploadEntry
 
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
-  import Fil.LiveViewHelper
 
   @base_url "http://localhost/storage"
 
@@ -415,15 +477,22 @@ defmodule Fil.LiveViewTest.OneDisk do
   test "stores the content type of the path, consumed or uploaded directly", %{disk: disk} do
     consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
 
-    assert {:ok, [avatar]} = upload([%{name: "Me.PNG", content: "png"}], [accept: ~w(.png)], consume)
+    assert {:ok, [avatar]} = LiveViewHelper.upload([%{name: "Me.PNG", content: "png"}], [accept: ~w(.png)], consume)
     assert {:ok, %Fil.Stat{content_type: "image/png"}} = Fil.stat(avatar)
 
     signing = URL.attach(disk, base_url: @base_url, secret: "secret")
-    view = mount_direct(signing, [accept: ~w(.png)], &Fil.LiveView.consume_uploaded_entries(&1, :avatar, signing))
-    meta = select_direct(view, %{name: "Me.PNG", content: "png"})
 
-    assert put_direct(meta, "png", signing).status == 200
-    assert {:ok, [direct]} = submit(view)
+    view =
+      LiveViewHelper.mount_direct(
+        signing,
+        [accept: ~w(.png)],
+        &Fil.LiveView.consume_uploaded_entries(&1, :avatar, signing)
+      )
+
+    meta = LiveViewHelper.select_direct(view, %{name: "Me.PNG", content: "png"})
+
+    assert LiveViewHelper.put_direct(meta, "png", signing).status == 200
+    assert {:ok, [direct]} = LiveViewHelper.submit(view)
     assert {:ok, %Fil.Stat{content_type: "image/png"}} = Fil.stat(direct)
   end
 
@@ -432,8 +501,15 @@ defmodule Fil.LiveViewTest.OneDisk do
     from_mfa = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, mfa, path: fn _entry -> "mfa.txt" end)
     from_fun = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, fn -> disk end, path: fn _entry -> "fun.txt" end)
 
-    assert {:ok, [_ref]} = upload(files(["a.txt"]), [accept: :any], from_mfa)
-    assert {:ok, [_ref]} = upload(files(["a.txt"]), [accept: :any], from_fun)
+    assert {:ok, [_ref]} =
+             ["a.txt"]
+             |> LiveViewHelper.files()
+             |> LiveViewHelper.upload([accept: :any], from_mfa)
+
+    assert {:ok, [_ref]} =
+             ["a.txt"]
+             |> LiveViewHelper.files()
+             |> LiveViewHelper.upload([accept: :any], from_fun)
 
     assert Fil.exists?(disk, "mfa.txt")
     assert Fil.exists?(disk, "fun.txt")
@@ -443,14 +519,18 @@ defmodule Fil.LiveViewTest.OneDisk do
     test "raises for bad options before writing anything", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk, if_exists: :append)
 
-      assert {:raised, %NimbleOptions.ValidationError{}} = upload(files(["a.txt"]), [accept: :any], consume)
+      assert {:raised, %NimbleOptions.ValidationError{}} =
+               ["a.txt"]
+               |> LiveViewHelper.files()
+               |> LiveViewHelper.upload([accept: :any], consume)
+
       assert Fil.ls(disk, ".") == {:ok, []}
     end
 
     test "raises for an upload that isn't allowed", %{disk: disk} do
-      view = mount_upload([accept: :any], &Fil.LiveView.consume_uploaded_entries(&1, :photos, disk))
+      view = LiveViewHelper.mount_upload([accept: :any], &Fil.LiveView.consume_uploaded_entries(&1, :photos, disk))
 
-      assert {:raised, %ArgumentError{message: "no upload allowed for :photos"}} = submit(view)
+      assert {:raised, %ArgumentError{message: "no upload allowed for :photos"}} = LiveViewHelper.submit(view)
     end
 
     test "raises for a meta without a path", %{disk: disk} do
@@ -471,7 +551,7 @@ defmodule Fil.LiveViewTest.OneDisk do
     test "signs an upload URL bound to the file", %{signing: disk} do
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "Me.PNG", client_size: 3, upload_config: :avatar}
 
-      assert {:ok, meta, _socket} = Fil.LiveView.external(disk).(entry, socket(accept: ~w(.png)))
+      assert {:ok, meta, _socket} = Fil.LiveView.external(disk).(entry, LiveViewHelper.socket(accept: ~w(.png)))
 
       assert %{uploader: "Fil", path: "0b2e8b8e.png", url: url, signed_at: signed_at} = meta
       assert_in_delta signed_at, System.os_time(:second), 5
@@ -491,7 +571,7 @@ defmodule Fil.LiveViewTest.OneDisk do
     test "leaves if-none-match out with if_exists: :overwrite", %{signing: disk} do
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png", client_size: 3, upload_config: :avatar}
 
-      assert {:ok, meta, _socket} = Fil.LiveView.external(disk, if_exists: :overwrite).(entry, socket())
+      assert {:ok, meta, _socket} = Fil.LiveView.external(disk, if_exists: :overwrite).(entry, LiveViewHelper.socket())
 
       assert meta.headers == %{"content-type" => "image/png"}
       refute meta.url =~ "if_exists"
@@ -512,7 +592,7 @@ defmodule Fil.LiveViewTest.OneDisk do
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png", client_size: 3, upload_config: :avatar}
       external = Fil.LiveView.external(disk, path: &"avatars/#{&1.uuid}.png", expires_in: 60)
 
-      assert {:ok, meta, _socket} = external.(entry, socket())
+      assert {:ok, meta, _socket} = external.(entry, LiveViewHelper.socket())
       assert "http://localhost:9000/bucket/avatars/0b2e8b8e.png?" <> query = meta.url
 
       query = URI.decode_query(query)
@@ -527,14 +607,20 @@ defmodule Fil.LiveViewTest.OneDisk do
       # LiveView sends the meta to the browser, so it has a reason, and the message, which names the disk and the path,
       # goes to the log. A refused extension comes from the user's file and isn't logged.
       signed = Fil.LiveView.external(signing)
-      assert {{:error, meta, _socket}, log} = with_log(fn -> signed.(entry, socket(accept: ~w(.png))) end)
+
+      assert {{:error, meta, _socket}, log} =
+               with_log(fn -> signed.(entry, LiveViewHelper.socket(accept: ~w(.png))) end)
+
       assert meta == %{reason: :extension}
       # The log of an async test has the other tests' messages too, so only this one's are checked.
       refute log =~ "Fil.LiveView.external/2"
 
       unsigned = Fil.LiveView.external(disk)
       png = %{entry | client_name: "a.png"}
-      assert {{:error, error_meta, _socket}, log} = with_log(fn -> unsigned.(png, socket(accept: ~w(.png))) end)
+
+      assert {{:error, error_meta, _socket}, log} =
+               with_log(fn -> unsigned.(png, LiveViewHelper.socket(accept: ~w(.png))) end)
+
       assert error_meta == %{reason: :error}
       assert log =~ "Fil.LiveView.external/2: "
       assert log =~ "0b2e8b8e.png"
@@ -553,7 +639,7 @@ defmodule Fil.LiveViewTest.OneDisk do
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
       Fil.write!(disk, "a.png", "png")
 
-      assert {:ok, %Fil.Ref{}} = Fil.LiveView.store_entry(disk, direct_meta("a.png"), entry)
+      assert {:ok, %Fil.Ref{}} = Fil.LiveView.store_entry(disk, LiveViewHelper.direct_meta("a.png"), entry)
 
       # Someone else's file from an hour ago, at a path a modified client claims it uploaded to.
       tmp_dir
@@ -561,7 +647,7 @@ defmodule Fil.LiveViewTest.OneDisk do
       |> File.touch!(System.os_time(:second) - 3600)
 
       assert {:error, %Fil.AlreadyExistsError{reason: :before_upload}} =
-               Fil.LiveView.store_entry(disk, direct_meta("a.png"), entry)
+               Fil.LiveView.store_entry(disk, LiveViewHelper.direct_meta("a.png"), entry)
 
       assert Fil.read(disk, "a.png") == {:ok, "png"}
     end
@@ -577,7 +663,7 @@ defmodule Fil.LiveViewTest.OneDisk do
         )
 
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
-      meta = direct_meta("avatars/a.png")
+      meta = LiveViewHelper.direct_meta("avatars/a.png")
       test = self()
 
       Req.Test.expect(__MODULE__, fn conn ->
@@ -590,7 +676,7 @@ defmodule Fil.LiveViewTest.OneDisk do
 
       # An object from an hour before the URL.
       Req.Test.expect(__MODULE__, &s3_head(&1, ~U[2026-09-30 10:00:00Z]))
-      old = direct_meta("avatars/a.png", DateTime.to_unix(~U[2026-09-30 11:00:00Z]))
+      old = LiveViewHelper.direct_meta("avatars/a.png", DateTime.to_unix(~U[2026-09-30 11:00:00Z]))
       assert {:error, %Fil.AlreadyExistsError{reason: :before_upload}} = Fil.LiveView.store_entry(disk, old, entry)
 
       Req.Test.expect(__MODULE__, 2, fn
