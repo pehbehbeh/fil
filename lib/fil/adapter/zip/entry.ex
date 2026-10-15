@@ -197,56 +197,60 @@ defmodule Fil.Adapter.Zip.Entry do
   ## Inflating and checking
   ## ------------------------------------------------------------------
 
-  # Inflates in pieces of bounded size and raises before a piece takes the content past the entry's size. Input that
-  # ends before the content reaches that size is damaged too.
+  # Inflates each chunk of compressed input lazily, one piece of zlib's buffer size at a time, so a chunk that expands a
+  # thousandfold is never held whole. The zlib handle keeps its state between pieces and chunks.
   defp inflating(compressed, entry) do
-    Stream.transform(
-      compressed,
+    compressed
+    |> Stream.transform(
       fn ->
         zlib = :zlib.open()
         :ok = :zlib.inflateInit(zlib, -15)
-        {zlib, 0}
+        zlib
       end,
-      fn chunk, {zlib, total} ->
-        {pieces, total} = inflate_chunk!(zlib, chunk, total, entry.size)
-        {pieces, {zlib, total}}
-      end,
-      fn {_zlib, total} = acc ->
-        if total < entry.size, do: raise(bad_entry(:size))
-        {[], acc}
-      end,
-      fn {zlib, _total} -> :zlib.close(zlib) end
+      fn chunk, zlib -> {pieces(zlib, chunk), zlib} end,
+      &:zlib.close/1
     )
+    |> limited(entry)
   end
 
-  defp inflate_chunk!(zlib, chunk, total, limit) do
-    zlib
-    |> :zlib.safeInflate(chunk)
-    |> inflated(zlib, [], total, limit)
+  defp pieces(zlib, chunk) do
+    {:input, chunk}
+    |> Stream.unfold(&next_piece!(zlib, &1))
+    |> Stream.reject(&(&1 == ""))
+  end
+
+  defp next_piece!(_zlib, :finished), do: nil
+  defp next_piece!(zlib, {:input, chunk}), do: piece!(zlib, chunk)
+  defp next_piece!(zlib, :continue), do: piece!(zlib, [])
+
+  defp piece!(zlib, input) do
+    case :zlib.safeInflate(zlib, input) do
+      {:continue, output} -> {IO.iodata_to_binary(output), :continue}
+      {:finished, output} -> {IO.iodata_to_binary(output), :finished}
+      _preset_dictionary -> raise bad_entry(:deflate)
+    end
   rescue
     ErlangError -> reraise bad_entry(:deflate), __STACKTRACE__
   end
 
-  defp inflated({status, output}, zlib, pieces, total, limit) do
-    piece = IO.iodata_to_binary(output)
-    total = total + byte_size(piece)
-
-    if total > limit, do: raise(bad_entry(:size))
-
-    pieces = if piece == "", do: pieces, else: [piece | pieces]
-
-    case status do
-      :continue ->
-        zlib
-        |> :zlib.safeInflate([])
-        |> inflated(zlib, pieces, total, limit)
-
-      :finished ->
-        {Enum.reverse(pieces), total}
-    end
+  # Raises before a piece takes the content past the entry's size, so the inflating stops there. Input that ends before
+  # the content reaches that size is damaged too.
+  defp limited(pieces, entry) do
+    Stream.transform(
+      pieces,
+      fn -> 0 end,
+      fn piece, total ->
+        total = total + byte_size(piece)
+        if total > entry.size, do: raise(bad_entry(:size))
+        {[piece], total}
+      end,
+      fn total ->
+        if total < entry.size, do: raise(bad_entry(:size))
+        {[], total}
+      end,
+      fn _total -> :ok end
+    )
   end
-
-  defp inflated(_preset_dictionary, _zlib, _pieces, _total, _limit), do: raise(bad_entry(:deflate))
 
   # Counts and checksums the content as it passes, and raises after the last chunk when it doesn't match the entry.
   defp checked(content, entry) do

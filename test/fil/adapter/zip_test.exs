@@ -367,6 +367,29 @@ defmodule Fil.Adapter.ZipTest do
     end
   end
 
+  describe "a stream of a deflated entry" do
+    test "yields pieces of zlib's buffer size, also from one large chunk of input", %{archives: archives} do
+      zeros = :binary.copy(<<0>>, 4_000_000)
+      deflated = ZipHelper.deflate(zeros)
+      disk = zip_disk(archives, ZipHelper.build([%{name: "zeros.bin", content: zeros, method: 8}]))
+      %Fil.Disk{adapter: {Zip, state}} = disk
+
+      # The memory disk hands over the compressed content as one chunk.
+      assert [^deflated] =
+               state.archive
+               |> Fil.stream!(offset: 30 + byte_size("zeros.bin"), length: byte_size(deflated))
+               |> Enum.to_list()
+
+      sizes =
+        disk
+        |> Fil.stream!("zeros.bin")
+        |> Enum.map(&byte_size/1)
+
+      assert Enum.sum(sizes) == 4_000_000
+      assert Enum.max(sizes) <= 16_384
+    end
+  end
+
   describe "an entry that inflates to more than its size" do
     setup %{archives: archives} do
       zeros = :binary.copy(<<0>>, 4_000_000)
