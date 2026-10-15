@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `inline` disposition, such a file keeps its type and gets `content-security-policy: sandbox`, so the browser shows it
   without running its scripts. The new `active_types:` option changes the list (`Fil.Plug.default_active_types/0`
   returns the default), and `active_types: []` sends every file as stored.
+  ([#47](https://github.com/pehbehbeh/fil/pull/47))
 
 ## [0.2.0] - 2026-10-06
 
