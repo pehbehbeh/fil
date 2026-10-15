@@ -1,18 +1,11 @@
 defmodule Fil do
   @external_resource readme = Path.join([__DIR__, "../README.md"])
 
-  @doc_body readme
-            |> File.read!()
-            |> String.split(["<!-- MDOC -->", "<!-- /MDOC -->"])
-            |> Enum.drop(1)
-            |> Enum.take_every(2)
-            |> Enum.join()
-
-  @moduledoc """
-  #{Mix.Project.config()[:description]}
-
-  #{@doc_body}
-  """
+  # The README below its badges is the moduledoc.
+  @moduledoc readme
+             |> File.read!()
+             |> String.split("<!-- MDOC -->", parts: 2)
+             |> List.last()
 
   alias Fil.Disk
   alias Fil.Op

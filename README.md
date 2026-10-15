@@ -12,9 +12,14 @@
 
 [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Ffil.hexdocs.pm%2Ftour.livemd)
 
+<!-- MDOC -->
+
 `Fil` is a pluggable file storage abstraction for Elixir.
 
-<!-- MDOC -->
+Adapters: [`Local`](https://fil.hexdocs.pm/Fil.Adapter.Local.html),
+[`Memory`](https://fil.hexdocs.pm/Fil.Adapter.Memory.html),
+[`S3`](https://fil.hexdocs.pm/Fil.Adapter.S3.html),
+[`AzureBlob`](https://fil.hexdocs.pm/Fil.Adapter.AzureBlob.html).
 
 ```elixir
 Mix.install([
@@ -33,27 +38,11 @@ With `adapter: Fil.Adapter.S3`, a bucket and credentials, the same code writes t
 
 To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html) in [Livebook](https://livebook.dev).
 
-<!-- /MDOC -->
-
-## Table of Contents
-
-- [Features and goals](#features-and-goals)
-- [Concepts](#concepts)
-- [Usage](#usage)
-- [Development](#development)
-- [Acknowledgments](#acknowledgments)
-
-> [!NOTE]
->
 > `Fil` is in early development, and the API may still change a lot.
-
-<!-- MDOC -->
 
 ## Features and goals
 
-- **One API for many kinds of storage.** Local disk, S3 (and S3-compatible stores),
-  [Azure Blob Storage](https://fil.hexdocs.pm/Fil.Adapter.AzureBlob.html) and an in-memory disk for async tests, with
-  the same behaviour on every adapter. `cp` and `rename` work across disks.
+- **One API for many kinds of storage.** The same behaviour on every adapter, and `cp` and `rename` work across disks.
 - **Just values.** A disk is a plain value: no application config, no registry, nothing to supervise. It works in a
   script or a Livebook with `Mix.install/1`.
 - **Pluggable.** Anything that isn't about where files are stored is a [plugin](https://fil.hexdocs.pm/plugins.html),

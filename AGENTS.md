@@ -176,5 +176,6 @@ Releases, milestones and backports are in the header of `bin/release`, the testi
 - Only `guides/installation.md` calls `MyApp.Storage.uploads()`, because that module is one way to set up disks among
   many. Other examples take a disk in `disk`. Options that are compiled, such as a plug's or an Ecto field's `disk:`,
   can't hold a disk and keep the capture `&MyApp.Storage.uploads/0`.
-- The README links every module at its first mention, to its page on HexDocs (`File` to Elixir's docs). The parts
-  between `<!-- MDOC -->` and `<!-- /MDOC -->`, and everything after the last `<!-- MDOC -->`, are the `Fil` moduledoc.
+- The README links every module at its first mention, to its page on HexDocs (`File` to Elixir's docs). Everything
+  after `<!-- MDOC -->`, so all but the logo and the badges, is the `Fil` moduledoc, the front page on HexDocs. Write
+  it for both: no GitHub-only syntax such as `> [!NOTE]`, and no table of contents (both sites build one).
