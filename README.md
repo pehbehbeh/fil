@@ -19,7 +19,8 @@
 Adapters: [`Local`](https://fil.hexdocs.pm/Fil.Adapter.Local.html),
 [`Memory`](https://fil.hexdocs.pm/Fil.Adapter.Memory.html),
 [`S3`](https://fil.hexdocs.pm/Fil.Adapter.S3.html),
-[`AzureBlob`](https://fil.hexdocs.pm/Fil.Adapter.AzureBlob.html).
+[`AzureBlob`](https://fil.hexdocs.pm/Fil.Adapter.AzureBlob.html),
+[`Null`](https://fil.hexdocs.pm/Fil.Adapter.Null.html).
 
 ```elixir
 Mix.install([
