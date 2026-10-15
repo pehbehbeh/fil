@@ -28,6 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   It's for dry runs, environments with storage turned off and tests that don't read files back. It reads a stream to
   the end, so a failing stream or a plugin that refuses the content still fails the write.
   ([#46](https://github.com/pehbehbeh/fil/pull/46))
+- `Fil.Plugin.ReadOnly` lets reads, listings and URLs pass and refuses every other operation (writes, deletes, copies
+  and moves within the disk, signed uploads) with `Fil.AccessDeniedError` and `reason: :read_only`. A copy to another
+  disk works. ([#45](https://github.com/pehbehbeh/fil/pull/45))
 
 ### Changed
 

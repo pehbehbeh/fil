@@ -24,6 +24,7 @@ Fil.read(disk, "hello.txt")
   * `Fil.Plugin.URL`: builds URLs for any disk, served by `Fil.Plug` from your application
   * `Fil.Plugin.Thumbnails`: writes resized copies of images next to them, with the optional Vix dependency
   * `Fil.Plugin.Validation`: refuses writes by size, by content type (from the magic bytes) or by extension
+  * `Fil.Plugin.ReadOnly`: refuses every call that would change the disk
 
 ## The callback
 
@@ -155,10 +156,10 @@ def call(%Fil.Op{name: :read} = op, next, _opts) do
 end
 ```
 
-A callback that answers with an error puts an exception in the result: one of `Fil`'s errors, such as
-`%Fil.UnsupportedError{reason: :read_only}`, or its own. `Fil` fills in the operation, the path and the disk of its
-own errors. A callback that returns something other than a `Fil.Op`, leaves the result empty or puts anything else in
-`{:error, _}` raises `ArgumentError`, because that's a bug in the plugin.
+A callback that answers with an error puts an exception in the result: one of `Fil`'s errors, such as the
+`%Fil.AccessDeniedError{reason: :read_only}` of `Fil.Plugin.ReadOnly`, or its own. `Fil` fills in the operation, the
+path and the disk of its own errors. A callback that returns something other than a `Fil.Op`, leaves the result empty
+or puts anything else in `{:error, _}` raises `ArgumentError`, because that's a bug in the plugin.
 
 A content transform can fail with one of `Fil`'s errors too, such as `Fil.ChecksumMismatchError` from a check that
 finds the content tampered with. On a read of content in memory, a transform passed to `Fil.Op.update_result/2` that

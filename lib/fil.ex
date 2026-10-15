@@ -924,6 +924,8 @@ defmodule Fil do
   Moves a file and returns the destination ref.
 
   Within one disk, `Fil` uses the adapter's native rename. Across disks, it copies the file and then deletes the source.
+  If the delete fails, the copy stays at the destination, the source stays where it was, and the error is the delete's,
+  with `op: :rename` and the source's path and disk.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> Fil.write!(disk, "draft.txt", "World")
