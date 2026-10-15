@@ -43,6 +43,29 @@ defmodule Fil do
   """
   @type content :: iodata() | Enumerable.t() | {:file, String.t()}
 
+  @typedoc """
+  An upload signed with `signed_upload/3`: the request a client sends to store one file.
+
+    * `:method`: the HTTP method, `:put` or `:post`
+    * `:url`: the signed URL
+    * `:headers`: the headers the client has to send along, as a map of lowercase names to values
+    * `:fields`: for `:post`, the form fields that go before the file, as `{name, value}` pairs in the order they're
+      sent. The file goes last, as the field `file`. Empty for `:put`
+    * `:expires_at`: when the URL stops working, so a client can ask for a new one instead of failing
+
+  Clients have to send exactly what's here: the method, every header and every field. They differ between disks, and
+  between versions of an adapter, so a client that assumes a `PUT` breaks on one that signs a form. A `:put` sends the
+  file as the body, and its size is the `content-length`, which browsers set themselves. A `:post` sends a
+  `multipart/form-data` body. `Fil.LiveView`'s uploader does both.
+  """
+  @type signed_upload :: %{
+          method: :put | :post,
+          url: String.t(),
+          headers: %{optional(String.t()) => String.t()},
+          fields: [{String.t(), String.t()}],
+          expires_at: DateTime.t()
+        }
+
   @typedoc "A plugin callback: a function or a `{module, function}` pair. See the [Plugins guide](plugins.md)."
   @type plugin_callback :: (Op.t(), (Op.t() -> Op.t()), keyword() -> Op.t()) | {module(), atom()}
 
@@ -1056,9 +1079,9 @@ defmodule Fil do
   @doc """
   Signs an upload to a file, for a client that sends the file to the storage itself, such as a browser.
 
-  Returns a `Fil.SignedUpload`: the method, the URL, the headers and form fields the client has to send with the file,
-  and when the URL expires. They differ between disks, so pass them on as they are, and send a form when the method is
-  `:post` (see `Fil.SignedUpload`).
+  Returns a map with the method, the URL, the headers and form fields the client has to send with the file, and when
+  the URL expires. They differ between disks, so pass them on as they are, and send a form when the method is `:post`
+  (see `t:signed_upload/0`).
 
   ## Options
 
@@ -1071,7 +1094,7 @@ defmodule Fil do
 
       Fil.signed_upload(disk, "avatars/7f3a.png", content_type: "image/png", size: 48_213, if_exists: :error)
       #=> {:ok,
-      #=>  %Fil.SignedUpload{
+      #=>  %{
       #=>    method: :put,
       #=>    url: "https://bucket.s3.eu-central-1.amazonaws.com/avatars/7f3a.png?X-Amz-Algorithm=...",
       #=>    headers: %{"content-type" => "image/png", "if-none-match" => "*"},
@@ -1101,13 +1124,13 @@ defmodule Fil do
   storage that can't enforce all of them, as `Fil.LiveView` does.
   """
   @doc section: :operations
-  @spec signed_upload(Ref.t()) :: result(Fil.SignedUpload.t())
+  @spec signed_upload(Ref.t()) :: result(signed_upload())
   def signed_upload(ref), do: signed_upload(ref, [])
 
   @doc "Signs an upload. See `signed_upload/1`."
   @doc section: :operations
-  @spec signed_upload(Disk.t(), Path.t()) :: result(Fil.SignedUpload.t())
-  @spec signed_upload(Ref.t(), keyword()) :: result(Fil.SignedUpload.t())
+  @spec signed_upload(Disk.t(), Path.t()) :: result(signed_upload())
+  @spec signed_upload(Ref.t(), keyword()) :: result(signed_upload())
   def signed_upload(%Disk{} = disk, path) when is_binary(path), do: signed_upload(Ref.new(disk, path), [])
 
   def signed_upload(ref, opts) when is_list(opts) do
@@ -1126,7 +1149,7 @@ defmodule Fil do
 
   @doc "Signs an upload. See `signed_upload/1`."
   @doc section: :operations
-  @spec signed_upload(Disk.t(), Path.t(), keyword()) :: result(Fil.SignedUpload.t())
+  @spec signed_upload(Disk.t(), Path.t(), keyword()) :: result(signed_upload())
   def signed_upload(%Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do
     signed_upload(Ref.new(disk, path), opts)
   end
@@ -1328,18 +1351,18 @@ defmodule Fil do
 
   @doc "Same as `signed_upload/1`, raising the error on failure."
   @doc section: :bang
-  @spec signed_upload!(Ref.t()) :: Fil.SignedUpload.t()
+  @spec signed_upload!(Ref.t()) :: signed_upload()
   def signed_upload!(ref), do: unwrap!(signed_upload(ref))
 
   @doc "Same as `signed_upload/2`, raising the error on failure."
   @doc section: :bang
-  @spec signed_upload!(Disk.t(), Path.t()) :: Fil.SignedUpload.t()
-  @spec signed_upload!(Ref.t(), keyword()) :: Fil.SignedUpload.t()
+  @spec signed_upload!(Disk.t(), Path.t()) :: signed_upload()
+  @spec signed_upload!(Ref.t(), keyword()) :: signed_upload()
   def signed_upload!(a, b), do: unwrap!(signed_upload(a, b))
 
   @doc "Same as `signed_upload/3`, raising the error on failure."
   @doc section: :bang
-  @spec signed_upload!(Disk.t(), Path.t(), keyword()) :: Fil.SignedUpload.t()
+  @spec signed_upload!(Disk.t(), Path.t(), keyword()) :: signed_upload()
   def signed_upload!(a, b, c), do: unwrap!(signed_upload(a, b, c))
 
   ## ------------------------------------------------------------------

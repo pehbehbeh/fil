@@ -15,12 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   content type, the size or extra query parameters, so `query:` returns a `Fil.UnsupportedError`, and
   `Fil.LiveView` checks the content type of a direct upload when it's consumed. The Livebook smart cell builds Azure
   disks too. ([#42](https://github.com/pehbehbeh/fil/pull/42))
-- `Fil.signed_upload/3` signs a direct upload and returns a `Fil.SignedUpload` with the method, the URL, the headers
-  and form fields the client has to send, and when the URL expires. They come from the disk, so a client passes them on
-  as they are, and `Fil.LiveView`'s uploader sends a form when the method is `:post`. Its options are those
-  of an upload URL before (`expires_in:`, `content_type:`, `size:`, `if_exists:` and `query:`), and `Fil.disk/1` takes
-  `signed_upload:` with defaults for `expires_in:` and `if_exists:`. Adapters sign uploads with the new optional
-  callback `c:Fil.Adapter.signed_upload/3`, and plugins see them as the `:signed_upload` op.
+- `Fil.signed_upload/3` signs a direct upload and returns a map with the method, the URL, the headers and form fields
+  the client has to send, and when the URL expires. They come from the disk, so a client passes them on as they are, and
+  `Fil.LiveView`'s uploader sends a form when the method is `:post`. Its options are those of an upload URL before
+  (`expires_in:`, `content_type:`, `size:`, `if_exists:` and `query:`), and `Fil.disk/1` takes `signed_upload:` with
+  defaults for `expires_in:` and `if_exists:`. Adapters sign uploads with the new optional callback
+  `c:Fil.Adapter.signed_upload/3`, and plugins see them as the `:signed_upload` op.
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
 
 ### Changed

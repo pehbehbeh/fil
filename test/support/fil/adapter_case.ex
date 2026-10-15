@@ -223,7 +223,7 @@ defmodule Fil.AdapterCase do
       defoverridable fil_other_disk: 1, fil_request: 4
 
       # Sends a signed upload with the headers it lists, which `opts[:headers]` replace one by one.
-      defp upload_request(disk, %Fil.SignedUpload{} = upload, opts) do
+      defp upload_request(disk, %{url: _url} = upload, opts) do
         extra =
           opts
           |> Keyword.get(:headers, [])
@@ -1461,7 +1461,7 @@ defmodule Fil.AdapterCase do
       test "signs an upload's content type and if_exists into its headers", %{disk: disk} do
         opts = [content_type: "image/png", size: 3, if_exists: :error]
 
-        assert {:ok, %Fil.SignedUpload{method: :put, url: url, headers: headers}} =
+        assert {:ok, %{method: :put, url: url, headers: headers}} =
                  Fil.signed_upload(disk, "a.png", opts)
 
         assert headers["content-type"] == "image/png"
@@ -1470,13 +1470,13 @@ defmodule Fil.AdapterCase do
         assert %URI{path: path} = URI.parse(url)
         assert String.ends_with?(path, "/a.png")
 
-        assert {:ok, %Fil.SignedUpload{headers: plain}} = Fil.signed_upload(disk, "a.png")
+        assert {:ok, %{headers: plain}} = Fil.signed_upload(disk, "a.png")
         refute Map.has_key?(plain, "content-type")
         refute Map.has_key?(plain, "if-none-match")
       end
 
       test "a signed upload says when it expires", %{disk: disk} do
-        assert {:ok, %Fil.SignedUpload{method: :put, fields: [], expires_at: expires_at}} =
+        assert {:ok, %{method: :put, fields: [], expires_at: expires_at}} =
                  Fil.signed_upload(disk, "a.png", expires_in: 300)
 
         assert_in_delta DateTime.diff(expires_at, DateTime.utc_now()), 300, 5

@@ -643,7 +643,7 @@ defmodule Fil.Adapter.AzureBlob do
         |> Map.new()
 
       {url, expires_at} = Client.sas_url(state, path, %{permissions: permissions}, opts)
-      {:ok, %Fil.SignedUpload{url: url, headers: headers, expires_at: expires_at}}
+      {:ok, %{method: :put, url: url, headers: headers, fields: [], expires_at: expires_at}}
     end
   end
 

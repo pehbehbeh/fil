@@ -235,17 +235,15 @@ it's read, in one request. For other streams, pass `size:` if you know it, or S3
 {:ok, rest} = Fil.stream(s3, "videos/intro.mp4", offset: 4096)
 ```
 
-`url` returns the public URL of a file, `signed_url` an expiring one, and `signed_upload` a
-[`Fil.SignedUpload`](https://fil.hexdocs.pm/Fil.SignedUpload.html) with an expiring URL and the headers to send, so
-clients can download or upload a file directly instead of going through your application code. S3 serves its URLs
-itself. For local and in-memory disks,
-`Fil.Plugin.URL` builds them and `Fil.Plug` serves them from your application, with etags, `304`s and range requests,
-so browsers can cache files and seek in videos:
+`url` returns the public URL of a file, `signed_url` an expiring one, and `signed_upload` an expiring URL with the
+headers to send, so clients can download or upload a file directly instead of going through your application code. S3
+and Azure serve their URLs themselves. For local and in-memory disks, `Fil.Plugin.URL` builds them and `Fil.Plug` serves
+them from your application, with etags, `304`s and range requests, so browsers can cache files and seek in videos:
 
 ```elixir
 {:ok, logo_url} = Fil.url(s3, "logo.png")
 {:ok, url} = Fil.signed_url(report, expires_in: 900)
-{:ok, %Fil.SignedUpload{url: upload_url, headers: headers}} = Fil.signed_upload(s3, "inbox/new.bin")
+{:ok, %{url: upload_url, headers: headers}} = Fil.signed_upload(s3, "inbox/new.bin")
 ```
 
 With `checksum:`, a write sends a checksum of the content. S3 rejects the upload if what it received doesn't match,

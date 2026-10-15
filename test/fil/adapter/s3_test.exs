@@ -1596,7 +1596,7 @@ defmodule Fil.Adapter.S3Test do
 
     test "presigns a PUT differently" do
       assert {:ok, get} = Fil.signed_url(disk(), "upload.bin")
-      assert {:ok, %Fil.SignedUpload{url: put}} = Fil.signed_upload(disk(), "upload.bin")
+      assert {:ok, %{url: put}} = Fil.signed_upload(disk(), "upload.bin")
 
       refute signature(get) == signature(put)
       assert query(get)["X-Amz-Expires"] == "900"
@@ -1682,10 +1682,10 @@ defmodule Fil.Adapter.S3Test do
     test "signs an upload's content type, size and if_exists as headers" do
       opts = [content_type: "image/png", size: 48_213, if_exists: :error]
 
-      assert {:ok, %Fil.SignedUpload{method: :put, url: url, headers: upload_headers}} =
+      assert {:ok, %{method: :put, url: url, headers: upload_headers}} =
                Fil.signed_upload(disk(), "avatars/7f3a.png", opts)
 
-      assert {:ok, %Fil.SignedUpload{url: plain, headers: %{}}} = Fil.signed_upload(disk(), "avatars/7f3a.png")
+      assert {:ok, %{url: plain, headers: %{}}} = Fil.signed_upload(disk(), "avatars/7f3a.png")
       assert upload_headers == %{"content-type" => "image/png", "if-none-match" => "*"}
 
       query = query(url)

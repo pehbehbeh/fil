@@ -845,7 +845,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         end
 
       # The meta goes to the browser as JSON, which has no tuples, so a field is a `[name, value]` pair.
-      with {:ok, %Fil.SignedUpload{} = upload} <- signed do
+      with {:ok, upload} <- signed do
         fields = Enum.map(upload.fields, fn {name, value} -> [name, value] end)
 
         {:ok,

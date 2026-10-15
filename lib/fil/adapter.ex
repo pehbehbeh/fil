@@ -221,7 +221,7 @@ defmodule Fil.Adapter do
   @callback signed_url(state(), path(), opts()) :: {:ok, String.t()} | error()
 
   @doc """
-  Signs an upload to a file: the request a client sends to store it, as a `Fil.SignedUpload`.
+  Signs an upload to a file: the request a client sends to store it, as a `t:Fil.signed_upload/0`.
 
   Optional, like `c:signed_url/3`: without it, `Fil.signed_upload/2` returns a `Fil.UnsupportedError`, and
   `Fil.Plugin.URL` signs uploads for the disk instead.
@@ -233,7 +233,7 @@ defmodule Fil.Adapter do
   `content-type` or `content-length` where it can, and with `if_exists: :error` one that finds a file at the path. A
   request with another path or method, or a changed parameter, writes nothing.
   """
-  @callback signed_upload(state(), path(), opts()) :: {:ok, Fil.SignedUpload.t()} | error()
+  @callback signed_upload(state(), path(), opts()) :: {:ok, Fil.signed_upload()} | error()
 
   @doc """
   Returns the address of the files: what decides which file a path names, such as the root directory, or the bucket and

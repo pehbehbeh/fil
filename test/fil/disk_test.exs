@@ -117,7 +117,7 @@ defmodule Fil.DiskTest do
   end
 
   defp upload_query(disk, path, opts \\ []) do
-    %Fil.SignedUpload{url: url} = Fil.signed_upload!(disk, path, opts)
+    %{url: url} = Fil.signed_upload!(disk, path, opts)
 
     url
     |> URI.parse()

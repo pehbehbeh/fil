@@ -174,7 +174,7 @@ defmodule Fil.Plugin.URL do
       url = sign(base_url, secret, path, [method: :put, expires: expires] ++ op.options)
       expires_at = DateTime.from_unix!(expires)
 
-      {:ok, %Fil.SignedUpload{url: url, headers: upload_headers(op.options), expires_at: expires_at}}
+      {:ok, %{method: :put, url: url, headers: upload_headers(op.options), fields: [], expires_at: expires_at}}
     end
   end
 

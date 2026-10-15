@@ -75,7 +75,7 @@ defmodule Fil.Plugin.URLTest do
 
     test "signs an upload's content type, size and if_exists as query parameters", %{disk: disk} do
       opts = [content_type: "image/png", size: 48_213, if_exists: :error, query: [{"v", "2"}]]
-      assert {:ok, %Fil.SignedUpload{url: url, headers: headers}} = Fil.signed_upload(disk, "a.png", opts)
+      assert {:ok, %{url: url, headers: headers}} = Fil.signed_upload(disk, "a.png", opts)
       assert headers == %{"content-type" => "image/png", "if-none-match" => "*"}
       %URI{path: path, query: query} = URI.parse(url)
 

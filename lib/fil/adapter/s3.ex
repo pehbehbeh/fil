@@ -657,7 +657,13 @@ defmodule Fil.Adapter.S3 do
       expires_at = DateTime.add(now, Keyword.get(opts, :expires_in, 900))
 
       {:ok,
-       %Fil.SignedUpload{url: Client.presign(state, url, :put, opts, now), headers: headers, expires_at: expires_at}}
+       %{
+         method: :put,
+         url: Client.presign(state, url, :put, opts, now),
+         headers: headers,
+         fields: [],
+         expires_at: expires_at
+       }}
     end
   end
 
