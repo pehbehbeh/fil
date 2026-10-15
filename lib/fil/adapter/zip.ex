@@ -42,10 +42,11 @@ defmodule Fil.Adapter.Zip do
 
     * Reads the entry with one more ranged read after the directory, two when its local header has a longer name or
       extra field than the directory says.
-    * With `offset:` and `length:`, reads only that part of a stored entry. A compressed entry is read and inflated
-      whole, then cut, because deflate can't start in the middle.
+    * With `offset:` and `length:`, reads the local header, then only that part of a stored entry. A compressed entry
+      is streamed and inflated from its start up to the end of the part, because deflate can't start in the middle.
     * Checks a whole entry against the CRC-32 the archive stores, with or without `verify_checksum: true`. An entry that
       doesn't match returns a `Fil.ChecksumMismatchError`.
+    * Never inflates more than the size the archive declares for the entry (see [Damage](#module-damage)).
     * Reading a directory returns a `Fil.NotFoundError`.
 
   ### `Fil.stream/3`
@@ -55,7 +56,8 @@ defmodule Fil.Adapter.Zip do
     * With `offset:` and `length:`, streams only that part of a stored entry. A compressed entry is inflated from its
       start up to the end of the part.
     * Checks a whole entry against its CRC-32 after the last chunk, and raises a `Fil.ChecksumMismatchError` there if
-      it doesn't match.
+      it doesn't match. An entry that inflates to more than its declared size raises on the chunk that passes it, so the
+      stream never yields more than that size.
 
   ### `Fil.write/4`
 
@@ -76,8 +78,11 @@ defmodule Fil.Adapter.Zip do
       the local time of the node.
     * `:etag` is the entry's CRC-32 and size (`"crc-size"`), the same in listings.
     * `:content_type` is `nil`, because zip archives don't store one (`Fil.Plug` guesses it from the extension).
-    * `checksum: :crc32` returns the CRC-32 from the directory. Other algorithms read the whole entry.
+    * `checksum: :crc32` returns the CRC-32 from the directory. Other algorithms stream the whole entry through the
+      checksum.
     * A stat on a directory returns `%Fil.Stat{type: :directory}` with every other field `nil`.
+    * A missing archive returns a `Fil.ConfigurationError`, and `Fil.exists?/2` returns `false` for every path on it,
+      as for any error.
 
   ### `Fil.ls/3`
 
@@ -110,14 +115,28 @@ defmodule Fil.Adapter.Zip do
   The disk keeps nothing between calls, so every call reads the archive's directory again: a stat of the archive, then
   a ranged read of its last 64 KiB or so, which holds the end of the directory and in a small archive all of it. A
   larger directory takes one more ranged read. On S3 or Azure, that's two or three requests for a stat or a listing,
-  and one or two more for the content of an entry.
+  and one or two more for the content of an entry. An archive with many thousands of entries has a directory of
+  several megabytes, which every call reads and parses again.
 
   ### Entry names
 
   Only entries whose names are already normalized paths are part of the disk. An entry whose name climbs above the
   archive's root (`../evil.txt`), starts with `/`, or has `.` segments or repeated slashes is left out of listings and
-  can't be read. Two entries with the same name are one file, the first in the archive. Names are read as UTF-8, and
-  names that aren't valid UTF-8 as Latin-1 (zip's own default, CP437, differs in its upper half).
+  can't be read. Two entries with the same name are one file, the first in the archive. A name can be a file and a
+  directory at once (`a` and `a/b.txt`), like keys on an object store: a listing shows both, and a stat finds the
+  file. Backslashes are part of a name, because the zip format separates directories with `/` only. Names are read
+  as UTF-8, and names that aren't valid UTF-8 as Latin-1, with the UTF-8 flag or without (zip's own default, CP437,
+  differs in its upper half).
+
+  ### Damage
+
+  The archive has to end with its end record. Bytes after it, or a prefix before the archive such as the program of a
+  self-extracting archive, make the whole archive damaged. So does a central directory that doesn't fit the archive,
+  or an entry that reaches into the central directory, as no zip tool writes one.
+
+  Damage to one entry fails only that entry: a local header that isn't one, deflate data that can't be inflated, and
+  content of another size than the archive declares. A deflated entry can expand a thousandfold, so the adapter stops
+  as soon as an entry inflates past its declared size, and never holds or yields more than that.
 
   ### Conformance
 
@@ -134,15 +153,17 @@ defmodule Fil.Adapter.Zip do
   | a missing file or directory in the archive | `Fil.NotFoundError` | `:enoent` |
   | a write, a removal, a copy or a move within the disk | `Fil.AccessDeniedError` | `:read_only` |
   | an entry whose content doesn't match its CRC-32 | `Fil.ChecksumMismatchError` | `:checksum_mismatch` |
+  | a damaged entry | `Fil.ChecksumMismatchError` | `{:bad_entry, where}` |
   | an encrypted entry | `Fil.UnsupportedError` | `:encrypted` |
   | an entry compressed with another method than deflate | `Fil.UnsupportedError` | `{:compression, method}` |
   | no archive at the ref, or a directory | `Fil.ConfigurationError` | the archive's `Fil.NotFoundError` |
   | a file that isn't a zip archive, or is damaged | `Fil.ConfigurationError` | `{:bad_archive, where}` |
   | any other error reading the archive | the same kind of error | the archive's error |
 
-  `where` says what's damaged: `:no_end_record`, `:zip64_end_record`, `:central_directory`, `:zip64_extra`,
-  `:local_header`, `:deflate`, `:size` or `:truncated`. `{:compression, method}` has the number of the method in the
-  zip format, such as 12 for bzip2.
+  `where` says what's damaged (see [Damage](#module-damage)). For an entry, it's `:local_header`, `:deflate` or `:size`.
+  For the archive, it's `:no_end_record`, `:zip64_end_record`, `:central_directory`, `:zip64_extra`, `:truncated` or
+  `:no_size` (its disk has no size for it). `{:compression, method}` has the number of the method in the zip format,
+  such as 12 for bzip2.
   """
 
   @behaviour Fil.Adapter
@@ -151,7 +172,6 @@ defmodule Fil.Adapter.Zip do
   alias Fil.Adapter.Zip.Entry
   alias Fil.Stat
   alias Fil.Support.ByteRange
-  alias Fil.Support.Checksum
 
   defstruct [:archive]
 
@@ -167,10 +187,7 @@ defmodule Fil.Adapter.Zip do
   end
 
   @impl Fil.Adapter
-  def address(%__MODULE__{archive: %Fil.Ref{disk: %Fil.Disk{adapter: {module, state}}, path: path}}) do
-    disk_address = if function_exported?(module, :address, 1), do: module.address(state), else: state
-    {module, disk_address, path}
-  end
+  def address(%__MODULE__{archive: %Fil.Ref{disk: disk, path: path}}), do: {Fil.Disk.address(disk), path}
 
   @impl Fil.Adapter
   def read(state, path, opts) do
@@ -245,8 +262,8 @@ defmodule Fil.Adapter.Zip do
     do: {:ok, %{file_stat(entry) | checksum: {:crc32, Base.encode64(<<entry.crc::32>>)}}}
 
   defp put_checksum(state, entry, algorithm) do
-    with {:ok, content} <- Entry.read(state.archive, entry, nil) do
-      {:ok, %{file_stat(entry) | checksum: {algorithm, Checksum.digest(algorithm, content)}}}
+    with {:ok, checksum} <- Entry.checksum(state.archive, entry, algorithm) do
+      {:ok, %{file_stat(entry) | checksum: {algorithm, checksum}}}
     end
   end
 

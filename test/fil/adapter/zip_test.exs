@@ -219,6 +219,38 @@ defmodule Fil.Adapter.ZipTest do
       assert [{:stat, nil, nil}, {:read, 0, _tail}, {:read, 0, _entry}] = archive_calls()
     end
 
+    test "for a part of a stored entry are the header and only that part", %{archives: archives} do
+      content = String.duplicate("0123456789", 1000)
+
+      disk =
+        archives
+        |> counting()
+        |> zip_disk(ZipHelper.build([%{name: "a.txt", content: content}]))
+
+      archive_calls()
+
+      assert Fil.read(disk, "a.txt", offset: 5000, length: 4) == {:ok, "0123"}
+      assert [{:stat, _, _}, {:read, 0, _tail}, {:read, 0, header}, {:read, content_start, 4}] = archive_calls()
+      assert header < 100
+      assert content_start == header + 5000
+    end
+
+    test "for a part of a deflated entry or a checksum stream the entry", %{archives: archives} do
+      disk =
+        archives
+        |> counting()
+        |> zip_disk(ZipHelper.build([%{name: "a.txt", content: @guide, method: 8}]))
+
+      archive_calls()
+
+      assert Fil.read(disk, "a.txt", offset: 5, length: 3) == {:ok, binary_part(@guide, 5, 3)}
+      assert [{:stat, _, _}, {:read, 0, _tail}, {:read, 0, _header}, {:read, _start, _compressed}] = archive_calls()
+
+      checksum = Fil.Support.Checksum.digest(:sha1, @guide)
+      assert {:ok, %Fil.Stat{checksum: {:sha1, ^checksum}}} = Fil.stat(disk, "a.txt", checksum: :sha1)
+      assert [{:stat, _, _}, {:read, 0, _tail}, {:read, 0, _header}, {:read, _start, _compressed}] = archive_calls()
+    end
+
     test "read a central directory that starts before the tail on its own", %{archives: archives} do
       names = for i <- 1..800, do: "#{String.duplicate("long-name-", 10)}#{i}.txt"
 
@@ -278,6 +310,115 @@ defmodule Fil.Adapter.ZipTest do
     end
   end
 
+  describe "end records" do
+    test "with 0xFFFF entries and no Zip64 locator count as they are", %{archives: archives} do
+      disk = zip_disk(archives, ZipHelper.build([%{name: "a.txt", content: "abc"}], count: 0xFFFF))
+
+      assert Fil.read(disk, "a.txt") == {:ok, "abc"}
+    end
+
+    test "in the comment don't count when they don't point to the central directory", %{archives: archives} do
+      fake = <<0x06054B50::32-little, 0::64, 0::32-little, 0::32-little, 0::16>>
+      bytes = ZipHelper.build([%{name: "a.txt", content: "abc"}], comment: "see " <> fake)
+      disk = zip_disk(archives, bytes)
+
+      assert Fil.read(disk, "a.txt") == {:ok, "abc"}
+    end
+
+    test "in the comment whose length doesn't fit are skipped", %{archives: archives} do
+      fake = <<0x06054B50::32-little, 0::64, 0::32-little, 0::32-little, 99::16-little>>
+      bytes = ZipHelper.build([%{name: "a.txt", content: "abc"}], comment: fake <> "tail")
+      disk = zip_disk(archives, bytes)
+
+      assert Fil.read(disk, "a.txt") == {:ok, "abc"}
+    end
+
+    test "followed by more bytes or after a prefix make the archive damaged", %{archives: archives} do
+      bytes = ZipHelper.build([%{name: "a.txt", content: "abc"}])
+
+      assert {:error, %Fil.ConfigurationError{reason: {:bad_archive, :no_end_record}}} =
+               archives
+               |> zip_disk(bytes <> "trailing", "trailing.zip")
+               |> Fil.ls(".")
+
+      assert {:error, %Fil.ConfigurationError{reason: {:bad_archive, :central_directory}}} =
+               archives
+               |> zip_disk("#!/bin/sh\n" <> bytes, "prefixed.zip")
+               |> Fil.ls(".")
+    end
+  end
+
+  describe "data descriptors" do
+    test "after the content leave the local header's sizes empty, which isn't read", %{archives: archives} do
+      bytes =
+        ZipHelper.build([
+          %{name: "a.txt", content: "abc", descriptor: true},
+          %{name: "b.txt", content: @guide, method: 8, descriptor: true}
+        ])
+
+      disk = zip_disk(archives, bytes)
+
+      assert Fil.read(disk, "a.txt") == {:ok, "abc"}
+      assert Fil.read(disk, "b.txt") == {:ok, @guide}
+
+      assert disk
+             |> Fil.stream!("b.txt")
+             |> Enum.join() == @guide
+    end
+  end
+
+  describe "an entry that inflates to more than its size" do
+    setup %{archives: archives} do
+      zeros = :binary.copy(<<0>>, 4_000_000)
+      bytes = ZipHelper.build([%{name: "bomb.bin", content: zeros, method: 8, size: 1000}])
+      [disk: zip_disk(archives, bytes)]
+    end
+
+    test "fails as soon as it passes that size", %{disk: disk} do
+      too_large = {:bad_entry, :size}
+
+      assert {:error, %Fil.ChecksumMismatchError{reason: ^too_large}} = Fil.read(disk, "bomb.bin")
+      assert {:error, %Fil.ChecksumMismatchError{reason: ^too_large}} = Fil.read(disk, "bomb.bin", offset: 500)
+      assert {:error, %Fil.ChecksumMismatchError{reason: ^too_large}} = Fil.stat(disk, "bomb.bin", checksum: :sha256)
+    end
+
+    test "never yields more than that size from a stream", %{disk: disk} do
+      for opts <- [[], [offset: 500]] do
+        test = self()
+
+        assert_raise Fil.ChecksumMismatchError, fn ->
+          disk
+          |> Fil.stream!("bomb.bin", opts)
+          |> Enum.each(&send(test, {:chunk, byte_size(&1)}))
+        end
+
+        yielded = Enum.sum(chunk_sizes())
+        assert yielded <= 1000
+      end
+    end
+
+    test "that ends early fails a stream of a part", %{archives: archives} do
+      deflated = ZipHelper.deflate(@guide)
+      cut = binary_part(deflated, 0, div(byte_size(deflated), 2))
+      bytes = ZipHelper.build([%{name: "cut.txt", content: @guide, method: 8, data: cut}])
+      disk = zip_disk(archives, bytes, "cut.zip")
+
+      assert_raise Fil.ChecksumMismatchError, fn ->
+        disk
+        |> Fil.stream!("cut.txt", offset: 10)
+        |> Enum.join()
+      end
+    end
+  end
+
+  defp chunk_sizes do
+    receive do
+      {:chunk, size} -> [size | chunk_sizes()]
+    after
+      0 -> []
+    end
+  end
+
   describe "entry names" do
     test "that escape the root or aren't normalized are left out", %{archives: archives} do
       bytes =
@@ -300,11 +441,28 @@ defmodule Fil.Adapter.ZipTest do
       assert {:error, %Fil.NotFoundError{}} = Fil.read(disk, "a/b.txt")
     end
 
-    test "that aren't UTF-8 are read as Latin-1", %{archives: archives} do
-      bytes = ZipHelper.build([%{name: <<"caf", 0xE9, ".txt">>, content: "latte", flags: 0}])
+    test "that aren't UTF-8 are read as Latin-1, with the UTF-8 flag or without", %{archives: archives} do
+      bytes =
+        ZipHelper.build([
+          %{name: <<"caf", 0xE9, ".txt">>, content: "latte", flags: 0},
+          %{name: <<"th", 0xE9, ".txt">>, content: "earl grey"}
+        ])
+
       disk = zip_disk(archives, bytes)
 
       assert Fil.read(disk, "café.txt") == {:ok, "latte"}
+      assert Fil.read(disk, "thé.txt") == {:ok, "earl grey"}
+    end
+
+    test "can name a file and a directory at once, like keys on an object store", %{archives: archives} do
+      bytes = ZipHelper.build([%{name: "a", content: "file"}, %{name: "a/b.txt", content: "below"}])
+      disk = zip_disk(archives, bytes)
+
+      assert {:ok, listed} = Fil.ls(disk, ".")
+      assert Enum.map(listed, &{&1.path, &1.stat.type}) == [{"a", :regular}, {"a", :directory}]
+      assert {:ok, %Fil.Stat{type: :regular}} = Fil.stat(disk, "a")
+      assert Fil.read(disk, "a") == {:ok, "file"}
+      assert Fil.read(disk, "a/b.txt") == {:ok, "below"}
     end
   end
 
@@ -378,12 +536,45 @@ defmodule Fil.Adapter.ZipTest do
       end
     end
 
-    test "with a damaged local header are configuration errors", %{archives: archives} do
+    test "with a damaged local header fail for that entry only", %{archives: archives} do
       bytes = ZipHelper.build([%{name: "a.txt", content: "abc"}])
       <<_signature::32, rest::binary>> = bytes
       disk = zip_disk(archives, <<0::32, rest::binary>>)
 
-      assert {:error, %Fil.ConfigurationError{reason: {:bad_archive, :local_header}}} = Fil.read(disk, "a.txt")
+      assert {:error, %Fil.ChecksumMismatchError{reason: {:bad_entry, :local_header}}} = Fil.read(disk, "a.txt")
+      assert {:ok, %Fil.Stat{size: 3}} = Fil.stat(disk, "a.txt")
+    end
+
+    test "whose central directory ends past the end record are damaged", %{archives: archives} do
+      bytes = ZipHelper.build([%{name: "a.txt", content: "abc"}], cd_size: 500)
+      disk = zip_disk(archives, bytes)
+
+      assert {:error, %Fil.ConfigurationError{reason: {:bad_archive, :central_directory}}} = Fil.ls(disk, ".")
+    end
+
+    test "with an entry past the central directory or a stored entry of two sizes are damaged", %{archives: archives} do
+      for {name, entry} <- [
+            {"offset.zip", %{name: "a.txt", content: "abc", offset: 10_000}},
+            {"sizes.zip", %{name: "a.txt", content: "abc", size: 5}}
+          ] do
+        disk = zip_disk(archives, ZipHelper.build([entry]), name)
+
+        assert {:error, %Fil.ConfigurationError{reason: {:bad_archive, :central_directory}}} = Fil.ls(disk, "."), name
+      end
+    end
+
+    test "with 0xFFFFFFFF as a size and no Zip64 extra field are damaged", %{archives: archives} do
+      disk = zip_disk(archives, ZipHelper.build([%{name: "a.txt", content: "abc", zip64_marker: true}]))
+
+      assert {:error, %Fil.ConfigurationError{reason: {:bad_archive, :zip64_extra}}} = Fil.ls(disk, ".")
+    end
+
+    test "with a Zip64 locator that points to no Zip64 end record are damaged", %{archives: archives} do
+      bytes = ZipHelper.build([%{name: "a.txt", content: "abc"}], zip64: true)
+      [before, record] = :binary.split(bytes, <<0x06064B50::32-little>>)
+      disk = zip_disk(archives, before <> <<0::32>> <> record)
+
+      assert {:error, %Fil.ConfigurationError{reason: {:bad_archive, :zip64_end_record}}} = Fil.ls(disk, ".")
     end
 
     test "return the archive disk's errors as errors of the zip disk", %{archives: archives} do

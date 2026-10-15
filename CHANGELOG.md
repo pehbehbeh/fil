@@ -11,8 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `Fil.Adapter.Zip` reads the files of a zip archive on any disk, read-only. It reads only the parts of the archive it
   needs, with ranged reads, so a file in a large archive on S3 costs a few requests. It reads stored and deflated
-  entries and Zip64 archives, checks each whole entry against its CRC-32, and leaves out entries whose names escape the
-  archive's root. Every change returns `Fil.AccessDeniedError` with `reason: :read_only`.
+  entries and Zip64 archives, checks each whole entry against its CRC-32, never inflates an entry past its declared
+  size, and leaves out entries whose names escape the archive's root. Every change returns `Fil.AccessDeniedError` with
+  `reason: :read_only`.
 - `Fil.Adapter.AzureBlob` stores files in Azure Blob Storage and Azurite, signed with the account key (Shared Key) or
   sent with a SAS token. Streams without a size are uploaded in blocks and committed at the end, `checksum:` is stored
   as blob metadata, and `Fil.signed_url/3` and `Fil.signed_upload/3` return service SAS URLs. A SAS can't bind the

@@ -39,8 +39,19 @@ defmodule Fil.Adapter.Zip.Archive do
   def stream(_archive, _offset, 0), do: []
 
   def stream(archive, offset, length) do
-    Stream.resource(fn -> open!(archive, offset, length) end, &next!/1, &close/1)
+    archive
+    |> resource(offset, length)
+    |> Stream.map(&raise_failed!/1)
   end
+
+  # A step that fails hands its error on as an element and ends the resource, so the archive's stream, which cleaned up
+  # when it raised, isn't halted a second time. The error is raised after the resource, from `raise_failed!/1`.
+  defp resource(archive, offset, length) do
+    Stream.resource(fn -> open!(archive, offset, length) end, &next/1, &close/1)
+  end
+
+  defp raise_failed!({__MODULE__, :failed, error, stacktrace}), do: reraise(error, stacktrace)
+  defp raise_failed!(chunk), do: chunk
 
   # The archive's stream is enumerated one chunk at a time, so each step can turn its errors into the zip disk's.
   defp open!(archive, offset, length) do
@@ -50,15 +61,15 @@ defmodule Fil.Adapter.Zip.Archive do
     end
   end
 
-  defp next!(nil), do: {:halt, nil}
+  defp next(nil), do: {:halt, nil}
 
-  defp next!(continuation) do
+  defp next(continuation) do
     case continuation.({:cont, nil}) do
       {:suspended, chunk, continuation} -> {[chunk], continuation}
       {_done_or_halted, _acc} -> {:halt, nil}
     end
   rescue
-    error -> reraise error(error), __STACKTRACE__
+    error -> {[{__MODULE__, :failed, error(error), __STACKTRACE__}], nil}
   end
 
   defp close(nil), do: :ok
