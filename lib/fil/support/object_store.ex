@@ -87,16 +87,101 @@ defmodule Fil.Support.ObjectStore do
   ## Listings
   ## ------------------------------------------------------------------
 
-  @doc """
-  The entries of a listing of `prefix` with the directories it implies. With the delimiter `"/"`, the storage lists the
-  directories itself, and an entry listed both as an object and as a prefix (a directory of a hierarchical namespace)
-  is kept once. Without one, it lists only objects, so a subtree's directories are the parents of the paths. Entries
-  the adapter listed as directories are directory markers, such as an empty object whose name ends in `/`.
+  @typedoc """
+  A function that lists one page of names under a prefix: `fetch.(prefix, delimiter, token, max)`, with the token of the
+  page (`nil` for the first) and at most `max` results (`nil` for the storage's default). It returns the objects as
+  `{name, stat}`, the prefixes the delimiter grouped as names, and the token of the next page (`nil` after the last).
+  The adapter lists directory markers (names ending in `/`) and the directories of a hierarchical namespace as
+  `%Fil.Stat{type: :directory}`.
   """
-  @spec subtree([{String.t(), Stat.t()}], String.t(), String.t() | nil) :: [{String.t(), Stat.t()}]
-  def subtree(listed, _prefix, "/"), do: Enum.uniq_by(listed, &elem(&1, 0))
+  @type fetch ::
+          (String.t(), String.t() | nil, String.t() | nil, pos_integer() | nil ->
+             {:ok, [{String.t(), Stat.t()}], [String.t()], String.t() | nil} | {:error, term()})
 
-  def subtree(listed, prefix, nil) do
+  @doc "`c:Fil.Adapter.ls/3`, with the pages from `fetch`."
+  @spec ls(%{prefix: String.t()}, fetch(), String.t(), keyword()) :: {:ok, [{String.t(), Stat.t()}]} | {:error, term()}
+  def ls(state, fetch, path, opts) do
+    delimiter = if !Keyword.get(opts, :recursive, false), do: "/"
+    prefix = list_prefix(state, path)
+
+    with {:ok, objects, prefixes} <- list_all(fetch, prefix, delimiter) do
+      objects = for {name, stat} <- objects, !marker?(name, prefix), do: {listed_path(state, name), stat}
+      prefixes = for name <- prefixes, do: {listed_path(state, name), %Stat{type: :directory}}
+
+      listed =
+        (objects ++ prefixes)
+        |> subtree(path, delimiter)
+        |> Enum.sort_by(&elem(&1, 0))
+
+      {:ok, listed}
+    end
+  end
+
+  @doc """
+  The stat of the directory `path`, if anything has it as a prefix besides its own marker. One page of two names is
+  enough, since the first may be the marker.
+  """
+  @spec directory_stat(%{prefix: String.t()}, fetch(), String.t()) :: {:ok, Stat.t()} | {:error, term()}
+  def directory_stat(state, fetch, path) do
+    prefix = list_prefix(state, path)
+
+    with {:ok, objects, prefixes, _token} <- fetch.(prefix, "/", nil, 2) do
+      names = for {name, _stat} <- objects, !marker?(name, prefix), do: name
+
+      if names == [] and prefixes == [],
+        do: {:error, %Fil.NotFoundError{reason: {:http_status, 404}}},
+        else: directory()
+    end
+  end
+
+  @doc """
+  `c:Fil.Adapter.rm_rf/3`: removes every object under `path` with `rm`, one at a time, directory markers included. The
+  directories of a hierarchical namespace stay, since removing one with files in it fails.
+  """
+  @spec rm_rf(%{prefix: String.t()}, fetch(), String.t(), (String.t() -> :ok | {:error, term()})) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def rm_rf(state, fetch, path, rm) do
+    with {:ok, objects, _prefixes} <- list_all(fetch, base_prefix(state, path), nil) do
+      objects
+      |> Enum.reject(fn {name, stat} -> stat.type == :directory and not String.ends_with?(name, "/") end)
+      |> Enum.map(&relative(state, elem(&1, 0)))
+      |> Enum.filter(&under_prefix?(&1, path))
+      |> delete_each(rm)
+    end
+  end
+
+  defp directory, do: {:ok, %Stat{type: :directory}}
+
+  defp list_all(fetch, prefix, delimiter, token \\ nil, objects \\ [], prefixes \\ []) do
+    with {:ok, page_objects, page_prefixes, next} <- fetch.(prefix, delimiter, token, nil) do
+      objects = objects ++ page_objects
+      prefixes = prefixes ++ page_prefixes
+
+      if next in [nil, ""],
+        do: {:ok, objects, prefixes},
+        else: list_all(fetch, prefix, delimiter, next, objects, prefixes)
+    end
+  end
+
+  # A directory marker is an empty object named like the listed directory, with or without the slash. Only listings
+  # pass a prefix with a trailing slash. `rm_rf/4` doesn't, and there an object named like the prefix is a file.
+  defp marker?(name, prefix) do
+    String.ends_with?(prefix, "/") and name in [prefix, String.trim_trailing(prefix, "/")]
+  end
+
+  defp listed_path(state, name) do
+    state
+    |> relative(name)
+    |> String.trim_trailing("/")
+  end
+
+  # The entries of a listing with the directories it implies. With the delimiter `"/"`, the storage lists the
+  # directories itself, and an entry listed both as an object and as a prefix (a directory of a hierarchical namespace)
+  # is kept once. Without one, it lists only objects, so a subtree's directories are the parents of the paths. Entries
+  # listed as directories are directory markers.
+  defp subtree(listed, _prefix, "/"), do: Enum.uniq_by(listed, &elem(&1, 0))
+
+  defp subtree(listed, prefix, nil) do
     {markers, files} = Enum.split_with(listed, fn {_path, stat} -> stat.type == :directory end)
     marker_paths = Enum.map(markers, &elem(&1, 0))
     file_paths = Enum.map(files, &elem(&1, 0))
@@ -111,9 +196,7 @@ defmodule Fil.Support.ObjectStore do
     files ++ directories
   end
 
-  @doc "Removes each path with `rm`, and returns how many it removed, or the first error."
-  @spec delete_each([String.t()], (String.t() -> :ok | {:error, term()})) :: {:ok, non_neg_integer()} | {:error, term()}
-  def delete_each(paths, rm) do
+  defp delete_each(paths, rm) do
     Enum.reduce_while(paths, {:ok, 0}, fn path, {:ok, count} ->
       case rm.(path) do
         :ok -> {:cont, {:ok, count + 1}}

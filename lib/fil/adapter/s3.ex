@@ -296,6 +296,7 @@ defmodule Fil.Adapter.S3 do
   alias Fil.Support.Checksum
   alias Fil.Support.Content
   alias Fil.Support.Download
+  alias Fil.Support.ObjectStore
   alias Fil.Support.Parts
   alias Fil.Support.Relay
   alias Fil.Support.XML
@@ -593,19 +594,7 @@ defmodule Fil.Adapter.S3 do
   end
 
   @impl Fil.Adapter
-  def ls(state, prefix, opts) do
-    delimiter = if !Keyword.get(opts, :recursive, false), do: "/"
-
-    with {:ok, contents, prefixes} <- list_all(state, list_prefix(state, prefix), delimiter) do
-      listed =
-        contents
-        |> Enum.map(&object_listing(state, &1))
-        |> Kernel.++(Enum.map(prefixes, &prefix_listing(state, &1)))
-        |> subtree(prefix, delimiter)
-
-      {:ok, Enum.sort_by(listed, &elem(&1, 0))}
-    end
-  end
+  def ls(state, path, opts), do: ObjectStore.ls(state, &list_page(state, &1, &2, &3, &4), path, opts)
 
   @impl Fil.Adapter
   def cp(state, src, dest, opts) do
@@ -643,16 +632,11 @@ defmodule Fil.Adapter.S3 do
     with :ok <- cp(state, src, dest, opts), do: rm(state, src, opts)
   end
 
+  # One DeleteObject per key. The batched DeleteObjects call needs a hand-built XML body with an MD5 checksum, so that
+  # optimization is left for later.
   @impl Fil.Adapter
-  def rm_rf(state, prefix, opts) do
-    # One DeleteObject per key. The batched DeleteObjects call needs a hand-built XML body with an MD5 checksum, so that
-    # optimization is left for later.
-    with {:ok, contents, _prefixes} <- list_all(state, base_prefix(state, prefix), nil) do
-      contents
-      |> Enum.map(&relative(state, XML.text(&1, "Key")))
-      |> Enum.filter(&under_prefix?(&1, prefix))
-      |> delete_each(&rm(state, &1, opts))
-    end
+  def rm_rf(state, path, opts) do
+    ObjectStore.rm_rf(state, &list_page(state, &1, &2, &3, &4), path, &rm(state, &1, opts))
   end
 
   @impl Fil.Adapter
@@ -1200,26 +1184,19 @@ defmodule Fil.Adapter.S3 do
   ## Listing
   ## ------------------------------------------------------------------
 
-  defp list_all(state, prefix, delimiter, token \\ nil, contents \\ [], prefixes \\ []) do
-    with {:ok, result} <- list_page(state, prefix, delimiter, token) do
-      page_contents =
-        result
-        |> XML.children("Contents")
-        |> Enum.reject(&marker?(&1, prefix))
+  # One page of ListObjectsV2, for `Fil.Support.ObjectStore`.
+  defp list_page(state, prefix, delimiter, token, max_keys) do
+    with {:ok, result} <- list_request(state, list_params(prefix, delimiter, token, max_keys)) do
+      objects = for contents <- XML.children(result, "Contents"), do: object_listing(contents)
+      prefixes = for common_prefix <- XML.children(result, "CommonPrefixes"), do: XML.text(common_prefix, "Prefix")
+      next = if XML.text(result, "IsTruncated") == "true", do: XML.text(result, "NextContinuationToken")
 
-      contents = contents ++ page_contents
-
-      prefixes = prefixes ++ XML.children(result, "CommonPrefixes")
-
-      case next_token(result) do
-        nil -> {:ok, contents, prefixes}
-        token -> list_all(state, prefix, delimiter, token, contents, prefixes)
-      end
+      {:ok, objects, prefixes, next}
     end
   end
 
-  defp list_page(state, prefix, delimiter, token, max_keys \\ nil) do
-    case request(state, :get, "", params: list_params(prefix, delimiter, token, max_keys)) do
+  defp list_request(state, params) do
+    case request(state, :get, "", params: params) do
       {:ok, %{status: 200, body: body}} -> parse_xml(body)
       {:ok, response} -> {:error, error(response)}
       {:error, reason} -> {:error, reason}
@@ -1239,23 +1216,13 @@ defmodule Fil.Adapter.S3 do
     )
   end
 
-  defp next_token(result) do
-    if XML.text(result, "IsTruncated") == "true", do: XML.text(result, "NextContinuationToken")
-  end
-
-  # A "directory marker" is an empty object named exactly like the listed directory. Only listings pass a prefix with a
-  # trailing slash. Prefix deletions don't, and there a key equal to the prefix is a file to remove.
-  defp marker?(contents, prefix) do
-    String.ends_with?(prefix, "/") and XML.text(contents, "Key") == prefix
-  end
-
   # A key ending in `/` is a directory marker (an empty "folder" made in a console), listed as the directory it stands
   # for.
-  defp object_listing(state, contents) do
-    path = relative(state, XML.text(contents, "Key"))
+  defp object_listing(contents) do
+    key = XML.text(contents, "Key")
 
-    if String.ends_with?(path, "/") do
-      {String.trim_trailing(path, "/"), %Stat{type: :directory}}
+    if String.ends_with?(key, "/") do
+      {key, %Stat{type: :directory}}
     else
       stat = %Stat{
         size: integer(XML.text(contents, "Size")),
@@ -1264,19 +1231,8 @@ defmodule Fil.Adapter.S3 do
         etag: unquote_etag(XML.text(contents, "ETag"))
       }
 
-      {path, stat}
+      {key, stat}
     end
-  end
-
-  defp prefix_listing(state, common_prefix) do
-    path =
-      common_prefix
-      |> XML.text("Prefix")
-      |> to_string()
-      |> String.trim_trailing("/")
-      |> then(&relative(state, &1))
-
-    {path, %Stat{type: :directory}}
   end
 
   ## ------------------------------------------------------------------
@@ -1294,24 +1250,7 @@ defmodule Fil.Adapter.S3 do
     }
   end
 
-  # One page of two keys is enough: the first key under the prefix may be the directory's own marker, which doesn't
-  # count.
-  defp directory_stat(state, path) do
-    prefix = list_prefix(state, path)
-
-    with {:ok, result} <- list_page(state, prefix, "/", nil, 2) do
-      contents =
-        result
-        |> XML.children("Contents")
-        |> Enum.reject(&marker?(&1, prefix))
-
-      if contents == [] and XML.children(result, "CommonPrefixes") == [] do
-        {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
-      else
-        {:ok, %Stat{type: :directory}}
-      end
-    end
-  end
+  defp directory_stat(state, path), do: ObjectStore.directory_stat(state, &list_page(state, &1, &2, &3, &4), path)
 
   ## ------------------------------------------------------------------
   ## Errors

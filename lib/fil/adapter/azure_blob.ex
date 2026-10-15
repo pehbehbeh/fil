@@ -263,6 +263,7 @@ defmodule Fil.Adapter.AzureBlob do
   alias Fil.Support.Checksum
   alias Fil.Support.Content
   alias Fil.Support.Download
+  alias Fil.Support.ObjectStore
   alias Fil.Support.Parts
   alias Fil.Support.Relay
   alias Fil.Support.XML
@@ -540,36 +541,10 @@ defmodule Fil.Adapter.AzureBlob do
     end
   end
 
-  # One page of two blobs is enough: the first blob under the prefix may be the directory's own marker, which doesn't
-  # count.
-  defp directory_stat(state, path) do
-    prefix = list_prefix(state, path)
-
-    with {:ok, blobs, prefixes, _marker} <- list_page(state, prefix, "/", nil, 2) do
-      if Enum.reject(blobs, &marker?(&1, prefix)) == [] and prefixes == [] do
-        {:error, %Fil.NotFoundError{reason: {:http_status, 404}}}
-      else
-        {:ok, %Stat{type: :directory}}
-      end
-    end
-  end
+  defp directory_stat(state, path), do: ObjectStore.directory_stat(state, &list_page(state, &1, &2, &3, &4), path)
 
   @impl Fil.Adapter
-  def ls(state, prefix, opts) do
-    delimiter = if !Keyword.get(opts, :recursive, false), do: "/"
-    list_prefix = list_prefix(state, prefix)
-
-    with {:ok, blobs, prefixes} <- list_all(state, list_prefix, delimiter) do
-      listed =
-        blobs
-        |> Enum.reject(&marker?(&1, list_prefix))
-        |> Enum.map(&blob_listing(state, &1))
-        |> Kernel.++(Enum.map(prefixes, &prefix_listing(state, &1)))
-        |> subtree(prefix, delimiter)
-
-      {:ok, Enum.sort_by(listed, &elem(&1, 0))}
-    end
-  end
+  def ls(state, path, opts), do: ObjectStore.ls(state, &list_page(state, &1, &2, &3, &4), path, opts)
 
   @impl Fil.Adapter
   def cp(state, src, dest, opts) do
@@ -610,16 +585,10 @@ defmodule Fil.Adapter.AzureBlob do
   end
 
   # One Delete Blob per blob. Blob Batch would delete 256 at a time, but needs a multipart body of its own, so that's
-  # left for later. Directories of a hierarchical namespace are blobs too, and stay.
+  # left for later.
   @impl Fil.Adapter
-  def rm_rf(state, prefix, opts) do
-    with {:ok, blobs, _prefixes} <- list_all(state, base_prefix(state, prefix), nil) do
-      blobs
-      |> Enum.reject(&folder?(metadata(&1, "hdi_isfolder")))
-      |> Enum.map(&relative(state, XML.text(&1, "Name")))
-      |> Enum.filter(&under_prefix?(&1, prefix))
-      |> delete_each(&rm(state, &1, opts))
-    end
+  def rm_rf(state, path, opts) do
+    ObjectStore.rm_rf(state, &list_page(state, &1, &2, &3, &4), path, &rm(state, &1, opts))
   end
 
   @impl Fil.Adapter
@@ -886,19 +855,8 @@ defmodule Fil.Adapter.AzureBlob do
   ## Listing
   ## ------------------------------------------------------------------
 
-  defp list_all(state, prefix, delimiter, marker \\ nil, blobs \\ [], prefixes \\ []) do
-    with {:ok, page_blobs, page_prefixes, next} <- list_page(state, prefix, delimiter, marker) do
-      blobs = blobs ++ page_blobs
-      prefixes = prefixes ++ page_prefixes
-
-      if next in [nil, ""],
-        do: {:ok, blobs, prefixes},
-        else: list_all(state, prefix, delimiter, next, blobs, prefixes)
-    end
-  end
-
   # Metadata comes with the listing so the directories of a hierarchical namespace (`hdi_isfolder`) are recognised.
-  defp list_page(state, prefix, delimiter, marker, max_results \\ nil) do
+  defp list_page(state, prefix, delimiter, marker, max_results) do
     params =
       Enum.reject(
         [
@@ -915,8 +873,8 @@ defmodule Fil.Adapter.AzureBlob do
 
     with {:ok, result} <- list_request(state, params) do
       listed = XML.children(result, "Blobs")
-      blobs = Enum.flat_map(listed, &XML.children(&1, "Blob"))
-      prefixes = Enum.flat_map(listed, &XML.children(&1, "BlobPrefix"))
+      blobs = for blobs <- listed, blob <- XML.children(blobs, "Blob"), do: blob_listing(blob)
+      prefixes = for blobs <- listed, prefix <- XML.children(blobs, "BlobPrefix"), do: XML.text(prefix, "Name")
 
       {:ok, blobs, prefixes, XML.text(result, "NextMarker")}
     end
@@ -930,18 +888,13 @@ defmodule Fil.Adapter.AzureBlob do
     end
   end
 
-  # A "directory marker" is an empty blob named exactly like the listed directory, with or without the slash. Only
-  # listings pass a prefix with a trailing slash. Prefix deletions don't, and there a blob named like the prefix is a
-  # file to remove.
-  defp marker?(blob, prefix) do
-    String.ends_with?(prefix, "/") and XML.text(blob, "Name") in [prefix, String.trim_trailing(prefix, "/")]
-  end
-
-  defp blob_listing(state, blob) do
-    name = relative(state, XML.text(blob, "Name"))
+  # A directory of a hierarchical namespace, and a blob whose name ends in `/` (an empty "folder" made by a tool), are
+  # listed as directories.
+  defp blob_listing(blob) do
+    name = XML.text(blob, "Name")
 
     if folder?(metadata(blob, "hdi_isfolder")) or String.ends_with?(name, "/") do
-      {String.trim_trailing(name, "/"), %Stat{type: :directory}}
+      {name, %Stat{type: :directory}}
     else
       properties = child(blob, "Properties")
 
@@ -955,17 +908,6 @@ defmodule Fil.Adapter.AzureBlob do
 
       {name, stat}
     end
-  end
-
-  defp prefix_listing(state, blob_prefix) do
-    path =
-      blob_prefix
-      |> XML.text("Name")
-      |> to_string()
-      |> String.trim_trailing("/")
-      |> then(&relative(state, &1))
-
-    {path, %Stat{type: :directory}}
   end
 
   defp metadata(blob, name) do
