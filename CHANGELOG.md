@@ -26,7 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
 - `Fil.Plugin.ReadOnly` lets reads, listings and URLs pass and refuses every other operation (writes, deletes, copies
   and moves within the disk, signed uploads) with `Fil.AccessDeniedError` and `reason: :read_only`. A copy to another
-  disk works.
+  disk works. ([#45](https://github.com/pehbehbeh/fil/pull/45))
 
 ### Changed
 
