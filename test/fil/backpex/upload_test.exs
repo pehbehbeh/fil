@@ -128,27 +128,24 @@ defmodule Fil.Backpex.UploadTest do
       end
     end
 
-    test "allows direct: true only when Backpex takes upload_error:" do
+    test "allows direct: true only when Backpex has the upload_error/4 callback" do
       field = field(:docs, %{accept: ~w(.pdf), max_entries: 2, direct: true})
 
       options = Fil.Backpex.Upload.__upload_options__(field, form_socket(), true)
       assert is_function(options.external, 2)
 
-      assert_raise ArgumentError, ~r/can't use direct: true, because this Backpex version has no upload_error:/, fn ->
+      assert_raise ArgumentError, ~r/can't use direct: true, because this Backpex version has no upload_error\/4/, fn ->
         Fil.Backpex.Upload.__upload_options__(field, form_socket(), false)
       end
     end
 
-    test "detects upload_error: in the installed Backpex" do
+    test "detects the upload_error/4 callback in the installed Backpex" do
       options = %{accept: ~w(.pdf), max_entries: 2, direct: true}
 
-      assert {:docs, %{upload_error: upload_error}} = field(:docs, options)
-      assert upload_error == (&Fil.LiveView.upload_error/2)
-
-      if Keyword.has_key?(Backpex.Fields.Upload.config_schema(), :upload_error) do
+      if function_exported?(Backpex.Fields.Upload, :upload_error, 4) do
         assert is_function(allowed(:docs, options).external, 2)
       else
-        assert_raise ArgumentError, ~r/has no upload_error: option/, fn -> allowed(:docs, options) end
+        assert_raise ArgumentError, ~r/has no upload_error\/4 callback/, fn -> allowed(:docs, options) end
       end
     end
 
@@ -233,7 +230,13 @@ defmodule Fil.Backpex.UploadTest do
       |> render_upload("a.png")
 
       html = save(view, %{name: "Chair"})
-      assert html =~ "You can upload at most 3 file(s)"
+      assert html =~ "Remove the files that can&#39;t be uploaded"
+
+      # Backpex shows the reason through `upload_error/4`, and the changeset error doesn't repeat it.
+      assert html
+             |> String.split("You can upload at most 3 file(s)")
+             |> length() == 2
+
       assert Repo.all(Product) == []
     end
 
@@ -434,6 +437,17 @@ defmodule Fil.Backpex.UploadTest do
       assert log =~ "Fil.Backpex.Upload, field :docs: could not store an upload"
       assert [%Product{docs: [doc]}] = Repo.all(Product)
       refute Fil.exists?(doc)
+    end
+
+    test "shows Fil's text for an upload the field refused to sign", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/products/new")
+
+      upload(view, :docs, [%{name: "evil.html", content: "<html>", type: "application/pdf"}])
+      assert_receive {:external, "evil.html", {:error, %{reason: :extension}, _socket}}
+
+      html = render(view)
+      assert html =~ "This type of file isn&#39;t accepted"
+      refute html =~ "upload could not be started"
     end
 
     test "refuses a path with another extension when it signs the URL" do

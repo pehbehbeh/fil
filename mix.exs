@@ -66,10 +66,11 @@ defmodule Fil.MixProject do
       {:phoenix, "~> 1.8", optional: true},
       # Optional: Fil.Ecto.Ref stores refs in Ecto schemas.
       {:ecto, "~> 3.12", optional: true},
-      # Optional: Fil.Backpex.Upload is a Backpex upload field. The branch of naymspace/backpex#2320 (stacked on #2319,
-      # which adds the upload callbacks the field implements, and defaulting the upload key to the field name), until a
-      # Backpex release has them. Hex refuses git dependencies, so this goes back to a version before Fil is released.
-      {:backpex, github: "naymspace/backpex", branch: "feature/upload-key-default", optional: true},
+      # Optional: Fil.Backpex.Upload is a Backpex upload field. The upload callbacks it implements (#2319, #2320) are in
+      # Backpex 0.22.0. This is the branch of naymspace/backpex#2348, which adds the upload_error/4 callback that
+      # `direct: true` needs, until a Backpex release has it. Hex refuses git dependencies, so this goes back to a
+      # version before Fil is released.
+      {:backpex, github: "naymspace/backpex", branch: "feature/upload-error-callback", optional: true},
       # A dependency of Backpex, listed only so that `mix compile --no-optional-deps` in CI leaves it out too: Mix keeps
       # the dependencies of an optional dependency, and this one doesn't compile without Plug. Any version, so it never
       # restricts an app.

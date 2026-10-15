@@ -84,9 +84,8 @@ end
 defmodule Fil.BackpexTest.DirectUpload do
   @moduledoc false
 
-  # `Fil.Backpex.Upload` as if Backpex had `upload_error:` in `Backpex.Fields.Upload`, which `direct: true` needs, so
-  # the tests can run direct uploads before a Backpex release has it. It sends the test the result of each signed
-  # upload, so the test can PUT the file as the browser would. The LiveView process has the test in `$callers`.
+  # `Fil.Backpex.Upload` with `direct: true`, which sends the test the result of each signed upload, so the test can PUT
+  # the file as the browser would. The LiveView process has the test in `$callers`.
 
   use Backpex.Field, config_schema: Fil.Backpex.Upload.config_schema()
 
@@ -113,6 +112,9 @@ defmodule Fil.BackpexTest.DirectUpload do
 
   @impl Backpex.Field
   defdelegate render_form(assigns), to: Fil.Backpex.Upload
+
+  @impl Backpex.Field
+  defdelegate upload_error(field, error, upload, assigns), to: Fil.Backpex.Upload
 
   @impl Backpex.Field
   defdelegate list_existing_files(field, item), to: Fil.Backpex.Upload
