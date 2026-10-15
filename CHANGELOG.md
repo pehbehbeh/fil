@@ -26,10 +26,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
 - `Fil.Backpex.Upload` is a [Backpex](https://backpex.live) upload field for `Fil.Ecto.Ref` and
   `{:array, Fil.Ecto.Ref}` fields. It implements Backpex's upload callbacks itself and gets the disk from the schema,
-  so a LiveResource gives it no callbacks. It writes the new files after the save, deletes the files the save drops,
-  and refuses a file whose path has an extension that `accept:` or `extensions:` doesn't allow before the record is
-  saved. `direct: true` needs the `upload_error/4` callback of `Backpex.Field`
-  ([naymspace/backpex#2348](https://github.com/naymspace/backpex/pull/2348), in no release yet). Backpex is a new
+  so a LiveResource gives it no callbacks. It writes the new files before the save, so a record never points at a
+  file that wasn't written, deletes them again when the save fails, deletes the files a successful save drops, and
+  refuses a file whose path has an extension that `accept:` or `extensions:` doesn't allow before the record is saved.
+  It needs a Backpex version that stores files before the save
+  ([naymspace/backpex#2355](https://github.com/naymspace/backpex/pull/2355), in no release yet). Backpex is a new
   optional dependency.
   ([#29](https://github.com/pehbehbeh/fil/pull/29))
 

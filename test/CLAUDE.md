@@ -50,6 +50,6 @@
 - `Fil.Backpex.Upload` tests drive the LiveResource `Fil.BackpexTest.ProductLive` (test/support) with `live/2` through
   `Fil.BackpexTest.Endpoint`, which `test_helper.exs` configures and starts. The repo is defined in the test file (a
   repo in test/support would get Ecto's doctests from `Fil.DoctestTest`), the test puts the pid of its in-memory repo
-  into the session, and an `on_mount` hook points the LiveView at it. `Fil.BackpexTest.DirectUpload` allows
-  `direct: true` on Backpex releases that crash on errors of direct uploads, and sends the test each signed upload to
-  PUT.
+  into the session, and an `on_mount` hook points the LiveView at it. `Fil.BackpexTest.DirectUpload` is the field
+  with `direct: true`, and sends the test each signed upload to PUT. A unique index on the name makes a save fail after
+  the files were stored.
