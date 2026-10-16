@@ -250,7 +250,9 @@ defmodule Fil do
                              The `content-disposition` of the download. `:inline` lets the browser show the file,
                              `:attachment` saves it under the file's name, and `{:attachment, filename}` under another
                              name, which can be any UTF-8 string. Without it, S3 and Azure send the disposition a file
-                             was uploaded with outside `Fil`, and the other disks send none.
+                             was uploaded with outside `Fil`, and the other disks send none. `Fil.Plug` shows a type a
+                             browser runs, such as HTML, inline only in a sandbox (see
+                             [Security](Fil.Plug.html#module-security)).
                              """
                            ]
                          ] ++ @query_option

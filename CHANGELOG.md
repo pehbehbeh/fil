@@ -39,6 +39,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `if_exists:`, which moved to `signed_upload:`. `Fil.Plugin.Validation` checks uploads on the `:signed_upload` op.
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
 
+### Security
+
+- `Fil.Plug` and `Fil.Plug.send_file` send `x-content-type-options: nosniff` with every response, and send HTML, XML,
+  SVG and JavaScript files, and files without a valid type, as `application/octet-stream` with
+  `content-disposition: attachment`, so an uploaded file can't run scripts on your application's domain. With an
+  `inline` disposition, such a file keeps its type and gets `content-security-policy: sandbox`, so the browser shows it
+  without running its scripts. The new `active_types:` option changes the list (`Fil.Plug.default_active_types/0`
+  returns the default), and `active_types: []` sends every file as stored.
+  ([#47](https://github.com/pehbehbeh/fil/pull/47))
+
 ## [0.2.0] - 2026-10-06
 
 ### Added
