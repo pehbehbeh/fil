@@ -1,12 +1,12 @@
 # Testing conventions
 
 - `Fil.AdapterCase` (test/support) is the shared conformance suite, and every adapter runs it (except
-  `Fil.Adapter.Null`, whose writes never read back). New behaviour gets a test there, not a copy per adapter. A new test
-  in it needs its sentence in `Fil.Adapter` (the moduledoc or the callback's doc), because third-party adapters will be
-  held to the suite once it's public. A result that differs between adapters on purpose (S3 refuses what Local allows)
-  is asserted as the set of allowed results, and the exact result stays in the adapter's own test. Signed URL tests send
-  their requests with `fil_request/4` (see `Fil.AdapterCase`) and assert refusals as a 4xx status; the exact statuses
-  stay in `plug_test.exs` and the adapters' integration tests.
+  `Fil.Adapter.Null`, whose writes never read back, and the read-only `Fil.Adapter.Zip`). New behaviour gets a test
+  there, not a copy per adapter. A new test in it needs its sentence in `Fil.Adapter` (the moduledoc or the callback's
+  doc), because third-party adapters will be held to the suite once it's public. A result that differs between adapters
+  on purpose (S3 refuses what Local allows) is asserted as the set of allowed results, and the exact result stays in the
+  adapter's own test. Signed URL tests send their requests with `fil_request/4` (see `Fil.AdapterCase`) and assert
+  refusals as a 4xx status; the exact statuses stay in `plug_test.exs` and the adapters' integration tests.
 - Feature tests whose subject is the storage path (`Fil.Plug`, `Fil.LiveView`) run on Local and Memory with
   `use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()`, `@moduletag :tmp_dir` and
   `Fil.DiskHelper.disk/1` in `setup` (never `setup_all`: a memory store belongs to the test process). Tests that need
