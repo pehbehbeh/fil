@@ -57,7 +57,7 @@ defmodule Fil.MixProject do
       # Optional: Fil.Plug serves signed URLs of Local and Memory disks, and Req.Test stubs are plugs.
       {:plug, "~> 1.14", optional: true},
       # Optional: Fil.Plugin.Thumbnails resizes images with libvips.
-      {:vix, "~> 0.33", optional: true},
+      {:vix, "~> 0.43", optional: true},
       # Optional: Fil.Kino browses disks in Livebook and adds a smart cell.
       {:kino, "~> 0.19", optional: true},
       # Optional: Fil.LiveView stores LiveView uploads on a disk. Its uploader for direct uploads is colocated JS, which
