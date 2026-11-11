@@ -4,7 +4,7 @@
     "local>pehbehbeh/renovate-config"
   ],
   "constraints": {
-    "erlang": "^27"
+    "erlang": "27"
   },
   "packageRules": [
     {
