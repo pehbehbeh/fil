@@ -13,6 +13,16 @@
         "mix"
       ],
       "rangeStrategy": "update-lockfile"
+    },
+    {
+      "description": "Keep resolving dependencies for the oldest supported OTP; raise the constraint by hand",
+      "matchDepTypes": [
+        "tool-constraint"
+      ],
+      "matchPackageNames": [
+        "erlang"
+      ],
+      "enabled": false
     }
   ]
 }
