@@ -209,14 +209,14 @@ defmodule Fil.Disk do
   `Fil.Ecto.Ref` uses it to check that a ref fits a field.
   """
   @spec same_storage?(t(), t()) :: boolean()
-  def same_storage?(%__MODULE__{adapter: {module, state}}, %__MODULE__{adapter: {module, other}}) do
-    address(module, state) == address(module, other)
-  end
+  def same_storage?(%__MODULE__{} = disk, %__MODULE__{} = other), do: address(disk) == address(other)
 
-  def same_storage?(%__MODULE__{}, %__MODULE__{}), do: false
-
-  defp address(module, state) do
-    if function_exported?(module, :address, 1), do: module.address(state), else: state
+  @doc false
+  # What `same_storage?/2` compares: the adapter and its address, or its whole state without `c:Fil.Adapter.address/1`.
+  # `Fil.Adapter.Zip` builds its own address from it.
+  @spec address(t()) :: {module(), term()}
+  def address(%__MODULE__{adapter: {module, state}}) do
+    if function_exported?(module, :address, 1), do: {module, module.address(state)}, else: {module, state}
   end
 
   @doc """
