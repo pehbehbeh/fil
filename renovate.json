@@ -15,6 +15,14 @@
       "rangeStrategy": "update-lockfile"
     },
     {
+      "description": "Renovate reads ~> 0.33 as < 0.34 and raises it in mix.exs; lock file maintenance updates these",
+      "matchManagers": [
+        "mix"
+      ],
+      "matchCurrentValue": "/^~> 0\\.\\d+$/",
+      "enabled": false
+    },
+    {
       "description": "Keep resolving dependencies for the oldest supported OTP; raise the constraint by hand",
       "matchDepTypes": [
         "tool-constraint"
