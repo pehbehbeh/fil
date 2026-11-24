@@ -13,8 +13,8 @@ defmodule Fil.Telemetry do
 
   ## Operation events
 
-  Each call to an operation function, such as `Fil.read/3`, `Fil.write/4` or `Fil.exists?/1`, is a span, with the
-  disk's plugins included in the time:
+  Each operation, such as the one `Fil.read/3`, `Fil.write/4` or `Fil.exists?/1` runs, is a span, with the disk's
+  plugins included in the time. A call that runs several operations, such as `Fil.wildcard/3`, emits a span for each:
 
     * `[:fil, :op, :start]` when the operation starts
       * Measurements: `:monotonic_time`, `:system_time`

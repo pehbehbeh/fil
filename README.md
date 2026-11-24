@@ -203,7 +203,7 @@ s3 =
   )
 ```
 
-Every operation works the same on every disk:
+Every function works the same on every disk:
 
 ```elixir
 {:ok, report} = Fil.write(s3, "reports/q3.pdf", pdf)

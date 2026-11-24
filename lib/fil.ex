@@ -80,8 +80,8 @@ defmodule Fil do
       doc: """
       What to do if the file (for a copy or a move, the destination) already exists. `:overwrite` replaces it. `:error`
       writes nothing and returns a `Fil.AlreadyExistsError`, like `File.write/3` with `[:exclusive]`, and a move leaves
-      the source where it is. That check is atomic on local disk, in memory and on AWS S3, so two processes can't both
-      create the file. Some S3-compatible servers ignore it.
+      the source where it is. That check is atomic on the filesystem, in memory and on AWS S3, so two processes can't
+      both create the file. Some S3-compatible servers ignore it.
       """
     ],
     content_type: [
@@ -843,7 +843,7 @@ defmodule Fil do
   end
 
   @doc """
-  Removes everything under a prefix and returns the number of deleted files.
+  Removes a path and everything under it, and returns the number of deleted files.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> Fil.write!(disk, "reports/2026/q3.pdf", "%PDF")

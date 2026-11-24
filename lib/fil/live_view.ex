@@ -158,8 +158,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     that can't be this upload's:
 
       * one older than the upload URL gives a `Fil.AlreadyExistsError` with `reason: :before_upload`. The check allows
-        30 seconds, because the clocks of the app and the storage can differ a little, and local disks and S3 keep the
-        time in whole seconds
+        30 seconds, because the clocks of the app and the storage can differ a little, and the filesystem and S3 keep
+        the time in whole seconds
       * one larger than the upload's `max_file_size` (the URL takes only the size the browser reported) gives a
         `Fil.InvalidRequestError` with `reason: :too_large`
       * on storage that doesn't enforce the signed size and content type (Azure), one of another size than the browser
@@ -241,7 +241,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                      |> NimbleOptions.new!()
 
     # How many seconds older than its upload URL the file of a direct upload may look. The clocks of the app and the
-    # storage can differ a little, and local disks and S3 keep the time in whole seconds.
+    # storage can differ a little, and the filesystem and S3 keep the time in whole seconds.
     @clock_skew 30
 
     # The `accept:` filters that stand for a kind of file, not one type.

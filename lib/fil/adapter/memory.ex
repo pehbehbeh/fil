@@ -331,14 +331,14 @@ defmodule Fil.Adapter.Memory do
   end
 
   # A move removes the source only while it's still the entry it copied, so a write that replaced the source meanwhile
-  # stays, as it does after a `File.rename/2` on local disk.
+  # stays, as it does after a `File.rename/2` on the filesystem.
   defp remove_source(store, source) do
     delete_entry(store, source)
     :ok
   end
 
-  # Like on local disk, an exclusive move whose source a write replaced meanwhile removes its copy again and fails with
-  # a conflict. A source that something else removed leaves the copy as the only one, so the move stands.
+  # As on the filesystem, an exclusive move whose source a write replaced meanwhile removes its copy again and fails
+  # with a conflict. A source that something else removed leaves the copy as the only one, so the move stands.
   defp remove_source(store, {key, _content, _content_type, _mtime, _checksum} = source, copy) do
     cond do
       delete_entry(store, source) -> :ok
