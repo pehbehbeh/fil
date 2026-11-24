@@ -46,6 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   sets `size` in its `:stat` and `:ls` results to the size it delivers, or to `nil` when it can't know it (see
   [Ranges](https://fil.hexdocs.pm/plugins.html#ranges)). A file without a size gets a `200` with the whole file and no
   `accept-ranges`, and `Fil.LiveView` no longer refuses a direct upload without a size as larger than `max_file_size:`.
+  ([#75](https://github.com/pehbehbeh/fil/pull/75))
 
 ### Security
 
