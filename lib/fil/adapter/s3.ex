@@ -169,15 +169,14 @@ defmodule Fil.Adapter.S3 do
     * With `if_exists: :error`, sends `If-None-Match: *`. AWS checks it on copies since October 2025, and RustFS 1.0.0
       does too.
     * Copying a directory returns a `Fil.NotFoundError`.
-    * S3 refuses to copy an object onto itself, so that's a `Fil.InvalidRequestError` with `reason: "InvalidRequest"`,
-      with or without `if_exists: :error`.
+    * A copy onto itself uses HeadObject instead, because S3 refuses to copy an object onto itself.
     * A copy of a file uploaded in parts gets a new checksum of the whole file, and doesn't keep the one of the parts.
 
   ### `Fil.rename/4`
 
     * Uses CopyObject, then DeleteObject.
     * A copy that fails (with `if_exists: :error` too) fails before the source is deleted.
-    * Renaming an object onto itself fails like the copy.
+    * A move onto itself uses HeadObject only, like the copy.
     * The DeleteObject removes whatever is at the source by then, so a write that replaces the source between the two
       requests is lost.
 
@@ -224,10 +223,10 @@ defmodule Fil.Adapter.S3 do
       sends `If-None-Match: *` with it (S3 takes it nowhere else), so a write that finds the file already there fails
       only at the end
 
-  S3 allows 10,000 parts. A stream without a size that would need more fails with `Fil.InvalidRequestError`,
+  S3 allows 10,000 parts. A stream without a size that would need more fails with `Fil.InvalidContentError`,
   `reason: :too_many_parts`, before its last part goes out: that's 78 GiB at the default part size, so pass `size:` or
   raise `:part_size` for larger ones. With `size:`, the parts are as large as the size needs, rounded up to a whole
-  MiB (525 MiB for 5 TiB, the largest object S3 stores). A `size:` over 5 TiB fails with `Fil.InvalidRequestError`,
+  MiB (525 MiB for 5 TiB, the largest object S3 stores). A `size:` over 5 TiB fails with `Fil.InvalidContentError`,
   `reason: "EntityTooLarge"`, before the stream is read.
 
   Completing a large upload can take a while. AWS answers with a `200` right away and sends whitespace until it's
@@ -270,10 +269,12 @@ defmodule Fil.Adapter.S3 do
   | `NoSuchBucket` | `Fil.ConfigurationError` |
   | a `400` for a copy whose source doesn't exist (checked with HeadObject) | `Fil.NotFoundError` |
   | `AccessDenied`, or `403` | `Fil.AccessDeniedError` |
-  | `InvalidRequest`, `EntityTooLarge`, `KeyTooLongError` | `Fil.InvalidRequestError` |
-  | a `size:` over 5 TiB | `Fil.InvalidRequestError`, `reason: "EntityTooLarge"` |
-  | a stream without a size that needs more than 10,000 parts | `Fil.InvalidRequestError`, `reason: :too_many_parts` |
+  | `KeyTooLongError` | `Fil.InvalidPathError` |
+  | `EntityTooLarge` | `Fil.InvalidContentError` |
+  | a `size:` over 5 TiB | `Fil.InvalidContentError`, `reason: "EntityTooLarge"` |
+  | a stream without a size that needs more than 10,000 parts | `Fil.InvalidContentError`, `reason: :too_many_parts` |
   | `PreconditionFailed`, `ConditionalRequestConflict` | `Fil.AlreadyExistsError` |
+  | an exclusive copy or move onto itself | `Fil.AlreadyExistsError`, `reason: :eexist` |
   | `412`, or a `409` without a code | `Fil.AlreadyExistsError` |
   | `NoSuchUpload`: an upload in parts was aborted from outside, by a lifecycle rule, say | `Fil.ConflictError` |
   | `BadDigest` | `Fil.ChecksumMismatchError` |
@@ -406,7 +407,7 @@ defmodule Fil.Adapter.S3 do
         |> single(state, key, opts)
 
       :too_large ->
-        {:error, %Fil.InvalidRequestError{reason: "EntityTooLarge"}}
+        {:error, %Fil.InvalidContentError{reason: "EntityTooLarge"}}
     end
   end
 
@@ -583,7 +584,14 @@ defmodule Fil.Adapter.S3 do
   @impl Fil.Adapter
   def ls(state, path, opts), do: ObjectStore.ls(state, &list_page(state, &1, &2, &3, &4), path, opts)
 
+  # S3 refuses to copy an object onto itself.
   @impl Fil.Adapter
+  def cp(state, path, path, opts) do
+    with {:ok, _stat} <- object_stat(state, path, :regular, nil) do
+      if opts[:if_exists] == :error, do: {:error, %Fil.AlreadyExistsError{reason: :eexist}}, else: :ok
+    end
+  end
+
   def cp(state, src, dest, opts) do
     headers = ObjectStore.put_if_exists([{"x-amz-copy-source", Client.copy_source(state, src)}], opts)
 
@@ -599,12 +607,8 @@ defmodule Fil.Adapter.S3 do
   end
 
   # AWS answers a missing source with `404 NoSuchKey`, but some S3-compatible servers (SeaweedFS) send a plain 400, so
-  # an unexplained 400 is checked against the source. So is `InvalidRequest`, which doesn't say much more.
+  # an unexplained 400 is checked against the source.
   defp copy_error(state, src, %Fil.UnknownError{} = error), do: check_source(state, src, error)
-
-  defp copy_error(state, src, %Fil.InvalidRequestError{reason: "InvalidRequest"} = error),
-    do: check_source(state, src, error)
-
   defp copy_error(_state, _src, error), do: {:error, error}
 
   defp check_source(state, src, error) do
@@ -615,6 +619,8 @@ defmodule Fil.Adapter.S3 do
   end
 
   @impl Fil.Adapter
+  def rename(state, path, path, opts), do: cp(state, path, path, opts)
+
   def rename(state, src, dest, opts) do
     with :ok <- cp(state, src, dest, opts), do: rm(state, src, opts)
   end

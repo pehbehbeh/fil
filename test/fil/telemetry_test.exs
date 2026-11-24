@@ -357,8 +357,8 @@ defmodule Fil.TelemetryTest do
 
   describe "paths that escape the disk root" do
     test "are a failed operation", %{disk: disk} do
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.read(disk, "../escape.txt")
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.signed_url(disk, "../escape.txt")
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.read(disk, "../escape.txt")
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.signed_url(disk, "../escape.txt")
 
       assert [
                {[:fil, :op, :start], _, %{op: :read, path: "../escape.txt"}},
@@ -367,14 +367,14 @@ defmodule Fil.TelemetryTest do
                {[:fil, :op, :stop], _, %{op: :signed_url, error: %{reason: :ebadpath}}}
              ] = TelemetryHelper.events()
 
-      assert %Fil.InvalidRequestError{op: :read, path: "../escape.txt", disk: ^disk} = read_error
+      assert %Fil.InvalidPathError{op: :read, path: "../escape.txt", disk: ^disk} = read_error
     end
 
     test "a copy to one keeps the source's path and names the destination in the error", %{disk: disk} do
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.cp(disk, "a.txt", "../escape.txt")
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.cp(disk, "a.txt", "../escape.txt")
 
       assert [{_, %{op: :cp, path: "a.txt", dest: "../escape.txt", dest_disk: ^disk, error: error}}] = stops()
-      assert %Fil.InvalidRequestError{op: :cp, path: "../escape.txt"} = error
+      assert %Fil.InvalidPathError{op: :cp, path: "../escape.txt"} = error
     end
   end
 

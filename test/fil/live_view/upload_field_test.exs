@@ -484,7 +484,7 @@ defmodule Fil.LiveView.UploadFieldTest do
       input = file_input(view, "#form", :photos, [png("evil.html", "<script>")])
       render_upload(input, "evil.html")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :extension}} = submit(view)
+      assert {:error, %Fil.InvalidContentError{reason: :extension}} = submit(view)
 
       assert view
              |> view_html()

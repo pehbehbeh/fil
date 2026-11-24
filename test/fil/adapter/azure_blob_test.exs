@@ -120,7 +120,11 @@ defmodule Fil.Adapter.AzureBlobTest do
             {403, "AuthenticationFailed", Fil.AccessDeniedError},
             {409, "BlobAlreadyExists", Fil.AlreadyExistsError},
             {412, "LeaseIdMissing", Fil.ConflictError},
-            {413, "RequestBodyTooLarge", Fil.InvalidRequestError},
+            {413, "RequestBodyTooLarge", Fil.InvalidContentError},
+            {400, "InvalidBlobOrBlock", Fil.InvalidContentError},
+            {400, "InvalidHeaderValue", Fil.UnknownError},
+            {400, "InvalidQueryParameterValue", Fil.UnknownError},
+            {400, "OutOfRangeInput", Fil.UnknownError},
             {503, "ServerBusy", Fil.UnavailableError},
             {400, "SomethingNew", Fil.UnknownError}
           ] do
@@ -261,7 +265,7 @@ defmodule Fil.Adapter.AzureBlobTest do
       stub([response(201)])
       disk = put_state(blocks_disk(), max_blocks: 2)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :too_many_parts}} =
+      assert {:error, %Fil.InvalidContentError{reason: :too_many_parts}} =
                Fil.write(disk, "big.bin", AdapterCase.chunked(:binary.copy("a", 2 * @mib + 1), @mib))
 
       assert length(requests()) == 1

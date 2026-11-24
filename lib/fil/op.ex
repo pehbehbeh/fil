@@ -561,7 +561,7 @@ defmodule Fil.Op do
 
       ranged_read(%{op | result: result}, caller)
     else
-      {:error, :ebadpath} -> %{op | result: {:error, put_context(%Fil.InvalidRequestError{reason: :ebadpath}, caller)}}
+      {:error, :ebadpath} -> %{op | result: {:error, put_context(%Fil.InvalidPathError{reason: :ebadpath}, caller)}}
     end
   end
 

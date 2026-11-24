@@ -248,11 +248,11 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     def error({msg, opts} = error, _upload) when is_binary(msg) and is_list(opts), do: error
     def error(:too_large, upload), do: too_large(upload)
 
-    def error(%Fil.InvalidRequestError{reason: reason}, upload) when reason in [:too_large, "EntityTooLarge"],
+    def error(%Fil.InvalidContentError{reason: reason}, upload) when reason in [:too_large, "EntityTooLarge"],
       do: too_large(upload)
 
     def error(:not_accepted, _upload), do: not_accepted()
-    def error(%Fil.InvalidRequestError{reason: :extension}, _upload), do: not_accepted()
+    def error(%Fil.InvalidContentError{reason: :extension}, _upload), do: not_accepted()
     def error({:external_metadata_failure, %{reason: :extension}}, _upload), do: not_accepted()
 
     def error(:too_many_files, %UploadConfig{max_entries: max}),
