@@ -41,11 +41,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- `Fil.stat/3` and `Fil.ls/3` report the size of the content as `Fil.read/3` returns it: a plugin that changes the
-  size of reads sets `size` in the `:stat` and `:ls` results to the size it delivers, or to `nil` when it can't know
-  it (see [Ranges](https://fil.hexdocs.pm/plugins.html#ranges)). `Fil.Plug` resolves ranges against that size, so its
-  `206` responses are right with such a plugin, and a file without a size gets a `200` with the whole file and no
-  `accept-ranges`.
+- `Fil.Plug` serves the right ranges with a plugin that changes the size of reads, once the plugin follows the new rule
+  for sizes: `Fil.stat/3` and `Fil.ls/3` report the size of the content as `Fil.read/3` returns it, so such a plugin
+  sets `size` in its `:stat` and `:ls` results to the size it delivers, or to `nil` when it can't know it (see
+  [Ranges](https://fil.hexdocs.pm/plugins.html#ranges)). A file without a size gets a `200` with the whole file and no
+  `accept-ranges`, and `Fil.LiveView` no longer refuses a direct upload without a size as larger than `max_file_size:`.
 
 ### Security
 

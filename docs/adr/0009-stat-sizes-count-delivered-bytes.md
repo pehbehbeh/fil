@@ -17,5 +17,8 @@ built from the stored size before plugins run), so validators don't depend on wh
 ## Consequences
 
 - Other code that reads `stat.size`, such as the size checks of `Fil.LiveView` and the preview and download limits of
-  `Fil.Kino`, gets the delivered size.
+  `Fil.Kino`, gets the delivered size. With `size: nil`, `Fil.LiveView` skips `max_file_size:` on a direct upload (it
+  checked the size the browser reported before the upload), but still refuses one on storage that doesn't bind
+  uploads, because it can't compare the stored file with the signed size there
+  ([ADR 0005](0005-direct-uploads-are-untrusted.md)). `Fil.Kino` refuses to preview or download a file without a size.
 - A plugin that changes the size of reads and doesn't change the stat still gets wrong ranges. `Fil` doesn't detect it.

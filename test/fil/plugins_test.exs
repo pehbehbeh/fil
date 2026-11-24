@@ -284,7 +284,8 @@ defmodule Fil.PluginsTest do
               Op.put_result(op, {:ok, %{stat | size: stat.size * 2}})
 
             %{name: :ls, result: {:ok, refs}} = op ->
-              Op.put_result(op, {:ok, Enum.map(refs, &update_in(&1.stat.size, fn size -> size * 2 end))})
+              refs = Enum.map(refs, &update_in(&1.stat.size, fn size -> size * 2 end))
+              Op.put_result(op, {:ok, refs})
 
             op ->
               op

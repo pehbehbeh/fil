@@ -258,7 +258,8 @@ end
 ```
 
 `gunzip/1` is the same with `inflateInit/2` and `inflate/2`. Content in memory goes to `stream:` as a stream of one
-chunk when there's no `iodata:`, so one function can cover both.
+chunk when there's no `iodata:`, so one function can cover both. A plugin like this one changes the size of reads, so it
+reports that in its stats too (see [Ranges](#ranges)).
 
 A transform can change the size of the content, so `Fil.Op.update_content/2` drops the `:size` option of the write.
 On S3, a stream without a size is uploaded in parts. A plugin that knows the new size declares it again with
@@ -281,12 +282,12 @@ On S3, a stream without a size is uploaded in parts. A plugin that knows the new
 So offsets always count bytes of the content as the caller gets it. The options are in `op.options`: a plugin that
 keeps what a read returned, such as a cache, checks for `:offset` and `:length` there and keeps only whole files.
 
-`Fil.stat/3` and `Fil.ls/3` describe the content the same way, as `Fil.read/3` and `Fil.stream/3` return it.
-`Fil.Plug` resolves a range against the size in the stat and sends it as the total in `content-range`, so a plugin
-that changes the size of reads sets `size` in the `:stat` result and in the stats of the `:ls` result to the size it
-delivers. A plugin that can't know that size without reading the file, such as one that decompresses, sets it to
-`nil`. `Fil.Plug` then answers every range request with the whole file and sends no `accept-ranges`. The etag stays
-the storage's own, so conditional requests work either way:
+`Fil.stat/3` and `Fil.ls/3` describe the content the same way, as `Fil.read/3` and `Fil.stream/3` return it. `Fil.Plug`
+resolves a range against the size in the stat and sends it as the total in `content-range`, so a plugin that changes the
+size of reads sets `size` in the `:stat` result and in the stats of the `:ls` result to the size it delivers. A plugin
+that can't know that size without reading the file, such as one that decompresses, sets it to `nil`. `Fil.Plug` then
+answers every range request with the whole file and sends no `accept-ranges`. The etag stays the storage's own, so
+conditional requests work either way. For the gzip plugin above:
 
 ```elixir
 def call(op, next, _opts) do
@@ -298,7 +299,8 @@ def call(op, next, _opts) do
       Fil.Op.put_result(op, {:ok, %{stat | size: nil}})
 
     %Fil.Op{name: :ls, result: {:ok, refs}} = op ->
-      Fil.Op.put_result(op, {:ok, Enum.map(refs, &put_in(&1.stat.size, nil))})
+      refs = Enum.map(refs, &put_in(&1.stat.size, nil))
+      Fil.Op.put_result(op, {:ok, refs})
 
     op ->
       op

@@ -611,8 +611,7 @@ defmodule Fil.PlugTest do
     end
   end
 
-  # Doubles every byte of a read, and reports `size.(stored_size)` as the size in the stat.
-  defp double_reads(disk, size) do
+  defp double_reads(disk, stat_size) do
     Fil.attach(disk, :double, fn
       %Fil.Op{name: :read} = op, next, _opts ->
         op
@@ -621,8 +620,12 @@ defmodule Fil.PlugTest do
 
       %Fil.Op{name: :stat} = op, next, _opts ->
         case next.(op) do
-          %{result: {:ok, stat}} = op -> Fil.Op.put_result(op, {:ok, %{stat | size: size.(stat.size)}})
-          op -> op
+          %{result: {:ok, stat}} = op ->
+            size = stat_size.(stat.size)
+            Fil.Op.put_result(op, {:ok, %{stat | size: size}})
+
+          op ->
+            op
         end
 
       op, next, _opts ->

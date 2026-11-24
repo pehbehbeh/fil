@@ -835,7 +835,11 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       {:error, %Fil.InvalidRequestError{reason: reason, op: :stat, path: ref.path, disk: ref.disk}}
     end
 
-    defp check_size(ref, size, max_file_size) when is_integer(max_file_size) and size > max_file_size do
+    # A plugin may report no size (see "Ranges" in the plugins guide), so the file can't be checked here. LiveView
+    # checked the size the browser reported before the upload, and on storage that doesn't bind uploads,
+    # `check_unbound/3` refuses the file anyway.
+    defp check_size(ref, size, max_file_size)
+         when is_integer(size) and is_integer(max_file_size) and size > max_file_size do
       {:error, %Fil.InvalidRequestError{reason: :too_large, op: :stat, path: ref.path, disk: ref.disk}}
     end
 

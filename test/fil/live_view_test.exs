@@ -425,6 +425,22 @@ defmodule Fil.LiveViewTest do
       assert Fil.exists?(disk, "avatars/a.png")
     end
 
+    test "store_entry/4 takes a file whose size a plugin can't report", %{disk: disk} do
+      unsized =
+        Fil.attach(disk, :unsized, fn op, next, _opts ->
+          case next.(op) do
+            %{name: :stat, result: {:ok, stat}} = op -> Fil.Op.put_result(op, {:ok, %{stat | size: nil}})
+            op -> op
+          end
+        end)
+
+      entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
+      meta = LiveViewHelper.direct_meta("avatars/a.png")
+      Fil.write!(unsized, "avatars/a.png", "png")
+
+      assert {:ok, %Fil.Ref{path: "avatars/a.png"}} = Fil.LiveView.store_entry(unsized, meta, entry, max_file_size: 3)
+    end
+
     test "store_entry/4 refuses a file older than the upload URL", %{disk: disk} do
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png", client_size: 3}
       Fil.write!(disk, "a.png", "png")
