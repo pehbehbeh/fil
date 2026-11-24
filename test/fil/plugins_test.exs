@@ -272,6 +272,31 @@ defmodule Fil.PluginsTest do
       assert_received {:in, :dest, :write}
       assert_received {:in, :source, :rm}
     end
+
+    test "a plugin that changes the size of reads reports the same size from stat and ls", %{disk: disk} do
+      doubled =
+        Fil.attach(disk, :double, fn op, next, _opts ->
+          case next.(op) do
+            %{name: :read} = op ->
+              Op.update_result(op, iodata: &for(<<byte <- &1>>, into: "", do: <<byte, byte>>))
+
+            %{name: :stat, result: {:ok, stat}} = op ->
+              Op.put_result(op, {:ok, %{stat | size: stat.size * 2}})
+
+            %{name: :ls, result: {:ok, refs}} = op ->
+              Op.put_result(op, {:ok, Enum.map(refs, &update_in(&1.stat.size, fn size -> size * 2 end))})
+
+            op ->
+              op
+          end
+        end)
+
+      {:ok, _} = Fil.write(doubled, "a.txt", "0123456789")
+
+      assert {:ok, "00112233445566778899"} = Fil.read(doubled, "a.txt")
+      assert {:ok, %Fil.Stat{size: 20}} = Fil.stat(doubled, "a.txt")
+      assert {:ok, [%Fil.Ref{path: "a.txt", stat: %Fil.Stat{size: 20}}]} = Fil.ls(doubled)
+    end
   end
 
   describe "Fil.Op content" do

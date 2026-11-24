@@ -267,7 +267,7 @@ On S3, a stream without a size is uploaded in parts. A plugin that knows the new
 ### Ranges
 
 `Fil.read/3` and `Fil.stream/3` take `offset:` and `length:` to read part of a file, and `Fil.Plug` uses them for
-`Range` requests. A plugin needs to do nothing for them:
+`Range` requests. A plugin needs to do nothing to read the right part:
 
   * the adapter reads only the part, and the result comes back through the plugins as usual
   * a plugin that transforms the result with `Fil.Op.update_result/2` gets the whole file instead, because a part of
@@ -280,6 +280,33 @@ On S3, a stream without a size is uploaded in parts. A plugin that knows the new
 
 So offsets always count bytes of the content as the caller gets it. The options are in `op.options`: a plugin that
 keeps what a read returned, such as a cache, checks for `:offset` and `:length` there and keeps only whole files.
+
+`Fil.stat/3` and `Fil.ls/3` describe the content the same way, as `Fil.read/3` and `Fil.stream/3` return it.
+`Fil.Plug` resolves a range against the size in the stat and sends it as the total in `content-range`, so a plugin
+that changes the size of reads sets `size` in the `:stat` result and in the stats of the `:ls` result to the size it
+delivers. A plugin that can't know that size without reading the file, such as one that decompresses, sets it to
+`nil`. `Fil.Plug` then answers every range request with the whole file and sends no `accept-ranges`. The etag stays
+the storage's own, so conditional requests work either way:
+
+```elixir
+def call(op, next, _opts) do
+  case next.(op) do
+    %Fil.Op{name: :read} = op ->
+      Fil.Op.update_result(op, iodata: &:zlib.gunzip/1, stream: &gunzip/1)
+
+    %Fil.Op{name: :stat, result: {:ok, stat}} = op ->
+      Fil.Op.put_result(op, {:ok, %{stat | size: nil}})
+
+    %Fil.Op{name: :ls, result: {:ok, refs}} = op ->
+      Fil.Op.put_result(op, {:ok, Enum.map(refs, &put_in(&1.stat.size, nil))})
+
+    op ->
+      op
+  end
+end
+```
+
+Directories on object stores already have `size: nil`, so a plugin that computes a new size skips stats without one.
 
 ## Inspecting content
 

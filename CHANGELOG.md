@@ -39,6 +39,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `if_exists:`, which moved to `signed_upload:`. `Fil.Plugin.Validation` checks uploads on the `:signed_upload` op.
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
 
+### Fixed
+
+- `Fil.stat/3` and `Fil.ls/3` report the size of the content as `Fil.read/3` returns it: a plugin that changes the
+  size of reads sets `size` in the `:stat` and `:ls` results to the size it delivers, or to `nil` when it can't know
+  it (see [Ranges](https://fil.hexdocs.pm/plugins.html#ranges)). `Fil.Plug` resolves ranges against that size, so its
+  `206` responses are right with such a plugin, and a file without a size gets a `200` with the whole file and no
+  `accept-ranges`.
+
 ### Security
 
 - `Fil.Plug` and `Fil.Plug.send_file` send `x-content-type-options: nosniff` with every response, and send HTML, XML,
