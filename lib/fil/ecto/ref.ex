@@ -36,8 +36,8 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
     environment the app runs in. The field's disk is resolved with `Fil.Disk.resolve/1` each time a value is cast,
     loaded or dumped, so a function can build it from runtime config.
 
-    Use a `:text` column for a single file (S3 keys can be 1,024 bytes long, `:string` is `varchar(255)` on Postgres
-    and MySQL):
+    Use a `:text` column for a single file (S3 keys, the root plus the path, can be 1,024 bytes long, and `:string`
+    is `varchar(255)` on Postgres and MySQL):
 
         add :avatar, :text
 

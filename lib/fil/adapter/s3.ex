@@ -170,8 +170,7 @@ defmodule Fil.Adapter.S3 do
       does too.
     * Copying a directory returns a `Fil.NotFoundError`.
     * S3 refuses to copy an object onto itself, so that's a `Fil.InvalidRequestError` with `reason: "InvalidRequest"`,
-      with or without `if_exists: :error`. The other adapters copy the file onto itself, or return a
-      `Fil.AlreadyExistsError` with `if_exists: :error`.
+      with or without `if_exists: :error`.
     * A copy of a file uploaded in parts gets a new checksum of the whole file, and doesn't keep the one of the parts.
 
   ### `Fil.rename/4`
@@ -180,8 +179,7 @@ defmodule Fil.Adapter.S3 do
     * A copy that fails (with `if_exists: :error` too) fails before the source is deleted.
     * Renaming an object onto itself fails like the copy.
     * The DeleteObject removes whatever is at the source by then, so a write that replaces the source between the two
-      requests is lost. The other adapters keep it, and with `if_exists: :error` fail the move with a
-      `Fil.ConflictError`.
+      requests is lost.
 
   ### `Fil.rm_rf/3`
 

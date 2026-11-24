@@ -602,8 +602,8 @@ end
 
 With `{:array, Fil.Ecto.Ref}`, each row is a list of refs, so flatten them before the set:
 `Repo.all(query) |> List.flatten() |> MapSet.new(& &1.path)`. The day between upload and deletion keeps files whose
-form is still open. `Fil.ls/3` lists every file under the prefix, so keep the job's prefix to the files of this upload,
-and don't run it against a prefix that other code writes to.
+form is still open. `Fil.ls/3` lists every file under the directory, so keep the job's directory to the files of this
+upload, and don't run it against a directory that other code writes to.
 
 On S3, a lifecycle rule that expires objects under a prefix does the same without a job, but it deletes every file
 under the prefix, consumed or not. It fits when the uploads are temporary anyway, or when the app moves each consumed
