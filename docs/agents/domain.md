@@ -9,7 +9,7 @@ How the engineering skills should consume this repo's domain documentation when 
 
 ## File structure
 
-```
+```text
 /
 ├── GLOSSARY.md
 ├── docs/adr/
@@ -21,13 +21,13 @@ How the engineering skills should consume this repo's domain documentation when 
 ## Use the glossary's vocabulary
 
 When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the
-term as defined in `GLOSSARY.md`. Don't drift to synonyms the glossary explicitly avoids.
+term as defined in `GLOSSARY.md`. Don't drift to synonyms the glossary avoids.
 
 If the concept you need isn't in the glossary yet, either you're inventing language the project doesn't use
 (reconsider), or the glossary has a gap (note it for `/domain-modeling`).
 
 ## Flag ADR conflicts
 
-If your output contradicts an existing ADR, say so explicitly instead of overriding it without a word:
+If your output contradicts an existing ADR, say so instead of overriding it without a word:
 
 > _Contradicts ADR-NNNN (its title), but should be reopened because..._

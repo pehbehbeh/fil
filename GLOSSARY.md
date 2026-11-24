@@ -6,13 +6,12 @@ like an object store on every one of them.
 ## Storage
 
 **Disk**:
-A `%Fil.Disk{}`, which holds an adapter with the state it built from its options, the plugins attached to it and the
-defaults for signed URLs and uploads. It's a plain value, built with `Fil.disk/1`, with no process or registry behind
-it.
+A `%Fil.Disk{}`, which holds an adapter with its state, the plugins attached to it and the defaults for signed URLs and
+uploads. It's a plain value from `Fil.disk/1`, with no process or registry behind it.
 _Avoid_: volume
 
 **Local disk**:
-A disk with `Fil.Adapter.Local`. Its storage is the filesystem, so say "filesystem" where the storage is meant.
+A disk with `Fil.Adapter.Local`, whose storage is the filesystem.
 
 **Adapter**:
 The module that implements `Fil.Adapter` for one kind of storage, such as `Fil.Adapter.S3`.
@@ -20,12 +19,12 @@ _Avoid_: backend, driver
 
 **Storage**:
 What's behind an adapter: S3, Azure Blob Storage, the filesystem, an ETS table.
-_Avoid_: backend
+_Avoid_: backend, local disk (for the filesystem)
 
 **Address**:
-The part of an adapter's state that decides which file a path names: the `:root`, and on S3 and Azure also the
-endpoint, the bucket or container, and on S3 the region. Two disks with the same adapter and the same address are the
-same storage, whatever their credentials.
+The part of an adapter's state that decides which file a path names: the `:root`, and on S3 and Azure also the endpoint,
+the bucket or container, and on S3 the region. Two disks with the same adapter and the same address are the same
+storage, whatever their credentials.
 
 **Contract**:
 The behaviour every adapter has to show, written down in `Fil.Adapter` (its moduledoc and the callback docs) and tested
@@ -34,15 +33,21 @@ by `Fil.AdapterCase` on every adapter except `Fil.Adapter.Null`.
 ## Files
 
 **Path**:
-A file's name relative to the disk root. `Fil` normalizes it and refuses one that would leave the root.
+The name of a file or directory relative to the disk root, which `Fil` normalizes and refuses when it would leave the
+root.
+_Avoid_: prefix, key
+
+**Directory**:
+A path that other paths are under, a real directory on the filesystem and derived from the keys on object stores.
+_Avoid_: prefix
 
 **Key**:
-An object store adapter's name for a file (S3, Azure, Memory), which is the `:root` plus the path. Azure calls it the
-blob name. Everything above the adapter uses paths.
+An object store adapter's name for a file (S3, Azure, Memory), which is the `:root` plus the path and which Azure calls
+the blob name.
 
 **Ref**:
-A `%Fil.Ref{}`, which is a disk plus a path, built with `Fil.ref/2`. It can name a file that doesn't exist yet. A ref
-from a listing also carries a `:stat`, a snapshot that operations ignore.
+A `%Fil.Ref{}`, a disk plus a path built with `Fil.ref/2`, which can name a file that doesn't exist yet. A ref from a
+listing also carries a `:stat` snapshot.
 _Avoid_: handle, file object
 
 **Content**:
@@ -52,14 +57,13 @@ _Avoid_: body, data, payload
 ## Plugins
 
 **Plugin**:
-A callback `(op, next, opts)` attached to a disk with `Fil.attach/4` or the `plugins:` option of `Fil.disk/1`, which
-sees every operation that reaches it.
+A callback `(op, next, opts)` attached to a disk with `Fil.attach/4` or the `plugins:` option of `Fil.disk/1`.
 _Avoid_: middleware, hook
 
 **Operation**:
-One step that `Fil` runs through a disk's plugins and its adapter, a `%Fil.Op{}` with a name such as `:read` or
-`:write`. A single `Fil` call can run several, such as `Fil.wildcard/3` with one listing per directory it walks. The
-docs group the `Fil` functions that run operations under Operations.
+One step that `Fil` runs through a disk's plugins and its adapter, a `%Fil.Op{}` named `:read`, `:write` and so on, of
+which one `Fil` call can run several (`Fil.wildcard/3`). The docs group the `Fil` functions that run them under
+Operations.
 _Avoid_: request
 
 **Scan**:
@@ -69,8 +73,8 @@ content by raising `Fil.InvalidContentError`.
 ## Uploads
 
 **Signed upload**:
-The request a client needs to upload one file directly to a disk, from `Fil.signed_upload/3`: method, URL, headers,
-form fields and expiry.
+The request a client needs to upload one file directly to a disk, from `Fil.signed_upload/3`: method, URL, headers, form
+fields and expiry.
 
 **Direct upload**:
 An upload the browser sends to the URL of a signed upload.
@@ -80,5 +84,4 @@ What a signed upload ties the upload to: the content type, the size and `if_exis
 refused where the storage or `Fil.Plug` enforces them.
 
 **Consume**:
-The step in which `Fil.LiveView` takes the files of a LiveView upload. It writes those that came through the app, and
-checks the stored file of a direct upload.
+The step in which `Fil.LiveView` takes the files of a LiveView upload onto a disk.

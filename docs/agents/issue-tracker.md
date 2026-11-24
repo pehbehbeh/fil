@@ -27,8 +27,8 @@ Issues and specs for this repo are GitHub issues. Use the `gh` CLI for all opera
 - **Close**: post the explanation with `gh issue comment <number> --body "..."`, then `gh issue close <number>`. On an
   already-closed issue, `gh issue close --comment` drops the comment and still exits 0.
 
-Issues and pull requests on pehbehbeh/fil are public. Ask the user before creating, editing, commenting on,
-labelling, assigning or closing one.
+Issues and pull requests on pehbehbeh/fil are public. Ask the user before creating, editing, commenting on, labelling,
+assigning or closing one.
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
@@ -47,8 +47,8 @@ When set to `yes`, PRs run through the same labels and states as issues, using t
   `gh api --paginate 'repos/{owner}/{repo}/pulls?state=open' --jq '.[] | select(.author_association | IN("OWNER","MEMBER","COLLABORATOR") | not) | {number, title, author: .user.login, author_association, labels: [.labels[].name]}'`.
 - **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
 
-GitHub shares one number space across issues and PRs, so a bare `#42` may be either. Resolve it with `gh pr view 42`
-and fall back to `gh issue view 42`.
+GitHub shares one number space across issues and PRs, so a bare `#42` may be either. Resolve it with `gh pr view 42` and
+fall back to `gh issue view 42`.
 
 ## When a skill says "publish to the issue tracker"
 
@@ -73,5 +73,5 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
   list), drop any with an open blocker (see **Count open blockers**, or an open issue in the `Blocked by` line) or an
   assignee; first in map order wins.
 - **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write, after the user agreed.
-- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer
-  (gist + link) to the map's Decisions-so-far.
+- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist
+  + link) to the map's Decisions-so-far.

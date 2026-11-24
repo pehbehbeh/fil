@@ -8,8 +8,8 @@ The Hex package is `fil`.
 - **Return values:** every function that can fail returns `{:ok, result} | {:error, exception}`. Actions on files
   return `{:ok, %Fil.Ref{}}`. Bang variants raise the same exception.
 - **Before 1.0:** the best API takes priority over compatibility. Renaming or removing public API is fine, with a
-  `### Changed` or `### Removed` entry in the changelog. Don't keep the old name as a deprecated alias. A removed
-  option raises instead of being ignored.
+  `### Changed` or `### Removed` entry in the changelog. Don't keep the old name as a deprecated alias. A removed option
+  raises instead of being ignored.
 - **Names and semantics:** the API, the adapter callbacks and the `Fil.Op` names use `File`'s vocabulary (`read`,
   `write`, `stream`, `stat`, `ls`, `cp`, `rename`, `rm`, `rm_rf`, `exists?`, `dir?`), but the semantics follow the
   object store model on every adapter: `rm` is idempotent, `write` creates parents, paths are jailed to the disk root.
@@ -150,17 +150,17 @@ they are and `git log --first-parent main` shows one line per pull request.
 ## Changelog
 
 `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): newest first, one entry per
-user-visible change under `### Added`, `Changed`, `Deprecated` (not before 1.0), `Removed`, `Fixed` or `Security`,
-added under `## [Unreleased]` in the same pull request as the change. Entries describe the difference from the last
-release: a change to something that's new in the same release updates that feature's entry, adding its pull request's
-link, instead of getting an entry of its own. User-visible changes always go through a pull request; direct pushes to
-`main` are only for changes without an entry. Each entry ends with an inline link to its pull request, such as
+user-visible change under `### Added`, `Changed`, `Deprecated` (not before 1.0), `Removed`, `Fixed` or `Security`, added
+under `## [Unreleased]` in the same pull request as the change. Entries describe the difference from the last release: a
+change to something that's new in the same release updates that feature's entry, adding its pull request's link, instead
+of getting an entry of its own. User-visible changes always go through a pull request; direct pushes to `main` are only
+for changes without an entry. Each entry ends with an inline link to its pull request, such as
 `([#1](https://github.com/pehbehbeh/fil/pull/1))`, or `([#1](...), [#4](...))` for several. Add it in a commit once
-`gh pr create` has returned the number: issues and pull requests share their numbers, so don't guess it. Inline,
-because the GitHub release gets only the section, without the link definitions at the end. `bin/check-changelog`
-enforces it for the entries under Unreleased, in CI and in `bin/release`. Released sections are headed
-`## [0.2.0] - 2026-10-01`. `bin/release` keeps the link definitions at the end, which compare each version with the one
-before. The file is in the Hex package and a Guides tab on HexDocs, so each published version includes its changelog.
+`gh pr create` has returned the number: issues and pull requests share their numbers, so don't guess it. Inline, because
+the GitHub release gets only the section, without the link definitions at the end. `bin/check-changelog` enforces it for
+the entries under Unreleased, in CI and in `bin/release`. Released sections are headed `## [0.2.0] - 2026-10-01`.
+`bin/release` keeps the link definitions at the end, which compare each version with the one before. The file is in the
+Hex package and a Guides tab on HexDocs, so each published version includes its changelog.
 
 Releases, milestones and backports are in the header of `bin/release`, the testing conventions in `test/CLAUDE.md`.
 
@@ -193,4 +193,4 @@ The five default labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready
 
 ### Domain docs
 
-Single-context: `GLOSSARY.md` at the repo root and the ADRs in `docs/adr/`. See `docs/agents/domain.md`.
+Single-context, with `GLOSSARY.md` at the repo root and the ADRs in `docs/adr/`. See `docs/agents/domain.md`.
