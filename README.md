@@ -80,7 +80,7 @@ To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html)
 - `ls` on a missing directory returns an empty list
 - paths are always relative to the disk root, and `.` is the root
 - a path that climbs above the root fails with a
-  [`Fil.InvalidRequestError`](https://fil.hexdocs.pm/Fil.InvalidRequestError.html)
+  [`Fil.InvalidPathError`](https://fil.hexdocs.pm/Fil.InvalidPathError.html)
 
 The [contract in `Fil.Adapter`](https://fil.hexdocs.pm/Fil.Adapter.html#module-contract) lists every difference from
 `File`. Every function that can fail returns `{:ok, result}` or `{:error, error}`, with an error from the Errors

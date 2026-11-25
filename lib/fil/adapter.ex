@@ -39,13 +39,11 @@ defmodule Fil.Adapter do
   or move is `c:cp/4` or `c:rename/4` with `if_exists: :error`. It fails with the destination's path and leaves both
   files as they were.
 
-  A copy or a move onto its own path never loses the file. The adapter leaves it where it is, fails with
-  `Fil.AlreadyExistsError` when the call is exclusive, or refuses the call with `Fil.InvalidRequestError`. A copy keeps
-  the content type, where the storage keeps one.
+  A copy or a move onto its own path leaves the file where it is, and fails with `Fil.AlreadyExistsError` when the call
+  is exclusive. A copy keeps the content type, where the storage keeps one.
 
   The `:etag` that `c:stat/3` returns changes when a write changes the size of the file. A weak etag may miss other
-  changes. Which result an adapter gives for a copy onto itself, and what its etag covers, is under Operations on the
-  adapter's page.
+  changes. What an adapter's etag covers is under Operations on the adapter's page.
 
   Where an adapter returns `:ok`, the `Fil` function returns `{:ok, %Fil.Ref{}}`, and `Fil.ls/2` turns the pairs
   into refs.
@@ -89,7 +87,7 @@ defmodule Fil.Adapter do
     * `:reason`: the exact cause, as the storage reported it, in the form its adapter documents (`:enoent` from
       `Fil.Adapter.Local`, `"NoSuchKey"` from `Fil.Adapter.S3`). `nil` only when a plugin built the error
 
-  `Fil` returns two of them itself: `Fil.InvalidRequestError` with `reason: :ebadpath` for a path that escapes the disk
+  `Fil` returns two of them itself: `Fil.InvalidPathError` with `reason: :ebadpath` for a path that escapes the disk
   root, and `Fil.UnsupportedError` with `reason: :no_callback` for a URL on an adapter without that callback.
 
   An adapter returns the struct with `:reason` set and leaves `:op`, `:path` and `:disk` `nil`: `Fil` fills in
@@ -99,8 +97,9 @@ defmodule Fil.Adapter do
 
   A failure that fits a struct is returned as that struct, whatever the storage reported: `Fil.Adapter.Local` turns
   the `:eperm` that deleting a directory gives into `:eisdir`, and `Fil.Adapter.S3` checks a copy that the server
-  refused with a plain `400` for a missing source. Directory errors only come from storage with directories of its own,
-  such as the filesystem. Where directories are only key prefixes, reading or copying one is a `Fil.NotFoundError`.
+  refused with a plain `400` for a missing source. Directory errors (`Fil.InvalidPathError`) only come from storage with
+  directories of its own, such as the filesystem. Where directories are only key prefixes, reading or copying one is a
+  `Fil.NotFoundError`, and a write under a file's path succeeds, next to the file.
   """
 
   alias Fil.Stat

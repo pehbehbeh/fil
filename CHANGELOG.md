@@ -38,6 +38,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Sign uploads with `Fil.signed_upload/3` instead. The `signed_url:` option of `Fil.disk/1` no longer takes
   `if_exists:`, which moved to `signed_upload:`. `Fil.Plugin.Validation` checks uploads on the `:signed_upload` op.
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
+- `Fil.InvalidRequestError` is split by what the caller can do about it. A path the disk can't use (`:ebadpath`,
+  `:eisdir`, `:enotdir`, a name that's too long, a symlink loop, S3's `KeyTooLongError`) is the new
+  `Fil.InvalidPathError`. Content the disk refuses is a `Fil.InvalidContentError` wherever the refusal comes from:
+  content over the storage's size limit, `:too_many_parts`, `Fil.Plugin.Thumbnails` for a file that isn't an image,
+  and `Fil.LiveView`'s `:extension`, `:too_large`, `:size` and `:content_type`. S3's `InvalidRequest` and Azure's
+  `InvalidHeaderValue`, `InvalidQueryParameterValue` and `OutOfRangeInput` are a `Fil.UnknownError`. `Fil.Plug` keeps
+  its statuses, and answers a content error with the body "the content was rejected" wherever it comes from.
+  ([#77](https://github.com/pehbehbeh/fil/pull/77))
+- `Fil.Adapter.S3` handles a copy or a move onto itself like the other adapters: it leaves the file as it is, and
+  returns `Fil.AlreadyExistsError` with `if_exists: :error`, instead of S3's `InvalidRequest`.
+  ([#77](https://github.com/pehbehbeh/fil/pull/77))
 
 ### Security
 

@@ -255,7 +255,7 @@ defmodule Fil.Support.ObjectStore do
   def next_part(count, max, upload) do
     result =
       if count + 1 >= max,
-        do: {:error, %Fil.InvalidRequestError{reason: :too_many_parts}},
+        do: {:error, %Fil.InvalidContentError{reason: :too_many_parts}},
         else: upload.()
 
     case result do

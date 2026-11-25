@@ -88,7 +88,7 @@ defmodule Fil.LiveViewTest do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
 
       # LiveView accepts the file for its type, which the browser sends.
-      assert {:error, %Fil.InvalidRequestError{reason: :extension, op: :write} = error} =
+      assert {:error, %Fil.InvalidContentError{reason: :extension, op: :write} = error} =
                LiveViewHelper.upload(
                  [%{name: "evil.html", content: "<script>", type: "image/png"}],
                  [accept: ~w(.png)],
@@ -102,7 +102,7 @@ defmodule Fil.LiveViewTest do
     test "checks :extensions instead of accept:", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk, extensions: [".txt"])
 
-      assert {:error, %Fil.InvalidRequestError{reason: :extension}} =
+      assert {:error, %Fil.InvalidContentError{reason: :extension}} =
                LiveViewHelper.upload([%{name: "a.png", content: "png"}], [accept: ~w(image/*)], consume)
 
       assert {:ok, [_ref]} =
@@ -123,7 +123,7 @@ defmodule Fil.LiveViewTest do
       assert jpeg.path =~ ~r/\.jpeg\z/
 
       # LiveView accepts the file for the type the browser sends.
-      assert {:error, %Fil.InvalidRequestError{reason: :extension}} =
+      assert {:error, %Fil.InvalidContentError{reason: :extension}} =
                LiveViewHelper.upload([%{name: "evil.html", content: "<script>", type: "image/png"}], accept, consume)
 
       assert {:ok, [_png, _jpeg]} = Fil.ls(disk, ".")
@@ -132,7 +132,7 @@ defmodule Fil.LiveViewTest do
     test "refuses files a wildcard accepts in a list with extensions", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :extension}} =
+      assert {:error, %Fil.InvalidContentError{reason: :extension}} =
                LiveViewHelper.upload([%{name: "a.png", content: "png"}], [accept: ~w(.pdf image/*)], consume)
 
       assert {:ok, [_pdf]} =
@@ -186,7 +186,7 @@ defmodule Fil.LiveViewTest do
     test "refuses a path that leaves the disk root", %{disk: disk} do
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, disk, path: fn _entry -> "../escape.txt" end)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} =
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} =
                ["a.txt"]
                |> LiveViewHelper.files()
                |> LiveViewHelper.upload([accept: :any], consume)
@@ -196,7 +196,7 @@ defmodule Fil.LiveViewTest do
       users = Fil.ref(disk, "users/1")
       consume = &Fil.LiveView.consume_uploaded_entries(&1, :avatar, users, path: fn _entry -> "../x.png" end)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} =
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} =
                ["a.png"]
                |> LiveViewHelper.files()
                |> LiveViewHelper.upload([accept: :any], consume)
@@ -325,7 +325,7 @@ defmodule Fil.LiveViewTest do
              |> LiveViewHelper.files()
              |> LiveViewHelper.upload([accept: :any], consume) == ["a.txt"]
 
-      assert [%Fil.InvalidRequestError{reason: :extension}] =
+      assert [%Fil.InvalidContentError{reason: :extension}] =
                LiveViewHelper.upload([%{name: "a.png", content: "png"}], [accept: :any], consume)
     end
   end
@@ -401,7 +401,7 @@ defmodule Fil.LiveViewTest do
       # consume leaves it alone.
       Fil.write!(disk, meta.path, "larger")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :too_large, op: :stat, path: path, disk: ^disk}} =
+      assert {:error, %Fil.InvalidContentError{reason: :too_large, op: :stat, path: path, disk: ^disk}} =
                LiveViewHelper.submit(view)
 
       assert path == meta.path
@@ -419,7 +419,7 @@ defmodule Fil.LiveViewTest do
       # The meta's path is relative to the disk root, whatever the target.
       other = Fil.ref(disk, "other")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :too_large}} =
+      assert {:error, %Fil.InvalidContentError{reason: :too_large}} =
                Fil.LiveView.store_entry(other, meta, entry, max_file_size: 2)
 
       assert Fil.exists?(disk, "avatars/a.png")
@@ -708,7 +708,7 @@ defmodule Fil.LiveViewTest.OneDisk do
       # A path that leaves the directory would leave the disk root on its own, so using the ref fails.
       escape = Fil.LiveView.entry_ref(users, entry, path: fn _entry -> "../../x2.png" end)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.write(escape, "png")
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.write(escape, "png")
       refute Fil.exists?(disk, "x2.png")
     end
 

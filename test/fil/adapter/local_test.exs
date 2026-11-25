@@ -65,8 +65,8 @@ defmodule Fil.Adapter.LocalTest do
     test "applies when the adapter is called directly", %{tmp_dir: tmp_dir} do
       {:ok, state} = Local.init(root: tmp_dir)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Local.read(state, "../../etc/passwd", [])
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Local.write(state, "../escape.txt", "x", [])
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Local.read(state, "../../etc/passwd", [])
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Local.write(state, "../escape.txt", "x", [])
 
       refute tmp_dir
              |> Path.join("../escape.txt")
@@ -84,7 +84,7 @@ defmodule Fil.Adapter.LocalTest do
       |> Path.join("root-sibling/secret.txt")
       |> File.write!("secret")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Local.read(state, "../root-sibling/secret.txt", [])
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Local.read(state, "../root-sibling/secret.txt", [])
     end
   end
 
@@ -168,7 +168,7 @@ defmodule Fil.Adapter.LocalTest do
     test "under a file create no directories", %{disk: disk, tmp_dir: tmp_dir} do
       assert {:ok, _} = Fil.write(disk, "file.txt", "content")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :enotdir}} = Fil.write(disk, "file.txt/deeper/child.txt", "x")
+      assert {:error, %Fil.InvalidPathError{reason: :enotdir}} = Fil.write(disk, "file.txt/deeper/child.txt", "x")
 
       assert tmp_dir
              |> Path.join("primary")
@@ -212,7 +212,7 @@ defmodule Fil.Adapter.LocalTest do
       assert {:error, %Fil.AlreadyExistsError{reason: :eexist}} =
                Fil.cp(disk, "source.txt", "kept/taken.txt", if_exists: :error)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :enotdir, path: "source.txt/deeper/copy.txt"}} =
+      assert {:error, %Fil.InvalidPathError{reason: :enotdir, path: "source.txt/deeper/copy.txt"}} =
                Fil.cp(disk, "source.txt", "source.txt/deeper/copy.txt", if_exists: :error)
 
       root = Path.join(tmp_dir, "primary")
@@ -230,13 +230,13 @@ defmodule Fil.Adapter.LocalTest do
       assert {:ok, _} = Fil.write(disk, "source.txt", "source")
       assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :eisdir, path: "dir"}} =
+      assert {:error, %Fil.InvalidPathError{reason: :eisdir, path: "dir"}} =
                Fil.cp(disk, "source.txt", "dir", if_exists: :error)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :eisdir, path: "dir"}} =
+      assert {:error, %Fil.InvalidPathError{reason: :eisdir, path: "dir"}} =
                Fil.rename(disk, "source.txt", "dir", if_exists: :error)
 
-      assert {:error, %Fil.InvalidRequestError{reason: :eisdir, path: "dir"}} =
+      assert {:error, %Fil.InvalidPathError{reason: :eisdir, path: "dir"}} =
                Fil.cp(disk, "dir", "copy", if_exists: :error)
 
       assert Fil.read(disk, "source.txt") == {:ok, "source"}
@@ -358,23 +358,23 @@ defmodule Fil.Adapter.LocalTest do
     test "a directory is :eisdir", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} = Fil.read(disk, "dir")
-      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} = Fil.cp(disk, "dir", "copy.txt")
-      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} = Fil.write(disk, "dir", "content")
+      assert {:error, %Fil.InvalidPathError{reason: :eisdir}} = Fil.read(disk, "dir")
+      assert {:error, %Fil.InvalidPathError{reason: :eisdir}} = Fil.cp(disk, "dir", "copy.txt")
+      assert {:error, %Fil.InvalidPathError{reason: :eisdir}} = Fil.write(disk, "dir", "content")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} =
+      assert {:error, %Fil.InvalidPathError{reason: :eisdir}} =
                Fil.write(disk, "dir", "content", if_exists: :error)
     end
 
     test "a path under a file is :enotdir", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "file.txt", "content")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :enotdir}} = Fil.write(disk, "file.txt/child.txt", "child")
+      assert {:error, %Fil.InvalidPathError{reason: :enotdir}} = Fil.write(disk, "file.txt/child.txt", "child")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :enotdir}} =
+      assert {:error, %Fil.InvalidPathError{reason: :enotdir}} =
                Fil.write(disk, "file.txt/deeper/child.txt", "child")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :enotdir, path: "file.txt/copy.txt"}} =
+      assert {:error, %Fil.InvalidPathError{reason: :enotdir, path: "file.txt/copy.txt"}} =
                Fil.cp(disk, "file.txt", "file.txt/copy.txt")
     end
   end
@@ -382,7 +382,7 @@ defmodule Fil.Adapter.LocalTest do
   describe "rm/1" do
     test "refuses to delete a directory", %{disk: disk} do
       assert {:ok, _} = Fil.write(disk, "dir/file.txt", "content")
-      assert {:error, %Fil.InvalidRequestError{reason: :eisdir}} = Fil.rm(disk, "dir")
+      assert {:error, %Fil.InvalidPathError{reason: :eisdir}} = Fil.rm(disk, "dir")
       assert Fil.read(disk, "dir/file.txt") == {:ok, "content"}
     end
   end

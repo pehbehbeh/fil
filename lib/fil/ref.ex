@@ -51,7 +51,7 @@ defmodule Fil.Ref do
   Builds a ref.
 
   The path is normalized when possible (see "Concepts" in `Fil`). A path that can't be normalized, such as one that
-  escapes the disk root, is kept as given. Using it later returns a `Fil.InvalidRequestError` instead of raising here.
+  escapes the disk root, is kept as given. Using it later returns a `Fil.InvalidPathError` instead of raising here.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
       iex> Fil.Ref.new(disk, "./uploads//a.txt").path
@@ -61,7 +61,7 @@ defmodule Fil.Ref do
       iex> escape = Fil.Ref.new(disk, "../escape.txt")
       iex> escape.path
       "../escape.txt"
-      iex> {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.read(escape)
+      iex> {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.read(escape)
 
   """
   @spec new(Disk.t(), Path.t()) :: t()
@@ -75,7 +75,7 @@ defmodule Fil.Ref do
   @doc """
   Canonicalizes a ref for an operation.
 
-  Normalizes the path, rejects escapes with a `Fil.InvalidRequestError` and drops `:stat`, so a listing snapshot is
+  Normalizes the path, rejects escapes with a `Fil.InvalidPathError` and drops `:stat`, so a listing snapshot is
   never mistaken for the current state. Every public `Fil` function calls this before the adapter gets the path.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Local, root: "/tmp/fil")
@@ -84,18 +84,18 @@ defmodule Fil.Ref do
       "b.txt"
       iex> Fil.Ref.normalize(normalized) == {:ok, normalized}
       true
-      iex> {:error, %Fil.InvalidRequestError{path: "../etc/passwd", reason: :ebadpath}} =
+      iex> {:error, %Fil.InvalidPathError{path: "../etc/passwd", reason: :ebadpath}} =
       ...>   Fil.Ref.normalize(%Fil.Ref{disk: disk, path: "../etc/passwd"})
 
   """
-  @spec normalize(t()) :: {:ok, t()} | {:error, Fil.InvalidRequestError.t()}
+  @spec normalize(t()) :: {:ok, t()} | {:error, Fil.InvalidPathError.t()}
   def normalize(%__MODULE__{disk: %Disk{} = disk, path: path}) when is_binary(path) do
     case Fil.Support.Path.normalize(path) do
       {:ok, normalized} ->
         {:ok, %__MODULE__{disk: disk, path: normalized}}
 
       {:error, :ebadpath} ->
-        {:error, %Fil.InvalidRequestError{path: path, disk: disk, reason: :ebadpath}}
+        {:error, %Fil.InvalidPathError{path: path, disk: disk, reason: :ebadpath}}
     end
   end
 
