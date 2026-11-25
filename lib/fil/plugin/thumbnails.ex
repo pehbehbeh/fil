@@ -178,7 +178,7 @@ defmodule Fil.Plugin.Thumbnails do
   ## Errors
 
     * content libvips can't decode, or encode as a variant, is refused before anything is written, with a
-      `Fil.InvalidRequestError` whose `:reason` is `{:not_an_image, message}`. The same goes for an image over
+      `Fil.InvalidContentError` whose `:reason` is `{:not_an_image, message}`. The same goes for an image over
       `:max_pixels`, with `{:too_many_pixels, pixels}`
     * when the image can't be written, no variant is written either
     * when a variant can't be written, the image stays written and the write returns the variant's error, with the
@@ -498,7 +498,7 @@ defmodule Fil.Plugin.Thumbnails do
 
     case result do
       {:ok, thumbnails} -> {:ok, Enum.reverse(thumbnails)}
-      {:error, reason} -> {:error, %Fil.InvalidRequestError{reason: reason, path: original.path, disk: original.disk}}
+      {:error, reason} -> {:error, %Fil.InvalidContentError{reason: reason, path: original.path, disk: original.disk}}
     end
   end
 

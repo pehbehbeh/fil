@@ -4,7 +4,7 @@ defmodule Fil.Support.Path do
   # Path normalization and the `../` jail. Every path passed to `Fil` goes through `normalize/1` before an adapter sees
   # it, and `Fil.Op.run/1` normalizes again after the plugins, so a rewritten path can't escape either.
   #
-  # Normalization only looks at the string, so it's the same for every backend:
+  # Normalization only looks at the string, so it's the same for every adapter:
   #
   #   * repeated separators collapse: `"a//b"` becomes `"a/b"`
   #   * `"."` segments disappear, and `".."` segments are resolved against the preceding segment

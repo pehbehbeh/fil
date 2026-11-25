@@ -20,7 +20,7 @@ defmodule Fil.ExceptionsTest do
       assert message(Fil.ConfigurationError, {:wrong_region, "us-west-2"}) =~
                ~s|misconfigured ({:wrong_region, "us-west-2"})|
 
-      assert message(Fil.InvalidRequestError, :ebadpath) =~ "invalid request (:ebadpath)"
+      assert message(Fil.InvalidPathError, :ebadpath) =~ "invalid path (:ebadpath)"
       assert message(Fil.InvalidContentError, {:too_large, 10}) =~ "the content was rejected ({:too_large, 10})"
 
       assert message(Fil.ConflictError, :size_changed) ==

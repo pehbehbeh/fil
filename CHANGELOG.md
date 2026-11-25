@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Fil.Adapter.Zip` reads the files of a zip archive on any disk, read-only. It reads only the parts of the archive it
+  needs, with ranged reads, so a file in a large archive on S3 costs a few requests. It reads stored and deflated
+  entries and Zip64 archives, checks each whole entry against its CRC-32, never inflates an entry past its declared
+  size, and leaves out entries whose names escape the archive's root. Every change returns `Fil.AccessDeniedError` with
+  `reason: :read_only`. ([#48](https://github.com/pehbehbeh/fil/pull/48))
 - `Fil.Adapter.AzureBlob` stores files in Azure Blob Storage and Azurite, signed with the account key (Shared Key) or
   sent with a SAS token. Streams without a size are uploaded in blocks and committed at the end, `checksum:` is stored
   as blob metadata, and `Fil.signed_url/3` and `Fil.signed_upload/3` return service SAS URLs. A SAS can't bind the
@@ -47,6 +52,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Sign uploads with `Fil.signed_upload/3` instead. The `signed_url:` option of `Fil.disk/1` no longer takes
   `if_exists:`, which moved to `signed_upload:`. `Fil.Plugin.Validation` checks uploads on the `:signed_upload` op.
   ([#42](https://github.com/pehbehbeh/fil/pull/42))
+- `Fil.InvalidRequestError` is split by what the caller can do about it. A path the disk can't use (`:ebadpath`,
+  `:eisdir`, `:enotdir`, a name that's too long, a symlink loop, S3's `KeyTooLongError`) is the new
+  `Fil.InvalidPathError`. Content the disk refuses is a `Fil.InvalidContentError` wherever the refusal comes from:
+  content over the storage's size limit, `:too_many_parts`, `Fil.Plugin.Thumbnails` for a file that isn't an image,
+  and `Fil.LiveView`'s `:extension`, `:too_large`, `:size` and `:content_type`. S3's `InvalidRequest` and Azure's
+  `InvalidHeaderValue`, `InvalidQueryParameterValue` and `OutOfRangeInput` are a `Fil.UnknownError`. `Fil.Plug` keeps
+  its statuses, and answers a content error with the body "the content was rejected" wherever it comes from.
+  ([#77](https://github.com/pehbehbeh/fil/pull/77))
+- `Fil.Adapter.S3` handles a copy or a move onto itself like the other adapters: it leaves the file as it is, and
+  returns `Fil.AlreadyExistsError` with `if_exists: :error`, instead of S3's `InvalidRequest`.
+  ([#77](https://github.com/pehbehbeh/fil/pull/77))
+
+### Fixed
+
+- `Fil.Plug` serves the right ranges with a plugin that changes the size of reads, once the plugin follows the new rule
+  for sizes: `Fil.stat/3` and `Fil.ls/3` report the size of the content as `Fil.read/3` returns it, so such a plugin
+  sets `size` in its `:stat` and `:ls` results to the size it delivers, or to `nil` when it can't know it (see
+  [Ranges](https://fil.hexdocs.pm/plugins.html#ranges)). A file without a size gets a `200` with the whole file and no
+  `accept-ranges`, and `Fil.LiveView` no longer refuses a direct upload without a size as larger than `max_file_size:`.
+  ([#75](https://github.com/pehbehbeh/fil/pull/75))
 
 ### Security
 

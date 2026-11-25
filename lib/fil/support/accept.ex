@@ -42,9 +42,9 @@ defmodule Fil.Support.Accept do
 
   @doc """
   Checks that the path of `ref` ends with one of `extensions`, in lowercase. `nil` checks nothing, and an empty list
-  refuses every path. The error is a `Fil.InvalidRequestError` with `reason: :extension` and `op`.
+  refuses every path. The error is a `Fil.InvalidContentError` with `reason: :extension` and `op`.
   """
-  @spec check(Fil.Ref.t(), [String.t()] | nil, atom()) :: :ok | {:error, Fil.InvalidRequestError.t()}
+  @spec check(Fil.Ref.t(), [String.t()] | nil, atom()) :: :ok | {:error, Fil.InvalidContentError.t()}
   def check(_ref, nil, _op), do: :ok
 
   def check(ref, extensions, op) do
@@ -56,7 +56,7 @@ defmodule Fil.Support.Accept do
     if extension != "" and extension in Enum.map(extensions, &String.downcase/1) do
       :ok
     else
-      {:error, %Fil.InvalidRequestError{reason: :extension, op: op, path: ref.path, disk: ref.disk}}
+      {:error, %Fil.InvalidContentError{reason: :extension, op: op, path: ref.path, disk: ref.disk}}
     end
   end
 

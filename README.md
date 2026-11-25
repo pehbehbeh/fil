@@ -20,7 +20,8 @@ Adapters: [`Local`](https://fil.hexdocs.pm/Fil.Adapter.Local.html),
 [`Memory`](https://fil.hexdocs.pm/Fil.Adapter.Memory.html),
 [`S3`](https://fil.hexdocs.pm/Fil.Adapter.S3.html),
 [`AzureBlob`](https://fil.hexdocs.pm/Fil.Adapter.AzureBlob.html),
-[`Null`](https://fil.hexdocs.pm/Fil.Adapter.Null.html).
+[`Null`](https://fil.hexdocs.pm/Fil.Adapter.Null.html),
+[`Zip`](https://fil.hexdocs.pm/Fil.Adapter.Zip.html).
 
 ```elixir
 Mix.install([
@@ -80,7 +81,7 @@ To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html)
 - `ls` on a missing directory returns an empty list
 - paths are always relative to the disk root, and `.` is the root
 - a path that climbs above the root fails with a
-  [`Fil.InvalidRequestError`](https://fil.hexdocs.pm/Fil.InvalidRequestError.html)
+  [`Fil.InvalidPathError`](https://fil.hexdocs.pm/Fil.InvalidPathError.html)
 
 The [contract in `Fil.Adapter`](https://fil.hexdocs.pm/Fil.Adapter.html#module-contract) lists every difference from
 `File`. Every function that can fail returns `{:ok, result}` or `{:error, error}`, with an error from the Errors
@@ -203,7 +204,7 @@ s3 =
   )
 ```
 
-Every operation works the same on every disk:
+Every function works the same on every disk:
 
 ```elixir
 {:ok, report} = Fil.write(s3, "reports/q3.pdf", pdf)

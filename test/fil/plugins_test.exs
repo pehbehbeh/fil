@@ -202,7 +202,7 @@ defmodule Fil.PluginsTest do
              |> Fil.read() == {:ok, "content"}
 
       # Local reports a destination under a file with the destination's path, which is translated back too.
-      assert {:error, %Fil.InvalidRequestError{path: "a.txt/copy.txt", reason: :enotdir}} =
+      assert {:error, %Fil.InvalidPathError{path: "a.txt/copy.txt", reason: :enotdir}} =
                Fil.cp(disk, "a.txt", "a.txt/copy.txt")
     end
 
@@ -210,7 +210,7 @@ defmodule Fil.PluginsTest do
       escape = fn op, next, _opts -> next.(%{op | path: "../" <> op.path, dest: op.dest && "../" <> op.dest}) end
       escaping = Fil.attach(disk, :escape, escape)
 
-      assert {:error, %Fil.InvalidRequestError{path: "a.txt", reason: :ebadpath}} =
+      assert {:error, %Fil.InvalidPathError{path: "a.txt", reason: :ebadpath}} =
                Fil.write(escaping, "a.txt", "content")
 
       refute tmp_dir
@@ -218,7 +218,7 @@ defmodule Fil.PluginsTest do
              |> File.exists?()
 
       assert {:ok, _} = Fil.write(disk, "a.txt", "content")
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.cp(escaping, "a.txt", "b.txt")
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.cp(escaping, "a.txt", "b.txt")
     end
 
     test "a callback that doesn't return an op raises", %{disk: disk} do
@@ -271,6 +271,16 @@ defmodule Fil.PluginsTest do
       assert_received {:in, :source, :read}
       assert_received {:in, :dest, :write}
       assert_received {:in, :source, :rm}
+    end
+
+    test "a plugin that changes the size of reads reports the same size from stat and ls", %{disk: disk} do
+      doubled = Fil.PluginHelper.double_reads(disk, &(&1 * 2))
+
+      {:ok, _} = Fil.write(doubled, "a.txt", "0123456789")
+
+      assert {:ok, "00112233445566778899"} = Fil.read(doubled, "a.txt")
+      assert {:ok, %Fil.Stat{size: 20}} = Fil.stat(doubled, "a.txt")
+      assert {:ok, [%Fil.Ref{path: "a.txt", stat: %Fil.Stat{size: 20}}]} = Fil.ls(doubled)
     end
   end
 
@@ -445,7 +455,7 @@ defmodule Fil.PluginsTest do
     end
 
     test "a Fil error a write transform raises is the write's result", %{disk: disk} do
-      rejected = fn _content -> raise %Fil.InvalidRequestError{reason: :rejected} end
+      rejected = fn _content -> raise %Fil.InvalidContentError{reason: :rejected} end
 
       rejecting =
         Fil.attach(disk, :reject, fn
@@ -469,7 +479,7 @@ defmodule Fil.PluginsTest do
             next.(op)
         end)
 
-      assert {:error, %Fil.InvalidRequestError{op: :write, path: "a.txt", reason: :rejected}} =
+      assert {:error, %Fil.InvalidContentError{op: :write, path: "a.txt", reason: :rejected}} =
                Fil.write(rejecting, "a.txt", "content")
 
       failing = Stream.map([1], fn _chunk -> raise %Fil.UnavailableError{reason: :timeout} end)

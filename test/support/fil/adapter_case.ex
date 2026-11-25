@@ -334,7 +334,21 @@ defmodule Fil.AdapterCase do
 
         # A real directory (Local) or a prefix with no object of its own (S3, Memory).
         assert {:error, error} = Fil.read(disk, "tree")
-        assert match?(%Fil.InvalidRequestError{}, error) or match?(%Fil.NotFoundError{}, error)
+        assert match?(%Fil.InvalidPathError{}, error) or match?(%Fil.NotFoundError{}, error)
+      end
+
+      test "writing or copying to a path under a file keeps the file", %{disk: disk} do
+        assert {:ok, _} = Fil.write(disk, "report.txt", "report")
+
+        # A real file can't hold children (Local), a key prefix can (S3, Memory).
+        written = Fil.write(disk, "report.txt/child.txt", "x")
+        copied = Fil.cp(disk, "report.txt", "report.txt/copy.txt")
+
+        for result <- [written, copied] do
+          assert match?({:ok, _}, result) or match?({:error, %Fil.InvalidPathError{reason: :enotdir}}, result)
+        end
+
+        assert Fil.read(disk, "report.txt") == {:ok, "report"}
       end
 
       ## ----------------------------------------------------------------
@@ -527,7 +541,7 @@ defmodule Fil.AdapterCase do
 
         assert {:ok, _} = Fil.write(disk, "tree/leaf.txt", "leaf")
         assert {:error, error} = Fil.stream(disk, "tree")
-        assert match?(%Fil.InvalidRequestError{}, error) or match?(%Fil.NotFoundError{}, error)
+        assert match?(%Fil.InvalidPathError{}, error) or match?(%Fil.NotFoundError{}, error)
       end
 
       test "a file removed before its stream is read raises with the context", %{disk: disk} do
@@ -970,7 +984,7 @@ defmodule Fil.AdapterCase do
 
         # Local refuses, object stores have nothing to delete under that exact key.
         result = Fil.rm(disk, "tree")
-        assert match?({:ok, _}, result) or match?({:error, %Fil.InvalidRequestError{reason: :eisdir}}, result)
+        assert match?({:ok, _}, result) or match?({:error, %Fil.InvalidPathError{reason: :eisdir}}, result)
         assert Fil.read(disk, "tree/leaf.txt") == {:ok, "leaf"}
       end
 
@@ -1220,19 +1234,14 @@ defmodule Fil.AdapterCase do
         assert Fil.read(disk, "b.txt", verify_checksum: true) == {:ok, "hello"}
       end
 
-      test "a copy or a move onto itself never loses the file", %{disk: disk} do
+      test "a copy or a move onto itself leaves the file as it is", %{disk: disk} do
         assert {:ok, _} = Fil.write(disk, "a.txt", "a")
 
-        # Local and Memory keep the file where it is or find it there, S3 refuses to copy an object onto itself.
-        for opts <- [[], [if_exists: :error]], copy_or_move <- [&Fil.cp/4, &Fil.rename/4] do
-          result = copy_or_move.(disk, "a.txt", "a.txt", opts)
+        for copy_or_move <- [&Fil.cp/4, &Fil.rename/4] do
+          assert {:ok, %Fil.Ref{path: "a.txt"}} = copy_or_move.(disk, "a.txt", "a.txt", [])
 
-          case {opts, result} do
-            {[], {:ok, _}} -> :ok
-            {[if_exists: :error], {:error, %Fil.AlreadyExistsError{}}} -> :ok
-            {_opts, {:error, %Fil.InvalidRequestError{}}} -> :ok
-            _unexpected -> flunk("unexpected result with #{inspect(opts)}: #{inspect(result)}")
-          end
+          assert {:error, %Fil.AlreadyExistsError{path: "a.txt"}} =
+                   copy_or_move.(disk, "a.txt", "a.txt", if_exists: :error)
 
           assert Fil.read(disk, "a.txt") == {:ok, "a"}
         end
@@ -1603,14 +1612,14 @@ defmodule Fil.AdapterCase do
       ## ----------------------------------------------------------------
 
       test "rejects paths escaping the disk root", %{disk: disk} do
-        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.read(disk, "../escape.txt")
-        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.read(disk, "a/../../escape.txt")
-        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.write(disk, "../escape.txt", "nope")
-        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.rm(disk, "../escape.txt")
-        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.ls(disk, "..")
-        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.stat(disk, "../escape.txt")
-        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.cp(disk, "../escape.txt", "here.txt")
-        assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.rm_rf(disk, "..")
+        assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.read(disk, "../escape.txt")
+        assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.read(disk, "a/../../escape.txt")
+        assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.write(disk, "../escape.txt", "nope")
+        assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.rm(disk, "../escape.txt")
+        assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.ls(disk, "..")
+        assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.stat(disk, "../escape.txt")
+        assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.cp(disk, "../escape.txt", "here.txt")
+        assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.rm_rf(disk, "..")
         refute Fil.exists?(disk, "../escape.txt")
       end
 
@@ -1661,7 +1670,7 @@ defmodule Fil.AdapterCase do
                  {:op, :url, false, nil, nil},
                  {:op, :signed_url, false, nil, nil},
                  {:op, :read, false, nil, Fil.NotFoundError},
-                 {:op, :read, false, nil, Fil.InvalidRequestError},
+                 {:op, :read, false, nil, Fil.InvalidPathError},
                  {:op, :rm_rf, false, nil, nil}
                ]
 
@@ -1759,7 +1768,7 @@ defmodule Fil.AdapterCase do
         assert error.disk == disk
         assert Exception.message(error) =~ ~s|could not read "nope.txt" on #{inspect(disk)}|
 
-        assert_raise Fil.InvalidRequestError, fn ->
+        assert_raise Fil.InvalidPathError, fn ->
           disk
           |> Fil.ref("../escape.txt")
           |> Fil.read!()

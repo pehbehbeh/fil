@@ -484,7 +484,7 @@ defmodule Fil.LiveView.UploadFieldTest do
       input = file_input(view, "#form", :photos, [png("evil.html", "<script>")])
       render_upload(input, "evil.html")
 
-      assert {:error, %Fil.InvalidRequestError{reason: :extension}} = submit(view)
+      assert {:error, %Fil.InvalidContentError{reason: :extension}} = submit(view)
 
       assert view
              |> view_html()
@@ -537,9 +537,13 @@ defmodule Fil.LiveView.UploadFieldTest do
       assert Fil.read(c) == {:ok, "c"}
       assert Fil.exists?(a)
 
+      # The upload channel exits after the consume, and LiveView drops the entry only once it handles that exit, so a
+      # render right after the submit can still list it.
+      saved = ["b.png", Path.basename(c.path)]
+
       assert view
-             |> view_html()
-             |> texts("li span.truncate") == ["b.png", Path.basename(c.path)]
+             |> await_html(&(texts(&1, "li span.truncate") == saved))
+             |> texts("li span.truncate") == saved
     end
 
     test "leaves the socket alone for an unknown upload or entry" do

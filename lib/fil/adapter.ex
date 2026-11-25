@@ -39,13 +39,11 @@ defmodule Fil.Adapter do
   or move is `c:cp/4` or `c:rename/4` with `if_exists: :error`. It fails with the destination's path and leaves both
   files as they were.
 
-  A copy or a move onto its own path never loses the file. The adapter leaves it where it is, fails with
-  `Fil.AlreadyExistsError` when the call is exclusive, or refuses the call with `Fil.InvalidRequestError`. A copy keeps
-  the content type, where the storage keeps one.
+  A copy or a move onto its own path leaves the file where it is, and fails with `Fil.AlreadyExistsError` when the call
+  is exclusive. A copy keeps the content type, where the storage keeps one.
 
   The `:etag` that `c:stat/3` returns changes when a write changes the size of the file. A weak etag may miss other
-  changes. Which result an adapter gives for a copy onto itself, and what its etag covers, is under Operations on the
-  adapter's page.
+  changes. What an adapter's etag covers is under Operations on the adapter's page.
 
   Where an adapter returns `:ok`, the `Fil` function returns `{:ok, %Fil.Ref{}}`, and `Fil.ls/2` turns the pairs
   into refs.
@@ -68,15 +66,15 @@ defmodule Fil.Adapter do
   `Fil.AdapterCase` (internal for now) tests this contract against a live disk.
 
   Every adapter `Fil` ships reads, writes and streams files, lists, copies and checks checksums (except
-  `Fil.Adapter.Null`, whose writes never read back), and every disk builds public and signed URLs (S3 and Azure
-  themselves, the others with `Fil.Plugin.URL`), so code written against one disk runs on the others. What's left are
-  edge cases, such as whether directories exist on their own, and each adapter lists them under Operations on its own
-  page.
+  `Fil.Adapter.Null`, whose writes never read back, and the writes of the read-only `Fil.Adapter.Zip`), and every disk
+  builds public and signed URLs (S3 and Azure themselves, the others with `Fil.Plugin.URL`), so code written against
+  one disk runs on the others. What's left are edge cases, such as whether directories exist on their own, and each
+  adapter lists them under Operations on its own page.
 
   ## Errors
 
   Every error is an exception struct, listed under Errors in the sidebar. Which struct you get tells you what to do
-  next, and it's the same on every adapter: a missing file is a `Fil.NotFoundError` on the local disk and on S3.
+  next, and it's the same on every adapter: a missing file is a `Fil.NotFoundError` on the filesystem and on S3.
   `Fil.UnavailableError` and `Fil.ConflictError` are the ones where retrying can help.
 
   Every error has the same fields:
@@ -89,7 +87,7 @@ defmodule Fil.Adapter do
     * `:reason`: the exact cause, as the storage reported it, in the form its adapter documents (`:enoent` from
       `Fil.Adapter.Local`, `"NoSuchKey"` from `Fil.Adapter.S3`). `nil` only when a plugin built the error
 
-  `Fil` returns two of them itself: `Fil.InvalidRequestError` with `reason: :ebadpath` for a path that escapes the disk
+  `Fil` returns two of them itself: `Fil.InvalidPathError` with `reason: :ebadpath` for a path that escapes the disk
   root, and `Fil.UnsupportedError` with `reason: :no_callback` for a URL on an adapter without that callback.
 
   An adapter returns the struct with `:reason` set and leaves `:op`, `:path` and `:disk` `nil`: `Fil` fills in
@@ -99,8 +97,9 @@ defmodule Fil.Adapter do
 
   A failure that fits a struct is returned as that struct, whatever the storage reported: `Fil.Adapter.Local` turns
   the `:eperm` that deleting a directory gives into `:eisdir`, and `Fil.Adapter.S3` checks a copy that the server
-  refused with a plain `400` for a missing source. Directory errors only come from storage with directories of its own,
-  such as the filesystem. Where directories are only key prefixes, reading or copying one is a `Fil.NotFoundError`.
+  refused with a plain `400` for a missing source. Directory errors (`Fil.InvalidPathError`) only come from storage with
+  directories of its own, such as the filesystem. Where directories are only key prefixes, reading or copying one is a
+  `Fil.NotFoundError`, and a write under a file's path succeeds, next to the file.
   """
 
   alias Fil.Stat

@@ -42,22 +42,18 @@ defmodule Fil.AccessDeniedError do
   def message(error), do: Fil.Support.Error.message(error, "access denied")
 end
 
-defmodule Fil.InvalidRequestError do
+defmodule Fil.InvalidPathError do
   @moduledoc """
-  The path or the content can't be used here. Use another path or smaller content.
+  The path can't be used here. Use another path.
 
   `Fil` returns it with `reason: :ebadpath` for a path that escapes the disk root, before any adapter or plugin sees
   it. Adapters return it for a file operation on a directory (`:eisdir`), a path under a file (`:enotdir`), a name
-  that's too long, and content over the storage's size limit. Plugins return it for content they refuse, such as
-  `Fil.Plugin.Thumbnails` for a file that isn't an image (`{:not_an_image, message}`). `Fil.LiveView` returns it with
-  `reason: :extension` for an upload whose path has an extension the upload doesn't accept, before anything is
-  written, and with `reason: :too_large` for a direct upload's file over the upload's `max_file_size`. `Fil.Plug`
-  answers an upload that fails with it with a `422`, or a `404` when the path is the problem.
+  that's too long and a symlink loop, where the storage tells these apart. `Fil.Plug` answers it with a `404`.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
-      iex> {:error, %Fil.InvalidRequestError{} = error} = Fil.read(disk, "../escape.txt")
-      iex> error.reason
-      :ebadpath
+      iex> {:error, %Fil.InvalidPathError{} = error} = Fil.read(disk, "../escape.txt")
+      iex> Exception.message(error)
+      ~s|could not read "../escape.txt" on #Fil.Disk<memory>: invalid path (:ebadpath)|
   """
 
   defexception [:op, :path, :disk, :reason]
@@ -65,19 +61,25 @@ defmodule Fil.InvalidRequestError do
   @type t :: %__MODULE__{op: Fil.Op.name() | nil, path: String.t() | nil, disk: Fil.Disk.t() | nil, reason: term()}
 
   @impl Exception
-  def message(error), do: Fil.Support.Error.message(error, "invalid request")
+  def message(error), do: Fil.Support.Error.message(error, "invalid path")
 end
 
 defmodule Fil.InvalidContentError do
   @moduledoc """
-  A plugin refused the content. Send other content.
+  The disk refused the content. Send other content.
 
-  Plugins return or raise it for content that breaks the disk's rules, such as `Fil.Plugin.Validation` for a file that's
-  too large or of a type the disk doesn't take. `:reason` says which rule, in the form the plugin documents. Raised
-  while the content of a write is read (from a function given to `Fil.Op.scan_content/4`, say), it's the write's result,
-  and nothing is written. `Fil.Plug` answers an upload that fails with it with a `413` for `{:too_large, _}`, a `415`
-  for `{:content_type, _}`, `{:content_type_mismatch, _, _}` and `{:extension, _}`, and a `422` for anything else,
-  without the reason.
+  A plugin, the adapter or the storage refuses content that breaks the disk's rules, and `:reason` says which rule, in
+  the form its source documents. `Fil.Plugin.Validation` returns it for a file that's too large or of a type the disk
+  doesn't take, and `Fil.Plugin.Thumbnails` for a file that isn't an image (`{:not_an_image, message}`). Adapters
+  return it for content over the storage's size limit, such as S3's `"EntityTooLarge"`, and with
+  `reason: :too_many_parts` for a stream that needs more parts than the storage allows. `Fil.LiveView` returns it with
+  `reason: :extension` for an upload whose path has an extension the upload doesn't accept, before anything is
+  written, and with `reason: :too_large` for a direct upload's file over the upload's `max_file_size`.
+
+  Raised while the content of a write is read (from a function given to `Fil.Op.scan_content/4`, say), it's the
+  write's result, and nothing is written. `Fil.Plug` answers an upload that fails with it with a `413` for
+  `{:too_large, _}`, a `415` for `{:content_type, _}`, `{:content_type_mismatch, _, _}` and `{:extension, _}`, and a
+  `422` for anything else, without the reason.
 
       iex> disk =
       ...>   Fil.disk(adapter: Fil.Adapter.Memory)
@@ -159,7 +161,9 @@ defmodule Fil.ChecksumMismatchError do
   The content doesn't match its checksum. Upload or download it again.
 
   Adapters return it for a write with `checksum:` that the storage received damaged, and for a read with
-  `verify_checksum: true` whose content doesn't match the stored checksum.
+  `verify_checksum: true` whose content doesn't match the stored checksum. `Fil.Adapter.Zip` checks every whole read of
+  an entry against the archive's CRC-32, and returns it with `reason: {:bad_entry, where}` for an entry that's damaged
+  in other ways. Reading such an entry again gives the same error, so the archive has to be written again.
   """
 
   defexception [:op, :path, :disk, :reason]
@@ -174,7 +178,7 @@ defmodule Fil.StorageFullError do
   @moduledoc """
   There's no space left, or a quota is used up. Free up space or raise the quota.
 
-  Content over a size limit is a `Fil.InvalidRequestError` instead, because freeing space doesn't help with it.
+  Content over a size limit is a `Fil.InvalidContentError` instead, because freeing space doesn't help with it.
   """
 
   defexception [:op, :path, :disk, :reason]

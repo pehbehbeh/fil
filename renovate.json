@@ -8,7 +8,7 @@
   },
   "packageRules": [
     {
-      "description": "Update only mix.lock, keep the requirements in mix.exs",
+      "description": "Update only mix.lock for releases in range; a new major still raises the requirement",
       "matchManagers": [
         "mix"
       ],
@@ -27,7 +27,7 @@
       "matchDepTypes": [
         "tool-constraint"
       ],
-      "matchPackageNames": [
+      "matchDepNames": [
         "erlang"
       ],
       "enabled": false

@@ -266,9 +266,9 @@ defmodule Fil.Adapter.S3Test do
       for {code, error} <- [
             {"NoSuchKey", Fil.NotFoundError},
             {"AccessDenied", Fil.AccessDeniedError},
-            {"InvalidRequest", Fil.InvalidRequestError},
-            {"EntityTooLarge", Fil.InvalidRequestError},
-            {"KeyTooLongError", Fil.InvalidRequestError},
+            {"InvalidRequest", Fil.UnknownError},
+            {"EntityTooLarge", Fil.InvalidContentError},
+            {"KeyTooLongError", Fil.InvalidPathError},
             {"PreconditionFailed", Fil.AlreadyExistsError},
             {"ConditionalRequestConflict", Fil.AlreadyExistsError},
             {"BadDigest", Fil.ChecksumMismatchError},
@@ -807,7 +807,7 @@ defmodule Fil.Adapter.S3Test do
 
       stub([response(200, initiate_xml("UP")), part_response("e1"), response(204)])
 
-      assert {:error, %Fil.InvalidRequestError{reason: :too_many_parts}} =
+      assert {:error, %Fil.InvalidContentError{reason: :too_many_parts}} =
                Fil.write(disk, "a.bin", AdapterCase.chunked(:binary.copy("a", 2 * @part + 1), @mib))
 
       assert_aborted(requests())
@@ -863,7 +863,7 @@ defmodule Fil.Adapter.S3Test do
 
       stream = Stream.map([:never], fn _chunk -> flunk("the stream was read") end)
 
-      assert {:error, %Fil.InvalidRequestError{reason: "EntityTooLarge"}} =
+      assert {:error, %Fil.InvalidContentError{reason: "EntityTooLarge"}} =
                Fil.write(parts_disk(), "a.bin", stream, size: 5 * 1024 ** 4 + 1)
 
       assert requests() == []
@@ -1296,18 +1296,23 @@ defmodule Fil.Adapter.S3Test do
       assert {:error, %Fil.UnknownError{reason: "InvalidArgument"}} = Fil.cp(disk(), "a.txt", "b.txt")
     end
 
-    test "a copy onto itself is an invalid request, or not found without a source" do
-      stub([response(400, error_xml("InvalidRequest")), response(200)])
+    test "a copy or a move onto itself only checks that the file is there" do
+      for copy_or_move <- [&Fil.cp/4, &Fil.rename/4] do
+        stub([response(200)])
+        assert {:ok, %Fil.Ref{path: "a.txt"}} = copy_or_move.(disk(), "a.txt", "a.txt", [])
+        assert [%{method: "HEAD"}] = requests()
 
-      assert {:error, %Fil.InvalidRequestError{op: :cp, path: "a.txt", reason: "InvalidRequest"}} =
-               Fil.cp(disk(), "a.txt", "a.txt", if_exists: :error)
+        stub([response(200)])
 
-      assert [%{method: "PUT"}, %{method: "HEAD"}] = requests()
+        assert {:error, %Fil.AlreadyExistsError{path: "a.txt", reason: :eexist}} =
+                 copy_or_move.(disk(), "a.txt", "a.txt", if_exists: :error)
 
-      stub([response(400, error_xml("InvalidRequest")), response(404)])
+        assert [%{method: "HEAD"}] = requests()
 
-      assert {:error, %Fil.NotFoundError{reason: {:http_status, 404}}} = Fil.rename(disk(), "a.txt", "a.txt")
-      assert [%{method: "PUT"}, %{method: "HEAD"}] = requests()
+        stub([response(404)])
+        assert {:error, %Fil.NotFoundError{reason: {:http_status, 404}}} = copy_or_move.(disk(), "a.txt", "a.txt", [])
+        assert [%{method: "HEAD"}] = requests()
+      end
     end
 
     test "rename copies and then deletes" do

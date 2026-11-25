@@ -161,17 +161,19 @@ if Code.ensure_loaded?(Plug) do
         the extension, and the `content-disposition` the URL was signed with (`disposition:`). A type a browser runs
         changes both (see [Security](#module-security)). The file is streamed as a chunked response, so it never has to
         fit in memory
-      * downloads send `etag` and `last-modified` from `Fil.stat/3` and `accept-ranges: bytes`. A request whose
-        `if-none-match` lists the etag (or is `*`) gets a `304` without a body, and so does one without `if-none-match`
-        whose `if-modified-since` isn't older than the file. The etag is sent as a strong validator on every adapter,
-        including the `"size-mtime"` tag of `Fil.Adapter.Local`, as nginx and `Plug.Static` do
+      * downloads send `etag` and `last-modified` from `Fil.stat/3`, and `accept-ranges: bytes` when the stat has a
+        size. A request whose `if-none-match` lists the etag (or is `*`) gets a `304` without a body, and so does one
+        without `if-none-match` whose `if-modified-since` isn't older than the file. The etag is sent as a strong
+        validator on every adapter, including the `"size-mtime"` tag of `Fil.Adapter.Local`, as nginx and `Plug.Static`
+        do
       * a `GET` with one byte range (`range: bytes=0-1023`, `bytes=1024-` or `bytes=-1024`) gets a `206` with that part
         and its `content-range`, read from the storage with `Fil.stream/3`'s `offset:` and `length:`. A range that
         starts at or after the end of the file is a `416`. Several ranges, a range the plug can't parse, and an
         `if-range` that's neither the etag nor the exact `last-modified` get a `200` with the whole file. Ranges work
         with signed URLs too, because the signature covers the method, the path and the query, not the headers.
         Offsets count bytes of the content as plugins return it, and the total in `content-range` is the size
-        `Fil.stat/3` returns, so a plugin that changes the size of the content should change it in the stat too
+        `Fil.stat/3` returns. A plugin that changes the size of reads reports it there (see
+        [Ranges](plugins.md#ranges)), and a file whose stat has no size gets a `200` with the whole file for every range
       * `PUT` on a URL from `Fil.signed_upload/3` writes the request body, with the request's `content-type`, the same
         as a presigned PUT on S3. The body is streamed into `Fil.write/4` as it's read, with the `content-length` as
         `size:`. Plugins attached to the disk run as for any other write. An upload signed with `content_type:` or
@@ -184,14 +186,13 @@ if Code.ensure_loaded?(Plug) do
         [Mounting](#module-mounting)) a `400`. Neither writes anything
       * a missing file gets a `404`, and so does a file the storage denies access to, so a client can't tell which
         files exist
-      * a failed write gets a `409` if the file already exists or changed meanwhile, `422` if the disk refuses the
-        content (a `Fil.InvalidRequestError` about the content, such as from `Fil.Plugin.Thumbnails` for a file that
-        isn't an image), `507` if the storage is full and `503` if it's unavailable. Any other error is a `500` with a
-        generic body, and its message goes to the `Logger`. So is S3's `InvalidRequest`, on a download too, because S3
-        sends it for problems with the request or the bucket's configuration as well
-      * an upload a plugin refuses with a `Fil.InvalidContentError`, before or while the body is read, gets a `413` for
-        content that's too large, a `415` for a content type or an extension the disk doesn't take, and a `422` for
-        anything else. Nothing is written, and the body doesn't say which rule the upload broke
+      * a path the disk can't use (`Fil.InvalidPathError`) gets a `404`, on an upload too
+      * a failed write gets a `409` if the file already exists or changed meanwhile, `507` if the storage is full and
+        `503` if it's unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
+      * an upload the disk refuses with a `Fil.InvalidContentError`, before or while the body is read, gets a `413` for
+        `{:too_large, _}`, a `415` for a content type or an extension the disk doesn't take, and a `422` for anything
+        else, such as content over the storage's size limit. Nothing is written, and the body doesn't say which rule
+        the upload broke
 
     ## Security
 
@@ -258,14 +259,6 @@ if Code.ensure_loaded?(Plug) do
 
     # The most an upload is read at a time.
     @read_length 1_048_576
-
-    # The reasons of a `Fil.InvalidRequestError` that are about the path, not the content (see the adapters' tables).
-    @path_reasons [:ebadpath, :eisdir, :enotdir, :enametoolong, :eloop, "KeyTooLongError"]
-
-    # The reasons of a `Fil.InvalidRequestError` that are about the request or the storage's configuration, which the
-    # client can't fix. S3 sends `InvalidRequest` for a PutObject without `Content-MD5` in a bucket with object lock, or
-    # with a checksum header it doesn't support, for example. They're a `500` that's logged, like an unknown error.
-    @request_reasons ["InvalidRequest"]
 
     @impl Plug
     def init(opts) do
@@ -507,9 +500,10 @@ if Code.ensure_loaded?(Plug) do
     defp check_regular(%Fil.Stat{type: :directory}, ref),
       do: {:error, %Fil.NotFoundError{reason: :eisdir, op: :stat, path: ref.path, disk: ref.disk}}
 
+    # A file without a size gets no ranges (`Conditional.range/3`), so none are offered.
     defp put_validators(conn, stat) do
       headers = [
-        {"accept-ranges", "bytes"},
+        {"accept-ranges", if(is_integer(stat.size), do: "bytes")},
         {"etag", Conditional.etag(stat)},
         {"last-modified", Conditional.last_modified(stat)}
       ]
@@ -769,7 +763,7 @@ if Code.ensure_loaded?(Plug) do
       send_error(conn, 400, "the request body was already read, probably by Plug.Parsers")
     end
 
-    # An upload a plugin refuses (`Fil.InvalidContentError`) gets a status for what was wrong with it. The body never
+    # An upload the disk refuses (`Fil.InvalidContentError`) gets a status for what was wrong with it. The body never
     # has the reason, which a plugin may have filled with anything.
     defp send_write_error(conn, %Fil.InvalidContentError{reason: {:too_large, _max}}),
       do: send_error(conn, 413, "the content is too large")
@@ -781,20 +775,11 @@ if Code.ensure_loaded?(Plug) do
 
     defp send_write_error(conn, %Fil.InvalidContentError{}), do: send_error(conn, 422, "the content was rejected")
 
-    # An upload the disk refuses for its content is a 422. One refused for its path is a 404, as on a download.
-    defp send_write_error(conn, %Fil.InvalidRequestError{reason: reason})
-         when reason not in @path_reasons and reason not in @request_reasons,
-         do: send_error(conn, 422, "the content can't be stored here")
-
     defp send_write_error(conn, error), do: send_fil_error(conn, error)
 
-    defp send_fil_error(conn, %Fil.InvalidRequestError{reason: reason} = error) when reason in @request_reasons,
-      do: send_server_error(conn, error)
-
     # A denied file is a 404 too, so a client can't tell which files exist.
-    defp send_fil_error(conn, %error{})
-         when error in [Fil.NotFoundError, Fil.AccessDeniedError, Fil.InvalidRequestError],
-         do: send_error(conn, 404, "not found")
+    defp send_fil_error(conn, %error{}) when error in [Fil.NotFoundError, Fil.AccessDeniedError, Fil.InvalidPathError],
+      do: send_error(conn, 404, "not found")
 
     defp send_fil_error(conn, %Fil.AlreadyExistsError{}), do: send_error(conn, 409, "the file already exists")
     defp send_fil_error(conn, %Fil.ConflictError{}), do: send_error(conn, 409, "the file changed, try again")

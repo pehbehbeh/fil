@@ -36,8 +36,8 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
     environment the app runs in. The field's disk is resolved with `Fil.Disk.resolve/1` each time a value is cast,
     loaded or dumped, so a function can build it from runtime config.
 
-    Use a `:text` column for a single file (S3 keys can be 1,024 bytes long, `:string` is `varchar(255)` on Postgres
-    and MySQL):
+    Use a `:text` column for a single file (S3 keys, the root plus the path, can be 1,024 bytes long, and `:string`
+    is `varchar(255)` on Postgres and MySQL):
 
         add :avatar, :text
 
@@ -106,7 +106,7 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
         def uploads, do: :persistent_term.get({__MODULE__, :uploads})
 
     Loading builds the ref with `Fil.ref/2`, which normalizes the path and keeps one it can't normalize, such as
-    `"../x.png"`, unchanged. An operation on that ref returns a `Fil.InvalidRequestError`. An empty string loads as the
+    `"../x.png"`, unchanged. An operation on that ref returns a `Fil.InvalidPathError`. An empty string loads as the
     disk root, `"."`.
 
     After `c:Ecto.Repo.insert/2`, the struct holds the refs that were cast or put, with their own disks, and a reload
@@ -242,7 +242,7 @@ if Code.ensure_loaded?(Ecto.ParameterizedType) do
     defp normalize(ref) do
       case Fil.Ref.normalize(ref) do
         {:ok, ref} -> {:ok, ref}
-        {:error, %Fil.InvalidRequestError{}} -> {:error, :path}
+        {:error, %Fil.InvalidPathError{}} -> {:error, :path}
       end
     end
 

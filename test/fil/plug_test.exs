@@ -1,6 +1,7 @@
 defmodule Fil.PlugTest do
   alias Fil.PlugHelper
   alias Fil.Plugin.URL
+  alias Fil.PluginHelper
 
   use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()
 
@@ -168,9 +169,9 @@ defmodule Fil.PlugTest do
       for {error, status} <- [
             {%Fil.AlreadyExistsError{reason: :eexist}, 409},
             {%Fil.ConflictError{reason: :size_changed}, 409},
-            {%Fil.InvalidRequestError{reason: {:not_an_image, "not a PNG"}}, 422},
-            {%Fil.InvalidRequestError{reason: "EntityTooLarge"}, 422},
-            {%Fil.InvalidRequestError{reason: :enotdir}, 404},
+            {%Fil.InvalidContentError{reason: {:not_an_image, "not a PNG"}}, 422},
+            {%Fil.InvalidContentError{reason: "EntityTooLarge"}, 422},
+            {%Fil.InvalidPathError{reason: :enotdir}, 404},
             {%Fil.InvalidContentError{reason: {:too_large, 5}}, 413},
             {%Fil.InvalidContentError{reason: {:content_type, "image/gif"}}, 415},
             {%Fil.InvalidContentError{reason: {:content_type_mismatch, "image/png", "image/gif"}}, 415},
@@ -250,8 +251,8 @@ defmodule Fil.PlugTest do
     end
 
     @tag :capture_log
-    test "S3's InvalidRequest is a 500 that's logged, on an upload and a download", %{disk: disk} do
-      error = %Fil.InvalidRequestError{reason: "InvalidRequest"}
+    test "an unknown error is a 500 that's logged, on an upload and a download", %{disk: disk} do
+      error = %Fil.UnknownError{reason: "InvalidRequest"}
       {:ok, _} = Fil.write(disk, "a.txt", "content")
 
       failing =
@@ -577,6 +578,37 @@ defmodule Fil.PlugTest do
       {:ok, _} = Fil.write(gzip, "a.txt", "0123456789")
 
       assert download(gzip, "a.txt", [{"range", "bytes=2-4"}]).resp_body == "234"
+    end
+
+    test "a plugin that reports the size it delivers gets ranges of the transformed content", %{disk: disk} do
+      doubled = PluginHelper.double_reads(disk, &(&1 * 2))
+      {:ok, _} = Fil.write(doubled, "a.txt", "0123456789")
+
+      for {range, body, content_range} <- [
+            {"bytes=0-4", "00112", "bytes 0-4/20"},
+            {"bytes=0-", "00112233445566778899", "bytes 0-19/20"},
+            {"bytes=-5", "78899", "bytes 15-19/20"},
+            {"bytes=10-", "5566778899", "bytes 10-19/20"}
+          ] do
+        conn = download(doubled, "a.txt", [{"range", range}])
+
+        assert {conn.status, conn.resp_body} == {206, body}, range
+        assert get_resp_header(conn, "content-range") == [content_range]
+        assert get_resp_header(conn, "accept-ranges") == ["bytes"]
+      end
+    end
+
+    test "a plugin that reports no size gets the whole file for every range", %{disk: disk} do
+      doubled = PluginHelper.double_reads(disk, fn _size -> nil end)
+      {:ok, _} = Fil.write(doubled, "a.txt", "0123456789")
+
+      for range <- ["bytes=0-4", "bytes=0-", "bytes=-5", "bytes=10-"] do
+        conn = download(doubled, "a.txt", [{"range", range}])
+
+        assert {conn.status, conn.resp_body} == {200, "00112233445566778899"}, range
+        assert get_resp_header(conn, "content-range") == []
+        assert get_resp_header(conn, "accept-ranges") == []
+      end
     end
   end
 
@@ -925,7 +957,7 @@ defmodule Fil.PlugTest do
 
       assert {:error, %Fil.NotFoundError{path: "reports/q4.csv"}} = Fil.Plug.send_file(conn, disk, "reports/q4.csv")
       assert {:error, %Fil.NotFoundError{reason: :eisdir}} = Fil.Plug.send_file(conn, disk, "reports")
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.Plug.send_file(conn, disk, "../a.csv")
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.Plug.send_file(conn, disk, "../a.csv")
       assert conn.state == :unset
     end
 
