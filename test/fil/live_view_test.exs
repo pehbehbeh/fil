@@ -426,13 +426,7 @@ defmodule Fil.LiveViewTest do
     end
 
     test "store_entry/4 takes a file whose size a plugin can't report", %{disk: disk} do
-      unsized =
-        Fil.attach(disk, :unsized, fn op, next, _opts ->
-          case next.(op) do
-            %{name: :stat, result: {:ok, stat}} = op -> Fil.Op.put_result(op, {:ok, %{stat | size: nil}})
-            op -> op
-          end
-        end)
+      unsized = Fil.PluginHelper.sized_stats(disk, fn _size -> nil end)
 
       entry = %UploadEntry{uuid: "0b2e8b8e", client_name: "a.png"}
       meta = LiveViewHelper.direct_meta("avatars/a.png")

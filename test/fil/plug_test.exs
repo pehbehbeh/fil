@@ -1,6 +1,7 @@
 defmodule Fil.PlugTest do
   alias Fil.PlugHelper
   alias Fil.Plugin.URL
+  alias Fil.PluginHelper
 
   use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()
 
@@ -580,7 +581,7 @@ defmodule Fil.PlugTest do
     end
 
     test "a plugin that reports the size it delivers gets ranges of the transformed content", %{disk: disk} do
-      doubled = double_reads(disk, &(&1 * 2))
+      doubled = PluginHelper.double_reads(disk, &(&1 * 2))
       {:ok, _} = Fil.write(doubled, "a.txt", "0123456789")
 
       for {range, body, content_range} <- [
@@ -598,7 +599,7 @@ defmodule Fil.PlugTest do
     end
 
     test "a plugin that reports no size gets the whole file for every range", %{disk: disk} do
-      doubled = double_reads(disk, fn _size -> nil end)
+      doubled = PluginHelper.double_reads(disk, fn _size -> nil end)
       {:ok, _} = Fil.write(doubled, "a.txt", "0123456789")
 
       for range <- ["bytes=0-4", "bytes=0-", "bytes=-5", "bytes=10-"] do
@@ -609,28 +610,6 @@ defmodule Fil.PlugTest do
         assert get_resp_header(conn, "accept-ranges") == []
       end
     end
-  end
-
-  defp double_reads(disk, stat_size) do
-    Fil.attach(disk, :double, fn
-      %Fil.Op{name: :read} = op, next, _opts ->
-        op
-        |> next.()
-        |> Fil.Op.update_result(iodata: &for(<<byte <- &1>>, into: "", do: <<byte, byte>>))
-
-      %Fil.Op{name: :stat} = op, next, _opts ->
-        case next.(op) do
-          %{result: {:ok, stat}} = op ->
-            size = stat_size.(stat.size)
-            Fil.Op.put_result(op, {:ok, %{stat | size: size}})
-
-          op ->
-            op
-        end
-
-      op, next, _opts ->
-        next.(op)
-    end)
   end
 
   describe "public: true" do

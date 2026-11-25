@@ -274,23 +274,7 @@ defmodule Fil.PluginsTest do
     end
 
     test "a plugin that changes the size of reads reports the same size from stat and ls", %{disk: disk} do
-      doubled =
-        Fil.attach(disk, :double, fn op, next, _opts ->
-          case next.(op) do
-            %{name: :read} = op ->
-              Op.update_result(op, iodata: &for(<<byte <- &1>>, into: "", do: <<byte, byte>>))
-
-            %{name: :stat, result: {:ok, stat}} = op ->
-              Op.put_result(op, {:ok, %{stat | size: stat.size * 2}})
-
-            %{name: :ls, result: {:ok, refs}} = op ->
-              refs = Enum.map(refs, &update_in(&1.stat.size, fn size -> size * 2 end))
-              Op.put_result(op, {:ok, refs})
-
-            op ->
-              op
-          end
-        end)
+      doubled = Fil.PluginHelper.double_reads(disk, &(&1 * 2))
 
       {:ok, _} = Fil.write(doubled, "a.txt", "0123456789")
 
