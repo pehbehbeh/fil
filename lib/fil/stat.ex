@@ -5,7 +5,9 @@ defmodule Fil.Stat do
   A field is `nil` when the storage doesn't know it. Object stores have no directories to stat, and the local filesystem
   stores no content type.
 
-    * `:size`: size in bytes (`nil` for directories on object stores)
+    * `:size`: size in bytes of the content as `Fil.read/3` returns it (`nil` for directories on object stores). A
+      plugin that changes the size of reads reports the size it delivers, or `nil` when it can't know it without reading
+      the file (see [Ranges](plugins.md#ranges))
     * `:type`: `:regular` or `:directory`
     * `:mtime`: last modification time as a `DateTime` in UTC
     * `:etag`: an opaque version tag. `Fil.Adapter.Local` derives one from the size and the modification time

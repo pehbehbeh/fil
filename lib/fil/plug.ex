@@ -161,17 +161,19 @@ if Code.ensure_loaded?(Plug) do
         the extension, and the `content-disposition` the URL was signed with (`disposition:`). A type a browser runs
         changes both (see [Security](#module-security)). The file is streamed as a chunked response, so it never has to
         fit in memory
-      * downloads send `etag` and `last-modified` from `Fil.stat/3` and `accept-ranges: bytes`. A request whose
-        `if-none-match` lists the etag (or is `*`) gets a `304` without a body, and so does one without `if-none-match`
-        whose `if-modified-since` isn't older than the file. The etag is sent as a strong validator on every adapter,
-        including the `"size-mtime"` tag of `Fil.Adapter.Local`, as nginx and `Plug.Static` do
+      * downloads send `etag` and `last-modified` from `Fil.stat/3`, and `accept-ranges: bytes` when the stat has a
+        size. A request whose `if-none-match` lists the etag (or is `*`) gets a `304` without a body, and so does one
+        without `if-none-match` whose `if-modified-since` isn't older than the file. The etag is sent as a strong
+        validator on every adapter, including the `"size-mtime"` tag of `Fil.Adapter.Local`, as nginx and `Plug.Static`
+        do
       * a `GET` with one byte range (`range: bytes=0-1023`, `bytes=1024-` or `bytes=-1024`) gets a `206` with that part
         and its `content-range`, read from the storage with `Fil.stream/3`'s `offset:` and `length:`. A range that
         starts at or after the end of the file is a `416`. Several ranges, a range the plug can't parse, and an
         `if-range` that's neither the etag nor the exact `last-modified` get a `200` with the whole file. Ranges work
         with signed URLs too, because the signature covers the method, the path and the query, not the headers.
         Offsets count bytes of the content as plugins return it, and the total in `content-range` is the size
-        `Fil.stat/3` returns, so a plugin that changes the size of the content should change it in the stat too
+        `Fil.stat/3` returns. A plugin that changes the size of reads reports it there (see
+        [Ranges](plugins.md#ranges)), and a file whose stat has no size gets a `200` with the whole file for every range
       * `PUT` on a URL from `Fil.signed_upload/3` writes the request body, with the request's `content-type`, the same
         as a presigned PUT on S3. The body is streamed into `Fil.write/4` as it's read, with the `content-length` as
         `size:`. Plugins attached to the disk run as for any other write. An upload signed with `content_type:` or
@@ -498,9 +500,10 @@ if Code.ensure_loaded?(Plug) do
     defp check_regular(%Fil.Stat{type: :directory}, ref),
       do: {:error, %Fil.NotFoundError{reason: :eisdir, op: :stat, path: ref.path, disk: ref.disk}}
 
+    # A file without a size gets no ranges (`Conditional.range/3`), so none are offered.
     defp put_validators(conn, stat) do
       headers = [
-        {"accept-ranges", "bytes"},
+        {"accept-ranges", if(is_integer(stat.size), do: "bytes")},
         {"etag", Conditional.etag(stat)},
         {"last-modified", Conditional.last_modified(stat)}
       ]

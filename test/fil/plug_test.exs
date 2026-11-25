@@ -1,6 +1,7 @@
 defmodule Fil.PlugTest do
   alias Fil.PlugHelper
   alias Fil.Plugin.URL
+  alias Fil.PluginHelper
 
   use ExUnit.Case, async: true, parameterize: Fil.DiskHelper.adapters()
 
@@ -577,6 +578,37 @@ defmodule Fil.PlugTest do
       {:ok, _} = Fil.write(gzip, "a.txt", "0123456789")
 
       assert download(gzip, "a.txt", [{"range", "bytes=2-4"}]).resp_body == "234"
+    end
+
+    test "a plugin that reports the size it delivers gets ranges of the transformed content", %{disk: disk} do
+      doubled = PluginHelper.double_reads(disk, &(&1 * 2))
+      {:ok, _} = Fil.write(doubled, "a.txt", "0123456789")
+
+      for {range, body, content_range} <- [
+            {"bytes=0-4", "00112", "bytes 0-4/20"},
+            {"bytes=0-", "00112233445566778899", "bytes 0-19/20"},
+            {"bytes=-5", "78899", "bytes 15-19/20"},
+            {"bytes=10-", "5566778899", "bytes 10-19/20"}
+          ] do
+        conn = download(doubled, "a.txt", [{"range", range}])
+
+        assert {conn.status, conn.resp_body} == {206, body}, range
+        assert get_resp_header(conn, "content-range") == [content_range]
+        assert get_resp_header(conn, "accept-ranges") == ["bytes"]
+      end
+    end
+
+    test "a plugin that reports no size gets the whole file for every range", %{disk: disk} do
+      doubled = PluginHelper.double_reads(disk, fn _size -> nil end)
+      {:ok, _} = Fil.write(doubled, "a.txt", "0123456789")
+
+      for range <- ["bytes=0-4", "bytes=0-", "bytes=-5", "bytes=10-"] do
+        conn = download(doubled, "a.txt", [{"range", range}])
+
+        assert {conn.status, conn.resp_body} == {200, "00112233445566778899"}, range
+        assert get_resp_header(conn, "content-range") == []
+        assert get_resp_header(conn, "accept-ranges") == []
+      end
     end
   end
 

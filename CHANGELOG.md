@@ -50,6 +50,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   returns `Fil.AlreadyExistsError` with `if_exists: :error`, instead of S3's `InvalidRequest`.
   ([#77](https://github.com/pehbehbeh/fil/pull/77))
 
+### Fixed
+
+- `Fil.Plug` serves the right ranges with a plugin that changes the size of reads, once the plugin follows the new rule
+  for sizes: `Fil.stat/3` and `Fil.ls/3` report the size of the content as `Fil.read/3` returns it, so such a plugin
+  sets `size` in its `:stat` and `:ls` results to the size it delivers, or to `nil` when it can't know it (see
+  [Ranges](https://fil.hexdocs.pm/plugins.html#ranges)). A file without a size gets a `200` with the whole file and no
+  `accept-ranges`, and `Fil.LiveView` no longer refuses a direct upload without a size as larger than `max_file_size:`.
+  ([#75](https://github.com/pehbehbeh/fil/pull/75))
+
 ### Security
 
 - `Fil.Plug` and `Fil.Plug.send_file` send `x-content-type-options: nosniff` with every response, and send HTML, XML,
