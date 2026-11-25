@@ -287,9 +287,15 @@ resolves a range against the size in the stat and sends it as the total in `cont
 size of reads sets `size` in the `:stat` result and in the stats of the `:ls` result to the size it delivers. A plugin
 that can't know that size without reading the file, such as one that decompresses, sets it to `nil`. `Fil.Plug` then
 answers every range request with the whole file and sends no `accept-ranges`. The etag stays the storage's own, so
-conditional requests work either way. For the gzip plugin above:
+conditional requests work either way. For the gzip plugin above, with its read clause moved into the `case`:
 
 ```elixir
+def call(%Fil.Op{name: :write} = op, next, _opts) do
+  op
+  |> Fil.Op.update_content(iodata: &:zlib.gzip/1, stream: &gzip/1)
+  |> next.()
+end
+
 def call(op, next, _opts) do
   case next.(op) do
     %Fil.Op{name: :read} = op ->
@@ -308,7 +314,15 @@ def call(op, next, _opts) do
 end
 ```
 
-Directories on object stores already have `size: nil`, so a plugin that computes a new size skips stats without one.
+A plugin that knows the size it delivers reports that instead of `nil`. One that puts a fixed `@header` before every
+read adds its length, and skips stats without a size, such as directories on object stores:
+
+```elixir
+defp delivered(%Fil.Stat{size: size} = stat) when is_integer(size), do: %{stat | size: size + byte_size(@header)}
+defp delivered(stat), do: stat
+```
+
+It applies `delivered/1` to the `:stat` result and to each stat of the `:ls` result, as the gzip plugin sets `nil`.
 
 ## Inspecting content
 

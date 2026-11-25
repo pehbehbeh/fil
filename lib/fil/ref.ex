@@ -14,12 +14,12 @@ defmodule Fil.Ref do
   ## The `:stat` field
 
   `Fil.ls/2` fills in `:stat` from the listing, so you can filter a listing by size and then read, copy or delete the
-  same values:
+  same values (a plugin can report `size: nil`, which sorts above every number):
 
       {:ok, reports} = Fil.ls(disk, "reports")
 
       reports
-      |> Enum.filter(&(&1.stat.type == :regular and &1.stat.size > 1_000_000))
+      |> Enum.filter(&(&1.stat.type == :regular and is_integer(&1.stat.size) and &1.stat.size > 1_000_000))
       |> Enum.each(&Fil.rm/1)
 
   The stat is a snapshot from the time of the listing. Operations ignore it and never treat it as the current state, and
