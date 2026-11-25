@@ -533,6 +533,19 @@ defmodule Fil.Adapter.ZipTest do
 
       assert Fil.read(disk, "damaged.txt", offset: 1) == {:ok, "bc"}
     end
+
+    test "with a wrong CRC-32 fail for a range that covers the whole entry", %{disk: disk} do
+      for {path, size} <- [{"damaged.txt", 3}, {"damaged-deflated.txt", byte_size(@guide)}],
+          opts <- [[offset: 0, length: size], [offset: 0, length: size + 10]] do
+        assert {:error, %Fil.ChecksumMismatchError{reason: :checksum_mismatch}} = Fil.read(disk, path, opts)
+
+        assert_raise Fil.ChecksumMismatchError, fn ->
+          disk
+          |> Fil.stream!(path, opts)
+          |> Enum.join()
+        end
+      end
+    end
   end
 
   describe "archives that can't be read" do
@@ -580,6 +593,8 @@ defmodule Fil.Adapter.ZipTest do
     test "with an entry past the central directory or a stored entry of two sizes are damaged", %{archives: archives} do
       for {name, entry} <- [
             {"offset.zip", %{name: "a.txt", content: "abc", offset: 10_000}},
+            # Overlaps the central directory only by the length of its name.
+            {"overlap.zip", %{name: "a.txt", content: "abc", offset: 3}},
             {"sizes.zip", %{name: "a.txt", content: "abc", size: 5}}
           ] do
         disk = zip_disk(archives, ZipHelper.build([entry]), name)

@@ -21,6 +21,7 @@ defmodule Fil.Adapter.Zip.CentralDirectory do
   @zip64_end_size 56
   @tail_size @end_size + @max_comment + @zip64_locator_size + @zip64_end_size
 
+  @local_header_size 30
   @zip64_extra 0x0001
   @timestamp_extra 0x5455
 
@@ -171,17 +172,19 @@ defmodule Fil.Adapter.Zip.CentralDirectory do
       local_guess: name_length + extra_length
     }
 
-    with {:ok, header} <- header(fields, extras(extra, %{}), {time, date}, cd_offset) do
+    with {:ok, header} <- header(fields, extras(extra, %{}), {time, date}, {cd_offset, name_length}) do
       entries(rest, cd_offset, add_entry(acc, name, header))
     end
   end
 
   defp entries(_damaged, _cd_offset, _acc), do: {:error, Archive.bad_archive(:central_directory)}
 
-  # The fields with their Zip64 values and the time, once they're checked.
-  defp header(fields, extras, {time, date}, cd_offset) do
+  # The fields with their Zip64 values and the time, once they're checked. The entry's end counts the name, which the
+  # local header repeats, but not the extra field, whose local length can be shorter (a Zip64 one has no offset there).
+  defp header(fields, extras, {time, date}, {cd_offset, name_length}) do
     with {:ok, size, compressed_size, offset} <- zip64_sizes(extras, fields),
-         :ok <- check_entry(fields.method, size, compressed_size, offset + 30 + compressed_size, cd_offset) do
+         entry_end = offset + @local_header_size + name_length + compressed_size,
+         :ok <- check_entry(fields.method, size, compressed_size, entry_end, cd_offset) do
       fields = %{fields | size: size, compressed_size: compressed_size, offset: offset}
       {:ok, Map.put(fields, :mtime, mtime(extras, time, date))}
     end

@@ -46,7 +46,14 @@ defmodule Fil.Adapter.Zip.Entry do
   """
   @spec read(Fil.Ref.t(), t(), ByteRange.t() | nil) :: {:ok, binary()} | {:error, Fil.error()}
   def read(archive, entry, range) do
-    with :ok <- check_readable(entry), do: read_content(archive, entry, range)
+    with :ok <- check_readable(entry), do: read_content(archive, entry, part(range, entry))
+  end
+
+  # A range that covers the whole entry reads it whole, so the CRC-32 is checked.
+  defp part(nil, _entry), do: nil
+
+  defp part(range, entry) do
+    if ByteRange.clamp(range, entry.size) == {0, entry.size}, do: nil, else: range
   end
 
   defp read_content(archive, %__MODULE__{method: @stored} = entry, nil) do
@@ -97,6 +104,7 @@ defmodule Fil.Adapter.Zip.Entry do
   @spec stream(Fil.Ref.t(), t(), ByteRange.t() | nil) ::
           {:ok, Enumerable.t(), non_neg_integer()} | {:error, Fil.error()}
   def stream(archive, entry, range) do
+    range = part(range, entry)
     {start, count} = ByteRange.clamp(range || {0, nil}, entry.size)
 
     with :ok <- check_readable(entry),
