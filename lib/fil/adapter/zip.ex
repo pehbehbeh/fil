@@ -24,8 +24,8 @@ defmodule Fil.Adapter.Zip do
   to another disk to change it there.
 
   The adapter reads only the parts of the archive it needs, with ranged reads (`offset:` and `length:`), so a file in a
-  large archive on S3 costs a few requests and not a download of the archive. It reads entries that are stored or
-  compressed with deflate, the two methods zip tools use, and archives with Zip64 sizes.
+  large archive on S3 costs a few requests and not a download of the archive (see [Reads](#module-reads)). It reads
+  entries that are stored or compressed with deflate, the two methods zip tools use, and archives with Zip64 sizes.
 
   ## Options
 
@@ -44,6 +44,7 @@ defmodule Fil.Adapter.Zip do
       extra field than the directory says.
     * With `offset:` and `length:`, reads the local header, then only that part of a stored entry. A compressed entry
       is streamed and inflated from its start up to the end of the part, because deflate can't start in the middle.
+      A range that covers the whole entry is read like the whole entry.
     * Checks a whole entry against the CRC-32 the archive stores, with or without `verify_checksum: true`. An entry that
       doesn't match returns a `Fil.ChecksumMismatchError`.
     * Never inflates more than the size the archive declares for the entry (see [Damage](#module-damage)).
@@ -115,8 +116,13 @@ defmodule Fil.Adapter.Zip do
   The disk keeps nothing between calls, so every call reads the archive's directory again: a stat of the archive, then
   a ranged read of its last 64 KiB or so, which holds the end of the directory and in a small archive all of it. A
   larger directory takes one more ranged read. On S3 or Azure, that's two or three requests for a stat or a listing,
-  and one or two more for the content of an entry. An archive with many thousands of entries has a directory of
+  and one or two more for a whole read of an entry or a part of a stored one. A stream, a part of a compressed entry
+  and a checksum other than `:crc32` read the local header and then stream the content with `Fil.stream/3` on the
+  archive, which on S3 is a HeadObject and a GetObject. An archive with many thousands of entries has a directory of
   several megabytes, which every call reads and parses again.
+
+  A plugin that transforms reads on the archive's disk gets the whole archive for every ranged read (see
+  [Ranges](plugins.md#ranges)), so on such a disk every read of an entry downloads the archive.
 
   ### Entry names
 
@@ -137,6 +143,10 @@ defmodule Fil.Adapter.Zip do
   Damage to one entry fails only that entry: a local header that isn't one, deflate data that can't be inflated, and
   content of another size than the archive declares. A deflated entry can expand a thousandfold, so the adapter stops
   as soon as an entry inflates past its declared size, and never holds or yields more than that.
+
+  An entry that declares its size truthfully can still be a thousand times larger than the archive, and `Fil.read/3`
+  holds all of it in memory. For archives from untrusted sources, check `:size` from `Fil.stat/3`, which reads only
+  the directory, before reading an entry, or use `Fil.stream/3`, which holds one chunk at a time.
 
   ### Conformance
 
