@@ -32,7 +32,7 @@ defmodule Fil.Adapter.Local do
   ### `Fil.read/3`
 
     * Uses `File.read/1`, or `:file.pread/3` to read only the part that `offset:` and `length:` ask for.
-    * Reading a directory returns a `Fil.InvalidRequestError`.
+    * Reading a directory returns a `Fil.InvalidPathError`.
     * Ignores `verify_checksum: true`, because the filesystem stores no checksums.
 
   ### `Fil.stream/3`
@@ -49,12 +49,12 @@ defmodule Fil.Adapter.Local do
     * With `if_exists: :error`, hard-links the temporary file to the destination instead, which fails if the destination
       exists. On a filesystem without hard links, it creates the destination with `O_EXCL` first.
     * Ignores `checksum:`.
-    * Writing over a directory, or to `report.txt/x` when `report.txt` is a file, returns a `Fil.InvalidRequestError`.
+    * Writing over a directory, or to `report.txt/x` when `report.txt` is a file, returns a `Fil.InvalidPathError`.
 
   ### `Fil.rm/3`
 
     * Uses `File.rm/1`. A missing file counts as success.
-    * Removing a directory returns a `Fil.InvalidRequestError`.
+    * Removing a directory returns a `Fil.InvalidPathError`.
 
   ### `Fil.stat/3`
 
@@ -78,7 +78,7 @@ defmodule Fil.Adapter.Local do
     * With `if_exists: :error`, copies to a temporary `.fil-` file instead and hard-links it to the destination, like a
       write.
     * A copy that fails removes the directories it created, like a write.
-    * Copying a directory returns a `Fil.InvalidRequestError`.
+    * Copying a directory returns a `Fil.InvalidPathError`.
     * A copy onto itself leaves the file as it is. With `if_exists: :error`, it returns a `Fil.AlreadyExistsError`.
 
   ### `Fil.rename/4`
@@ -130,10 +130,10 @@ defmodule Fil.Adapter.Local do
   | --- | --- | --- |
   | a missing file or directory, or a path through a file (`report.txt/x`) | `Fil.NotFoundError` | `:enoent` |
   | missing permissions, a read-only filesystem | `Fil.AccessDeniedError` | `:eacces`, `:eperm`, `:erofs` |
-  | reading, copying or deleting a directory, or writing over one | `Fil.InvalidRequestError` | `:eisdir` |
-  | writing, copying or renaming to a path under a file | `Fil.InvalidRequestError` | `:enotdir` |
-  | a name that's too long, a symlink loop | `Fil.InvalidRequestError` | `:enametoolong`, `:eloop` |
-  | a path that resolves outside the root | `Fil.InvalidRequestError` | `:ebadpath` |
+  | reading, copying or deleting a directory, or writing over one | `Fil.InvalidPathError` | `:eisdir` |
+  | writing, copying or renaming to a path under a file | `Fil.InvalidPathError` | `:enotdir` |
+  | a name that's too long, a symlink loop | `Fil.InvalidPathError` | `:enametoolong`, `:eloop` |
+  | a path that resolves outside the root | `Fil.InvalidPathError` | `:ebadpath` |
   | an exclusive create finding the file already there | `Fil.AlreadyExistsError` | `:eexist` |
   | a source that a write replaced during a move with `if_exists: :error` | `Fil.ConflictError` | `:source_changed` |
   | a full disk, a used-up quota | `Fil.StorageFullError` | `:enospc`, `:edquot` |
@@ -580,7 +580,7 @@ defmodule Fil.Adapter.Local do
   def to_struct(reason) when reason in [:eacces, :eperm, :erofs], do: %Fil.AccessDeniedError{reason: reason}
 
   def to_struct(reason) when reason in [:eisdir, :enotdir, :enametoolong, :eloop, :ebadpath],
-    do: %Fil.InvalidRequestError{reason: reason}
+    do: %Fil.InvalidPathError{reason: reason}
 
   def to_struct(:eexist), do: %Fil.AlreadyExistsError{reason: :eexist}
   def to_struct(reason) when reason in [:enospc, :edquot], do: %Fil.StorageFullError{reason: reason}
@@ -651,7 +651,7 @@ defmodule Fil.Adapter.Local do
   defp missing(result), do: result
 
   # Deleting a directory is `:eperm` on macOS and Linux, and an exclusive create on one is `:eexist`. This runs before
-  # `to_struct/1`, so a directory is an invalid request, not denied access.
+  # `to_struct/1`, so a directory is an invalid path, not denied access.
   defp directory_or(full, reason), do: if(File.dir?(full), do: :eisdir, else: reason)
 
   ## ------------------------------------------------------------------

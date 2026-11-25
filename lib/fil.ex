@@ -23,7 +23,7 @@ defmodule Fil do
   @type error ::
           Fil.NotFoundError.t()
           | Fil.AccessDeniedError.t()
-          | Fil.InvalidRequestError.t()
+          | Fil.InvalidPathError.t()
           | Fil.InvalidContentError.t()
           | Fil.AlreadyExistsError.t()
           | Fil.ConflictError.t()

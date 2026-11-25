@@ -42,8 +42,8 @@ The Hex package is `fil`.
   `File.read/1`"), then each place where the adapter departs from the contract in `Fil.Adapter`. The callbacks stay
   without `@doc` (`@impl` hides them), because users call `Fil`, never the adapter; calling it directly would skip path
   checks, plugins and the error fields `Fil.Op` fills in.
-- **Storage features stay in adapters:** anything the storage has to do itself (checksums, conditional writes,
-  URLs) is an adapter option, not a plugin. So is addressing (root, bucket, prefix).
+- **Storage features stay in adapters:** anything the storage has to do itself (checksums, conditional writes, URLs
+  the storage signs) is an adapter option, not a plugin. So is addressing (root, bucket, prefix).
 - **Wording:** "adapter" is the module (`Fil.Adapter.S3`), "storage" is what's behind it (S3, the filesystem): "the same
   on every adapter", "the storage refused access". Don't say "backend".
 - **Namespaces:** `Fil.Adapter.*` is only for adapters and their private parts, `Fil.Plugin.*` only for plugins. A large

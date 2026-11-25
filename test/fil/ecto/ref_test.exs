@@ -268,7 +268,7 @@ defmodule Fil.Ecto.RefTest do
       params = Fil.Ecto.Ref.init(disk: &Storage.uploads/0)
 
       assert {:ok, %Fil.Ref{path: "../x.png", disk: ^disk} = escape} = Fil.Ecto.Ref.load("../x.png", nil, params)
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.read(escape)
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.read(escape)
       assert {:ok, %Fil.Ref{path: "."}} = Fil.Ecto.Ref.load("", nil, params)
     end
   end

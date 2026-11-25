@@ -168,9 +168,9 @@ defmodule Fil.PlugTest do
       for {error, status} <- [
             {%Fil.AlreadyExistsError{reason: :eexist}, 409},
             {%Fil.ConflictError{reason: :size_changed}, 409},
-            {%Fil.InvalidRequestError{reason: {:not_an_image, "not a PNG"}}, 422},
-            {%Fil.InvalidRequestError{reason: "EntityTooLarge"}, 422},
-            {%Fil.InvalidRequestError{reason: :enotdir}, 404},
+            {%Fil.InvalidContentError{reason: {:not_an_image, "not a PNG"}}, 422},
+            {%Fil.InvalidContentError{reason: "EntityTooLarge"}, 422},
+            {%Fil.InvalidPathError{reason: :enotdir}, 404},
             {%Fil.InvalidContentError{reason: {:too_large, 5}}, 413},
             {%Fil.InvalidContentError{reason: {:content_type, "image/gif"}}, 415},
             {%Fil.InvalidContentError{reason: {:content_type_mismatch, "image/png", "image/gif"}}, 415},
@@ -250,8 +250,8 @@ defmodule Fil.PlugTest do
     end
 
     @tag :capture_log
-    test "S3's InvalidRequest is a 500 that's logged, on an upload and a download", %{disk: disk} do
-      error = %Fil.InvalidRequestError{reason: "InvalidRequest"}
+    test "an unknown error is a 500 that's logged, on an upload and a download", %{disk: disk} do
+      error = %Fil.UnknownError{reason: "InvalidRequest"}
       {:ok, _} = Fil.write(disk, "a.txt", "content")
 
       failing =
@@ -978,7 +978,7 @@ defmodule Fil.PlugTest do
 
       assert {:error, %Fil.NotFoundError{path: "reports/q4.csv"}} = Fil.Plug.send_file(conn, disk, "reports/q4.csv")
       assert {:error, %Fil.NotFoundError{reason: :eisdir}} = Fil.Plug.send_file(conn, disk, "reports")
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.Plug.send_file(conn, disk, "../a.csv")
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.Plug.send_file(conn, disk, "../a.csv")
       assert conn.state == :unset
     end
 

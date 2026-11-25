@@ -186,14 +186,13 @@ if Code.ensure_loaded?(Plug) do
         [Mounting](#module-mounting)) a `400`. Neither writes anything
       * a missing file gets a `404`, and so does a file the storage denies access to, so a client can't tell which
         files exist
-      * a failed write gets a `409` if the file already exists or changed meanwhile, `422` if the disk refuses the
-        content (a `Fil.InvalidRequestError` about the content, such as from `Fil.Plugin.Thumbnails` for a file that
-        isn't an image), `507` if the storage is full and `503` if it's unavailable. Any other error is a `500` with a
-        generic body, and its message goes to the `Logger`. So is S3's `InvalidRequest`, on a download too, because S3
-        sends it for problems with the request or the bucket's configuration as well
-      * an upload a plugin refuses with a `Fil.InvalidContentError`, before or while the body is read, gets a `413` for
-        content that's too large, a `415` for a content type or an extension the disk doesn't take, and a `422` for
-        anything else. Nothing is written, and the body doesn't say which rule the upload broke
+      * a path the disk can't use (`Fil.InvalidPathError`) gets a `404`, on an upload too
+      * a failed write gets a `409` if the file already exists or changed meanwhile, `507` if the storage is full and
+        `503` if it's unavailable. Any other error is a `500` with a generic body, and its message goes to the `Logger`
+      * an upload the disk refuses with a `Fil.InvalidContentError`, before or while the body is read, gets a `413` for
+        `{:too_large, _}`, a `415` for a content type or an extension the disk doesn't take, and a `422` for anything
+        else, such as content over the storage's size limit. Nothing is written, and the body doesn't say which rule
+        the upload broke
 
     ## Security
 
@@ -260,14 +259,6 @@ if Code.ensure_loaded?(Plug) do
 
     # The most an upload is read at a time.
     @read_length 1_048_576
-
-    # The reasons of a `Fil.InvalidRequestError` that are about the path, not the content (see the adapters' tables).
-    @path_reasons [:ebadpath, :eisdir, :enotdir, :enametoolong, :eloop, "KeyTooLongError"]
-
-    # The reasons of a `Fil.InvalidRequestError` that are about the request or the storage's configuration, which the
-    # client can't fix. S3 sends `InvalidRequest` for a PutObject without `Content-MD5` in a bucket with object lock, or
-    # with a checksum header it doesn't support, for example. They're a `500` that's logged, like an unknown error.
-    @request_reasons ["InvalidRequest"]
 
     @impl Plug
     def init(opts) do
@@ -772,7 +763,7 @@ if Code.ensure_loaded?(Plug) do
       send_error(conn, 400, "the request body was already read, probably by Plug.Parsers")
     end
 
-    # An upload a plugin refuses (`Fil.InvalidContentError`) gets a status for what was wrong with it. The body never
+    # An upload the disk refuses (`Fil.InvalidContentError`) gets a status for what was wrong with it. The body never
     # has the reason, which a plugin may have filled with anything.
     defp send_write_error(conn, %Fil.InvalidContentError{reason: {:too_large, _max}}),
       do: send_error(conn, 413, "the content is too large")
@@ -784,20 +775,11 @@ if Code.ensure_loaded?(Plug) do
 
     defp send_write_error(conn, %Fil.InvalidContentError{}), do: send_error(conn, 422, "the content was rejected")
 
-    # An upload the disk refuses for its content is a 422. One refused for its path is a 404, as on a download.
-    defp send_write_error(conn, %Fil.InvalidRequestError{reason: reason})
-         when reason not in @path_reasons and reason not in @request_reasons,
-         do: send_error(conn, 422, "the content can't be stored here")
-
     defp send_write_error(conn, error), do: send_fil_error(conn, error)
 
-    defp send_fil_error(conn, %Fil.InvalidRequestError{reason: reason} = error) when reason in @request_reasons,
-      do: send_server_error(conn, error)
-
     # A denied file is a 404 too, so a client can't tell which files exist.
-    defp send_fil_error(conn, %error{})
-         when error in [Fil.NotFoundError, Fil.AccessDeniedError, Fil.InvalidRequestError],
-         do: send_error(conn, 404, "not found")
+    defp send_fil_error(conn, %error{}) when error in [Fil.NotFoundError, Fil.AccessDeniedError, Fil.InvalidPathError],
+      do: send_error(conn, 404, "not found")
 
     defp send_fil_error(conn, %Fil.AlreadyExistsError{}), do: send_error(conn, 409, "the file already exists")
     defp send_fil_error(conn, %Fil.ConflictError{}), do: send_error(conn, 409, "the file changed, try again")

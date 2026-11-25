@@ -339,7 +339,7 @@ def handle_event("save", _params, socket) do
   end
 end
 
-defp avatar_error(%Fil.InvalidRequestError{reason: :extension}), do: "Only .jpg and .png files can be uploaded."
+defp avatar_error(%Fil.InvalidContentError{reason: :extension}), do: "Only .jpg and .png files can be uploaded."
 defp avatar_error(%Fil.AlreadyExistsError{}), do: "This file was uploaded already."
 
 defp avatar_error(error) do

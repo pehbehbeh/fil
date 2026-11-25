@@ -349,7 +349,7 @@ that called it.
 
 A plugin may rewrite `op.path` (to put everything under a tenant prefix, for example). The path is normalized again
 before the adapter sees it, so a rewritten path can't escape the disk root either: it fails with a
-`Fil.InvalidRequestError` whose `:reason` is `:ebadpath`.
+`Fil.InvalidPathError` whose `:reason` is `:ebadpath`.
 
 ## Copies and renames
 

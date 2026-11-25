@@ -38,7 +38,7 @@ defmodule Fil.Plugin.URLTest do
     end
 
     test "rejects paths escaping the root", %{disk: disk} do
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.url(disk, "../a.txt")
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.url(disk, "../a.txt")
     end
   end
 
@@ -128,7 +128,7 @@ defmodule Fil.Plugin.URLTest do
     end
 
     test "rejects paths escaping the root", %{disk: disk} do
-      assert {:error, %Fil.InvalidRequestError{reason: :ebadpath}} = Fil.signed_url(disk, "../a.txt")
+      assert {:error, %Fil.InvalidPathError{reason: :ebadpath}} = Fil.signed_url(disk, "../a.txt")
     end
 
     test "leaves signing to the adapter without a secret", %{tmp_dir: tmp_dir} do
