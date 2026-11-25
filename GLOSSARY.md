@@ -28,7 +28,7 @@ storage, whatever their credentials.
 
 **Contract**:
 The behaviour every adapter has to show, written down in `Fil.Adapter` (its moduledoc and the callback docs) and tested
-by `Fil.AdapterCase` on every adapter except `Fil.Adapter.Null`.
+by `Fil.AdapterCase` on every adapter except `Fil.Adapter.Null` and the read-only `Fil.Adapter.Zip`.
 
 ## Files
 

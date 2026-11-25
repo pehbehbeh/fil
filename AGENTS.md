@@ -30,7 +30,7 @@ The Hex package is `fil`.
   live in `guides/plugins.md` only, not in the README. A new plugin goes into the list of shipped plugins at the top of
   that guide, by hand.
 - **Same behaviour on every adapter:** critical behaviour (read, write, stream, list, copy, checksums, public and signed
-  URLs) works on every disk (except `Fil.Adapter.Null`, whose writes never read back, and the read-only
+  URLs) works on every disk (except `Fil.Adapter.Null`, whose writes never read back, and the writes of the read-only
   `Fil.Adapter.Zip`). When the storage lacks a feature, `Fil` fills the gap with a plugin (`Fil.Plugin.URL` builds and
   signs URLs for Local and Memory, and `Fil.Plug` serves them) instead of leaving the user with a
   `Fil.UnsupportedError`. Differences that remain are edge cases, documented on the adapter's own page and nowhere else.
