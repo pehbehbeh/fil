@@ -53,7 +53,7 @@ defmodule Fil.Adapter.Zip.Entry do
   defp part(nil, _entry), do: nil
 
   defp part(range, entry) do
-    if ByteRange.clamp(range, entry.size) == {0, entry.size}, do: nil, else: range
+    if ByteRange.clamp(range, entry.size) != {0, entry.size}, do: range
   end
 
   defp read_content(archive, %__MODULE__{method: @stored} = entry, nil) do
