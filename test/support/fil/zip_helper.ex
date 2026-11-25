@@ -29,7 +29,6 @@ defmodule Fil.ZipHelper do
       directory <> ending(count, cd_size, byte_size(data), zip64?) <> <<byte_size(comment)::16-little, comment::binary>>
   end
 
-  # The local headers with their content, and the central directory.
   defp entries(entries, zip64?) do
     {locals, centrals, _offset} =
       Enum.reduce(entries, {[], [], 0}, fn entry, {locals, centrals, offset} ->

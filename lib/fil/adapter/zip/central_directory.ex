@@ -41,7 +41,6 @@ defmodule Fil.Adapter.Zip.CentralDirectory do
     end
   end
 
-  # The central directory and where it starts, from the tail if it holds all of it.
   defp directory(archive, tail, tail_start) do
     with {:ok, end_at} <- find_end(tail, tail_start),
          {:ok, cd_size, cd_offset} <- end_record(archive, tail, tail_start, end_at),
@@ -93,10 +92,9 @@ defmodule Fil.Adapter.Zip.CentralDirectory do
     <<_before::binary-size(^end_at), _signature::32, _disk::16, _cd_disk::16, _disk_entries::16, count::16-little,
       cd_size::32-little, cd_offset::32-little, _rest::binary>> = tail
 
-    # The central directory is read to its end, so the number of entries is only needed to spot a Zip64 archive.
-
-    # An archive can have exactly 0xFFFF entries or such a size without being a Zip64 archive, so the 32-bit values
-    # count when there's no Zip64 locator.
+    # The central directory is read to its end, so the number of entries is only needed to spot a Zip64 archive. An
+    # archive can have exactly 0xFFFF entries or such a size without being a Zip64 archive, so the 32-bit values count
+    # when there's no Zip64 locator.
     zip64? = count == 0xFFFF or cd_size == 0xFFFFFFFF or cd_offset == 0xFFFFFFFF
 
     case zip64? && locator(tail, end_at) do
@@ -140,7 +138,6 @@ defmodule Fil.Adapter.Zip.CentralDirectory do
   defp check_bounds(cd_end, end_offset) when cd_end <= end_offset, do: :ok
   defp check_bounds(_cd_end, _end_offset), do: {:error, Archive.bad_archive(:central_directory)}
 
-  # Bytes the tail already holds aren't read again.
   defp slice_or_read(_archive, tail, tail_start, offset, length)
        when offset >= tail_start and offset - tail_start + length <= byte_size(tail),
        do: {:ok, binary_part(tail, offset - tail_start, length)}

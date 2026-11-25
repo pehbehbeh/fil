@@ -201,18 +201,14 @@ defmodule Fil.Adapter.Zip do
 
   @impl Fil.Adapter
   def read(state, path, opts) do
-    with {:ok, entries} <- CentralDirectory.read(state.archive),
-         {:ok, entry} <- fetch_file(entries, path) do
-      Entry.read(state.archive, entry, ByteRange.from_options(opts))
-    end
+    range = ByteRange.from_options(opts)
+    with_file(state, path, &Entry.read(state.archive, &1, range))
   end
 
   @impl Fil.Adapter
   def stream(state, path, opts) do
-    with {:ok, entries} <- CentralDirectory.read(state.archive),
-         {:ok, entry} <- fetch_file(entries, path) do
-      Entry.stream(state.archive, entry, ByteRange.from_options(opts))
-    end
+    range = ByteRange.from_options(opts)
+    with_file(state, path, &Entry.stream(state.archive, &1, range))
   end
 
   @impl Fil.Adapter
@@ -259,6 +255,12 @@ defmodule Fil.Adapter.Zip do
   ## Stats and listings
   ## ------------------------------------------------------------------
 
+  defp with_file(state, path, fun) do
+    with {:ok, entries} <- CentralDirectory.read(state.archive),
+         {:ok, entry} <- fetch_file(entries, path),
+         do: fun.(entry)
+  end
+
   defp fetch_file(entries, path) do
     case Enum.find(entries, &(&1.type == :regular and &1.path == path)) do
       nil -> {:error, %Fil.NotFoundError{reason: :enoent}}
@@ -293,8 +295,7 @@ defmodule Fil.Adapter.Zip do
   defp one_level(entries, prefix) do
     entries
     |> Enum.map(&child(&1, prefix))
-    |> Enum.uniq()
-    |> Enum.sort_by(&elem(&1, 0))
+    |> listing()
   end
 
   # The entry itself when it's right under `prefix`, or the directory under `prefix` that holds it.
@@ -302,14 +303,14 @@ defmodule Fil.Adapter.Zip do
     relative = relative(entry.path, prefix)
 
     case String.split(relative, "/", parts: 2) do
-      [_name] -> {entry.path, stat(entry)}
+      [_name] -> {entry.path, entry_stat(entry)}
       [name, _rest] -> {Fil.Support.Path.join(prefix, name), %Stat{type: :directory}}
     end
   end
 
   # The directories of a subtree are its directory entries and the parents of every entry in it.
   defp subtree(entries, prefix) do
-    listed = Enum.map(entries, &{&1.path, stat(&1)})
+    listed = Enum.map(entries, &{&1.path, entry_stat(&1)})
 
     parents =
       entries
@@ -317,7 +318,11 @@ defmodule Fil.Adapter.Zip do
       |> Fil.Support.Path.parents(prefix)
       |> Enum.map(&{&1, %Stat{type: :directory}})
 
-    (listed ++ parents)
+    listing(listed ++ parents)
+  end
+
+  defp listing(pairs) do
+    pairs
     |> Enum.uniq()
     |> Enum.sort_by(&elem(&1, 0))
   end
@@ -325,8 +330,8 @@ defmodule Fil.Adapter.Zip do
   defp relative(path, "."), do: path
   defp relative(path, prefix), do: String.replace_prefix(path, prefix <> "/", "")
 
-  defp stat(%Entry{type: :directory}), do: %Stat{type: :directory}
-  defp stat(entry), do: file_stat(entry)
+  defp entry_stat(%Entry{type: :directory}), do: %Stat{type: :directory}
+  defp entry_stat(entry), do: file_stat(entry)
 
   defp file_stat(entry) do
     %Stat{

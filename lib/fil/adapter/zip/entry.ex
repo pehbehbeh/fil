@@ -105,38 +105,42 @@ defmodule Fil.Adapter.Zip.Entry do
           {:ok, Enumerable.t(), non_neg_integer()} | {:error, Fil.error()}
   def stream(archive, entry, range) do
     range = part(range, entry)
-    {start, count} = ByteRange.clamp(range || {0, nil}, entry.size)
+    {_start, count} = ByteRange.clamp(range || {0, nil}, entry.size)
 
     with :ok <- check_readable(entry),
          {:ok, content_start, _none} <- locate(archive, entry, 0, 0) do
-      {:ok, content_stream(archive, entry, content_start, range, start, count), count}
+      content = if count > 0, do: content_stream(archive, entry, content_start, range), else: []
+      {:ok, content, count}
     end
   end
 
-  defp content_stream(_archive, _entry, _content_start, _range, _start, 0), do: []
-
-  defp content_stream(archive, %__MODULE__{method: @stored} = entry, content_start, nil, _start, _count) do
+  defp content_stream(archive, %__MODULE__{method: @stored} = entry, content_start, nil) do
     archive
-    |> Archive.stream(content_start, entry.compressed_size)
+    |> stored_content(entry, content_start)
     |> checked(entry)
   end
 
-  defp content_stream(archive, %__MODULE__{method: @stored}, content_start, _range, start, count),
-    do: Archive.stream(archive, content_start + start, count)
+  defp content_stream(archive, %__MODULE__{method: @stored} = entry, content_start, range) do
+    {start, count} = ByteRange.clamp(range, entry.size)
+    Archive.stream(archive, content_start + start, count)
+  end
 
-  defp content_stream(archive, entry, content_start, nil, _start, _count) do
+  defp content_stream(archive, entry, content_start, nil) do
     archive
-    |> Archive.stream(content_start, entry.compressed_size)
+    |> stored_content(entry, content_start)
     |> inflating(entry)
     |> checked(entry)
   end
 
-  defp content_stream(archive, entry, content_start, range, _start, _count) do
+  defp content_stream(archive, entry, content_start, range) do
     archive
-    |> Archive.stream(content_start, entry.compressed_size)
+    |> stored_content(entry, content_start)
     |> inflating(entry)
     |> ByteRange.slice(range)
   end
+
+  # The entry's bytes as the archive holds them, compressed or not.
+  defp stored_content(archive, entry, content_start), do: Archive.stream(archive, content_start, entry.compressed_size)
 
   defp check_readable(%__MODULE__{flags: flags}) when (flags &&& @encrypted_flag) != 0,
     do: {:error, %Fil.UnsupportedError{reason: :encrypted}}
