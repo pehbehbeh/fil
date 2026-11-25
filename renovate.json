@@ -27,7 +27,7 @@
       "matchDepTypes": [
         "tool-constraint"
       ],
-      "matchPackageNames": [
+      "matchDepNames": [
         "erlang"
       ],
       "enabled": false
