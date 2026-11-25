@@ -161,7 +161,9 @@ defmodule Fil.ChecksumMismatchError do
   The content doesn't match its checksum. Upload or download it again.
 
   Adapters return it for a write with `checksum:` that the storage received damaged, and for a read with
-  `verify_checksum: true` whose content doesn't match the stored checksum.
+  `verify_checksum: true` whose content doesn't match the stored checksum. `Fil.Adapter.Zip` checks every whole read of
+  an entry against the archive's CRC-32, and returns it with `reason: {:bad_entry, where}` for an entry that's damaged
+  in other ways. Reading such an entry again gives the same error, so the archive has to be written again.
   """
 
   defexception [:op, :path, :disk, :reason]
