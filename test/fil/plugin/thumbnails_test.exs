@@ -194,7 +194,7 @@ defmodule Fil.Plugin.ThumbnailsTest do
     test "refuse content that isn't an image, and write nothing" do
       disk = disk()
 
-      assert {:error, %Fil.InvalidRequestError{reason: {:not_an_image, message}} = error} =
+      assert {:error, %Fil.InvalidContentError{reason: {:not_an_image, message}} = error} =
                Fil.write(disk, "fake.jpg", "not a jpeg")
 
       assert {error.op, error.path} == {:write, "fake.jpg"}
@@ -205,7 +205,7 @@ defmodule Fil.Plugin.ThumbnailsTest do
     test "refuse an image with more than :max_pixels" do
       disk = disk(max_pixels: 1000)
 
-      assert {:error, %Fil.InvalidRequestError{reason: {:too_many_pixels, 80_000}}} =
+      assert {:error, %Fil.InvalidContentError{reason: {:too_many_pixels, 80_000}}} =
                Fil.write(disk, "big.png", image(400, 200))
 
       refute Fil.exists?(disk, "big.png")
@@ -370,7 +370,7 @@ defmodule Fil.Plugin.ThumbnailsTest do
 
       assert {:error, %Fil.NotFoundError{path: "missing.png"}} = Thumbnails.generate(disk, "missing.png")
 
-      assert {:error, %Fil.InvalidRequestError{reason: {:not_an_image, _}, path: "fake.png"}} =
+      assert {:error, %Fil.InvalidContentError{reason: {:not_an_image, _}, path: "fake.png"}} =
                disk
                |> Fil.ref("fake.png")
                |> Thumbnails.generate()

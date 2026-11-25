@@ -197,7 +197,8 @@ In production, `uploads` has no `Fil.Plugin.URL`, so its URLs go to S3 or Azure 
 
 ## Uploads and temporary files
 
-A `Plug.Upload` is a file on the local disk already, so a write streams it to any disk without reading it into memory:
+A `Plug.Upload` is a file on the local filesystem already, so a write streams it to any disk without reading it into
+memory:
 
 ```elixir
 %Plug.Upload{path: path} = params["document"]

@@ -4,15 +4,33 @@
     "local>pehbehbeh/renovate-config"
   ],
   "constraints": {
-    "erlang": "^27"
+    "erlang": "27"
   },
   "packageRules": [
     {
-      "description": "Update only mix.lock, keep the requirements in mix.exs",
+      "description": "Update only mix.lock for releases in range; a new major still raises the requirement",
       "matchManagers": [
         "mix"
       ],
       "rangeStrategy": "update-lockfile"
+    },
+    {
+      "description": "Renovate reads ~> 0.33 as < 0.34 and raises it in mix.exs; lock file maintenance updates these",
+      "matchManagers": [
+        "mix"
+      ],
+      "matchCurrentValue": "/^~> 0\\.\\d+$/",
+      "enabled": false
+    },
+    {
+      "description": "Keep resolving dependencies for the oldest supported OTP; raise the constraint by hand",
+      "matchDepTypes": [
+        "tool-constraint"
+      ],
+      "matchDepNames": [
+        "erlang"
+      ],
+      "enabled": false
     }
   ]
 }

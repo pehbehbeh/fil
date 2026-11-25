@@ -188,7 +188,7 @@ defmodule Fil.Plugin.URL do
   # An earlier plugin may have rewritten the path, so it's checked again, like `Fil` does before the adapter.
   defp normalize(path) do
     with {:error, :ebadpath} <- Fil.Support.Path.normalize(path) do
-      {:error, %Fil.InvalidRequestError{reason: :ebadpath}}
+      {:error, %Fil.InvalidPathError{reason: :ebadpath}}
     end
   end
 

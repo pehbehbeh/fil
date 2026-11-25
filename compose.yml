@@ -9,7 +9,7 @@
 
 services:
   rustfs:
-    image: rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+    image: rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a
     # The credentials `Fil.Emulator` signs with. RustFS verifies SigV4, so the suite also tests the request signing.
     environment:
       RUSTFS_ACCESS_KEY: filaccesskey

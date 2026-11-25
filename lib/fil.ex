@@ -23,7 +23,7 @@ defmodule Fil do
   @type error ::
           Fil.NotFoundError.t()
           | Fil.AccessDeniedError.t()
-          | Fil.InvalidRequestError.t()
+          | Fil.InvalidPathError.t()
           | Fil.InvalidContentError.t()
           | Fil.AlreadyExistsError.t()
           | Fil.ConflictError.t()
@@ -80,8 +80,8 @@ defmodule Fil do
       doc: """
       What to do if the file (for a copy or a move, the destination) already exists. `:overwrite` replaces it. `:error`
       writes nothing and returns a `Fil.AlreadyExistsError`, like `File.write/3` with `[:exclusive]`, and a move leaves
-      the source where it is. That check is atomic on local disk, in memory and on AWS S3, so two processes can't both
-      create the file. Some S3-compatible servers ignore it.
+      the source where it is. That check is atomic on the filesystem, in memory and on AWS S3, so two processes can't
+      both create the file. Some S3-compatible servers ignore it.
       """
     ],
     content_type: [
@@ -250,7 +250,9 @@ defmodule Fil do
                              The `content-disposition` of the download. `:inline` lets the browser show the file,
                              `:attachment` saves it under the file's name, and `{:attachment, filename}` under another
                              name, which can be any UTF-8 string. Without it, S3 and Azure send the disposition a file
-                             was uploaded with outside `Fil`, and the other disks send none.
+                             was uploaded with outside `Fil`, and the other disks send none. `Fil.Plug` shows a type a
+                             browser runs, such as HTML, inline only in a sandbox (see
+                             [Security](Fil.Plug.html#module-security)).
                              """
                            ]
                          ] ++ @query_option
@@ -607,7 +609,7 @@ defmodule Fil do
   Lists a directory. The whole listing is loaded into memory.
 
   One level deep by default; pass `recursive: true` to walk the whole subtree. Paths are relative to the disk root, and
-  a missing prefix returns an empty list.
+  a missing directory returns an empty list.
 
   A one-level listing includes directories. A recursive listing returns files only, unless you ask for its directories
   with `type: :directory`: at least every directory that holds a file, because object stores have directories only
@@ -699,7 +701,7 @@ defmodule Fil do
   that the literal start of the pattern names (`videos` for `videos/*/withText`), then each directory a segment
   matched. On S3 that's one request per listed directory and level, the same as nested calls to `ls/3`. A `**` segment
   lists the whole subtree of each directory it starts from, so `"**/*.mp4"` is one recursive listing of the disk, and
-  on a large bucket a prefix in front of it (`"videos/**/*.mp4"`) keeps that listing small. Each listing is an
+  on a large bucket a directory in front of it (`"videos/**/*.mp4"`) keeps that listing small. Each listing is an
   operation of its own, so plugins and `[:fil, :op]` telemetry events see every one of them. The first one that fails
   is the result.
 
@@ -841,7 +843,7 @@ defmodule Fil do
   end
 
   @doc """
-  Removes everything under a prefix and returns the number of deleted files.
+  Removes a path and everything under it, and returns the number of deleted files.
 
       iex> disk = Fil.disk(adapter: Fil.Adapter.Memory)
       iex> Fil.write!(disk, "reports/2026/q3.pdf", "%PDF")
@@ -856,7 +858,7 @@ defmodule Fil do
   @spec rm_rf(Ref.t()) :: result(non_neg_integer())
   def rm_rf(ref), do: rm_rf(ref, [])
 
-  @doc "Removes everything under a prefix. See `rm_rf/1`."
+  @doc "Removes a path and everything under it. See `rm_rf/1`."
   @doc section: :operations
   @spec rm_rf(Disk.t(), Path.t()) :: result(non_neg_integer())
   @spec rm_rf(Ref.t(), keyword()) :: result(non_neg_integer())
@@ -870,7 +872,7 @@ defmodule Fil do
     run(ref, :rm_rf, opts)
   end
 
-  @doc "Removes everything under a prefix. See `rm_rf/1`."
+  @doc "Removes a path and everything under it. See `rm_rf/1`."
   @doc section: :operations
   @spec rm_rf(Disk.t(), Path.t(), keyword()) :: result(non_neg_integer())
   def rm_rf(%Disk{} = disk, path, opts) when is_binary(path) and is_list(opts) do

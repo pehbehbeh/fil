@@ -207,7 +207,7 @@ defmodule Fil.Adapter.AzureBlob do
   file already there fails only at the end. A block that fails with `Fil.UnavailableError` is sent once more, a second
   later.
 
-  Azure allows 50,000 blocks. A stream without a size that would need more fails with `Fil.InvalidRequestError`,
+  Azure allows 50,000 blocks. A stream without a size that would need more fails with `Fil.InvalidContentError`,
   `reason: :too_many_parts`, before its last block goes out. With `size:`, the blocks are as large as the size needs,
   rounded up to a whole MiB.
 
@@ -242,9 +242,8 @@ defmodule Fil.Adapter.AzureBlob do
   | `AuthorizationPermissionMismatch`, `InsufficientAccountPermissions` | `Fil.AccessDeniedError` |
   | `BlobAlreadyExists`, `ConditionNotMet`, `412` | `Fil.AlreadyExistsError` |
   | `LeaseIdMissing`, `LeaseIdMismatchWithBlobOperation`, `LeaseIdMismatchWithLeaseOperation` | `Fil.ConflictError` |
-  | `RequestBodyTooLarge`, `InvalidBlobOrBlock`, `OutOfRangeInput` | `Fil.InvalidRequestError` |
-  | `InvalidHeaderValue`, `InvalidQueryParameterValue` | `Fil.InvalidRequestError` |
-  | a stream without a size that needs more than 50,000 blocks | `Fil.InvalidRequestError`, `reason: :too_many_parts` |
+  | `RequestBodyTooLarge`, `InvalidBlobOrBlock` | `Fil.InvalidContentError` |
+  | a stream without a size that needs more than 50,000 blocks | `Fil.InvalidContentError`, `reason: :too_many_parts` |
   | `Md5Mismatch`, `Crc64Mismatch` | `Fil.ChecksumMismatchError` |
   | a body that doesn't match its stored checksum | `Fil.ChecksumMismatchError`, `reason: :checksum_mismatch` |
   | `AccountLimitExceeded`, `ContainerQuotaExceeded` | `Fil.StorageFullError` |

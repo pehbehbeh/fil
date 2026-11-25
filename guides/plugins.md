@@ -30,7 +30,7 @@ Fil.read(disk, "hello.txt")
 
 A plugin callback takes three arguments:
 
-  * `op`: the `Fil.Op` for this call, with the operation name, the path, the content of a write and the call's options
+  * `op`: the `Fil.Op` for this operation, with its name, the path, the content of a write and the options
   * `next`: a function that runs the rest of the chain (the plugins attached after this one, then the adapter) and
     returns the op with its `:result` set
   * `opts`: the options the plugin was attached with
@@ -320,7 +320,7 @@ that called it.
 
 A plugin may rewrite `op.path` (to put everything under a tenant prefix, for example). The path is normalized again
 before the adapter sees it, so a rewritten path can't escape the disk root either: it fails with a
-`Fil.InvalidRequestError` whose `:reason` is `:ebadpath`.
+`Fil.InvalidPathError` whose `:reason` is `:ebadpath`.
 
 ## Copies and renames
 

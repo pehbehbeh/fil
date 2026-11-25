@@ -35,7 +35,8 @@ defmodule Fil.Disk do
               Default options of `Fil.signed_url/3` on this disk. The options of a call replace them one by one, so
               `signed_url: [expires_in: 86_400, disposition: :attachment]` gives every signed URL a day and the
               `:attachment` disposition, and `Fil.signed_url(disk, path, disposition: :inline)` still shows a file
-              inline.
+              inline. `Fil.Plug` shows a type a browser runs, such as HTML, inline only in a sandbox (see
+              [Security](Fil.Plug.html#module-security)).
               """
             ],
             signed_upload: [

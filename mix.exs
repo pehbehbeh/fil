@@ -71,7 +71,7 @@ defmodule Fil.MixProject do
       {:lazy_html, ">= 0.1.0", only: :test},
       # Fil.Ecto.Ref's tests round-trip through an in-memory SQLite database.
       {:ecto_sql, "~> 3.12", only: :test},
-      {:ecto_sqlite3, "~> 0.25", only: :test},
+      {:ecto_sqlite3, "~> 0.26", only: :test},
 
       # Development
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},

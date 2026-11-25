@@ -202,20 +202,20 @@ defmodule FilTest do
         Fil.attach(other, :reject, fn op, next, _opts ->
           op
           |> Fil.Op.update_content(
-            stream: &Stream.map(&1, fn _chunk -> raise %Fil.InvalidRequestError{reason: :rejected} end)
+            stream: &Stream.map(&1, fn _chunk -> raise %Fil.InvalidContentError{reason: :rejected} end)
           )
           |> next.()
         end)
 
       source = Fil.stream!(disk, "a.txt")
 
-      assert {:error, %Fil.InvalidRequestError{op: :write, path: "b.txt", reason: :rejected} = error} =
+      assert {:error, %Fil.InvalidContentError{op: :write, path: "b.txt", reason: :rejected} = error} =
                Fil.write(rejecting, "b.txt", source)
 
       assert error.disk == rejecting
 
       # The same as any other error of the destination of a copy: the operation is the copy, the path the destination.
-      assert {:error, %Fil.InvalidRequestError{op: :cp, path: "b.txt", reason: :rejected} = error} =
+      assert {:error, %Fil.InvalidContentError{op: :cp, path: "b.txt", reason: :rejected} = error} =
                Fil.cp(disk, "a.txt", Fil.ref(rejecting, "b.txt"))
 
       assert error.disk == rejecting

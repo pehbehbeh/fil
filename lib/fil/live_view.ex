@@ -20,7 +20,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                 doc: """
                 The extensions the path may end with, such as `[".jpg", ".png"]`. They're compared with the path
                 `:path` returned, in lowercase, before anything is written. A path with another extension, or without
-                one, gives a `Fil.InvalidRequestError` with `reason: :extension`, and an empty list refuses every file.
+                one, gives a `Fil.InvalidContentError` with `reason: :extension`, and an empty list refuses every file.
                 Without this option, the consume functions and `external/2` take the extensions the upload's
                 `accept:` allows (see [Paths](#module-paths)), and `store_entry/4` checks none.
                 """
@@ -40,7 +40,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                 type: :pos_integer,
                 doc: """
                 The largest file in bytes that `store_entry/4` takes from a direct upload. A larger one gives a
-                `Fil.InvalidRequestError` with `reason: :too_large` and stays on the disk. The consume functions take
+                `Fil.InvalidContentError` with `reason: :too_large` and stays on the disk. The consume functions take
                 the upload's `max_file_size`.
                 """
               ]
@@ -63,7 +63,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             {:ok, []} ->
               {:noreply, socket}
 
-            {:error, %Fil.InvalidRequestError{reason: :extension}} ->
+            {:error, %Fil.InvalidContentError{reason: :extension}} ->
               {:noreply, put_flash(socket, :error, "Only .jpg and .png files can be uploaded.")}
 
             {:error, error} ->
@@ -90,7 +90,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     unless you put it there, because it can be anything: `../../config.exs`, a name another user already has, or
     `index.html`.
 
-    A path that leaves the target gives a `Fil.InvalidRequestError` with `reason: :ebadpath` when the file is stored:
+    A path that leaves the target gives a `Fil.InvalidPathError` with `reason: :ebadpath` when the file is stored:
     with a directory as the target, `"../other.png"` is refused, and with a disk, a path that leaves the disk root.
 
     LiveView's `accept:` lets a file through when its type or its extension matches, and the type comes from the
@@ -158,12 +158,12 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     that can't be this upload's:
 
       * one older than the upload URL gives a `Fil.AlreadyExistsError` with `reason: :before_upload`. The check allows
-        30 seconds, because the clocks of the app and the storage can differ a little, and local disks and S3 keep the
-        time in whole seconds
+        30 seconds, because the clocks of the app and the storage can differ a little, and the filesystem and S3 keep
+        the time in whole seconds
       * one larger than the upload's `max_file_size` (the URL takes only the size the browser reported) gives a
-        `Fil.InvalidRequestError` with `reason: :too_large`
+        `Fil.InvalidContentError` with `reason: :too_large`
       * on storage that doesn't enforce the signed size and content type (Azure), one of another size than the browser
-        reported, or with another content type than the path's, gives a `Fil.InvalidRequestError` with `reason: :size`
+        reported, or with another content type than the path's, gives a `Fil.InvalidContentError` with `reason: :size`
         or `reason: :content_type`
 
     A failed consume never deletes the file of a direct upload, because it may be someone else's, and the form can be
@@ -241,7 +241,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                      |> NimbleOptions.new!()
 
     # How many seconds older than its upload URL the file of a direct upload may look. The clocks of the app and the
-    # storage can differ a little, and local disks and S3 keep the time in whole seconds.
+    # storage can differ a little, and the filesystem and S3 keep the time in whole seconds.
     @clock_skew 30
 
     # The `accept:` filters that stand for a kind of file, not one type.
@@ -624,9 +624,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
         {:error, error} -> {:noreply, put_flash(socket, :error, translate_error(Fil.LiveView.upload_error(error)))}
 
-    - "The file is larger than %{max}": `:too_large`, and a `Fil.InvalidRequestError` with `reason: :too_large` or
+    - "The file is larger than %{max}": `:too_large`, and a `Fil.InvalidContentError` with `reason: :too_large` or
       `"EntityTooLarge"`. Without the upload, "The file is too large".
-    - "This type of file isn't accepted": `:not_accepted`, a `Fil.InvalidRequestError` with `reason: :extension`, and
+    - "This type of file isn't accepted": `:not_accepted`, a `Fil.InvalidContentError` with `reason: :extension`, and
       `{:external_metadata_failure, %{reason: :extension}}`.
     - "You can upload at most %{count} file(s)": `:too_many_files`. Without the upload, "Too many files".
     - "A file with this name already exists": any other `Fil.AlreadyExistsError`. Paths from `filename/1` never
@@ -832,11 +832,11 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
     end
 
     defp refuse_upload(ref, reason) do
-      {:error, %Fil.InvalidRequestError{reason: reason, op: :stat, path: ref.path, disk: ref.disk}}
+      {:error, %Fil.InvalidContentError{reason: reason, op: :stat, path: ref.path, disk: ref.disk}}
     end
 
     defp check_size(ref, size, max_file_size) when is_integer(max_file_size) and size > max_file_size do
-      {:error, %Fil.InvalidRequestError{reason: :too_large, op: :stat, path: ref.path, disk: ref.disk}}
+      {:error, %Fil.InvalidContentError{reason: :too_large, op: :stat, path: ref.path, disk: ref.disk}}
     end
 
     defp check_size(ref, _size, _max_file_size), do: {:ok, ref}
@@ -878,7 +878,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     # LiveView sends the error meta to the browser, so it holds only a reason, and the message, which names the disk and
     # the path, goes to the log. A refused extension comes from the user's file, so it isn't logged.
-    defp error_meta(%Fil.InvalidRequestError{reason: :extension}), do: %{reason: :extension}
+    defp error_meta(%Fil.InvalidContentError{reason: :extension}), do: %{reason: :extension}
 
     defp error_meta(error) do
       Logger.error("Fil.LiveView.external/2: " <> Exception.message(error))
@@ -905,7 +905,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     # A directory is a jail: the path is normalized on its own, so its `..` can't climb out of the directory. A path
     # that tries also climbs out of the disk root on its own, so it's kept as it is, and using the ref gives a
-    # `Fil.InvalidRequestError` with `reason: :ebadpath`, as for any other path that leaves the root.
+    # `Fil.InvalidPathError` with `reason: :ebadpath`, as for any other path that leaves the root.
     defp directory_ref(disk, dir, path) do
       case Fil.Support.Path.normalize(path) do
         {:ok, normalized} -> Fil.ref(disk, Path.join(dir, normalized))
@@ -924,7 +924,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       if extension != "" and extension in Enum.map(extensions, &String.downcase/1) do
         :ok
       else
-        {:error, %Fil.InvalidRequestError{reason: :extension, op: op, path: ref.path, disk: ref.disk}}
+        {:error, %Fil.InvalidContentError{reason: :extension, op: op, path: ref.path, disk: ref.disk}}
       end
     end
 

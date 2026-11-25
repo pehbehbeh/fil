@@ -1,8 +1,8 @@
 <h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img alt="Fil" src="assets/logo-light.svg" width="240">
-  </picture>
+  <img alt="Fil" width="240"
+    src="https://raw.githubusercontent.com/pehbehbeh/fil/main/assets/logo-light.svg#gh-light-mode-only">
+  <img alt="Fil" width="240"
+    src="https://raw.githubusercontent.com/pehbehbeh/fil/main/assets/logo-dark.svg#gh-dark-mode-only">
 </h1>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/pehbehbeh/fil/ci.yml?branch=main&label=CI)](https://github.com/pehbehbeh/fil/actions/workflows/ci.yml?query=branch%3Amain)
@@ -81,7 +81,7 @@ To try `Fil` without a project, run the [tour](https://fil.hexdocs.pm/tour.html)
 - `ls` on a missing directory returns an empty list
 - paths are always relative to the disk root, and `.` is the root
 - a path that climbs above the root fails with a
-  [`Fil.InvalidRequestError`](https://fil.hexdocs.pm/Fil.InvalidRequestError.html)
+  [`Fil.InvalidPathError`](https://fil.hexdocs.pm/Fil.InvalidPathError.html)
 
 The [contract in `Fil.Adapter`](https://fil.hexdocs.pm/Fil.Adapter.html#module-contract) lists every difference from
 `File`. Every function that can fail returns `{:ok, result}` or `{:error, error}`, with an error from the Errors
@@ -204,7 +204,7 @@ s3 =
   )
 ```
 
-Every operation works the same on every disk:
+Every function works the same on every disk:
 
 ```elixir
 {:ok, report} = Fil.write(s3, "reports/q3.pdf", pdf)
